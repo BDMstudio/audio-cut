@@ -1,0 +1,36 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.log
+
+# Virtual environments
+audio_env/
+.venv/
+venv/
+env/
+
+# IDE/editor
+.idea/
+.vscode/
+*.code-workspace
+
+# Outputs (keep placeholder only)
+output/*
+!output/.gitkeep
+
+# Inputs (keep placeholder only)
+input/*
+!input/.gitkeep
+
+# OS junk
+.DS_Store
+Thumbs.db
+
+# Large audio artifacts (avoid committing binaries)
+*.wav
+*.flac
+*.mp3
+!input/.gitkeep
+

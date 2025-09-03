@@ -1,0 +1,263 @@
+# 智能人声分割器配置文件 (v1.1.2 清理版)
+# AI-SUMMARY: BPM自适应无缝分割专用配置 - 移除历史遗留配置项
+
+# ============================================================================
+# 核心音频设置
+# ============================================================================
+audio:
+  sample_rate: 16000  # CD质量采样率（Silero VAD会自动重采样至16kHz）
+  channels: 1         # 单声道处理
+  format: 'wav'       # 无损音频格式
+  quality: 320        # 最高质量
+
+# ============================================================================
+# Silero VAD 高级配置
+# ============================================================================
+advanced_vad:
+  # Silero VAD 核心参数
+  silero_min_silence_ms: 1200    # 最小静音时长(ms) 
+  silero_min_speech_ms: 600      # 最小人声时长(ms)
+  silero_window_size_samples: 512 # 分析窗口大小
+  silero_speech_pad_ms: 50       # 人声边界填充
+  # WebRTC VAD 备用参数
+  webrtc_aggressiveness: 1       # 低敏感度设置
+
+# ============================================================================
+# 质量控制 (核心)
+# ============================================================================
+quality_control:
+  # 分割点验证
+  validate_split_points: true
+  min_pause_at_split: 0.1         # 分割点最小停顿
+  min_vocal_content_ratio: 0.3    # 最小人声内容比例
+  max_silence_ratio: 0.7          # 最大静音比例
+  max_vocal_at_split: 0.05        # 分割边界最大人声强度
+  
+  # === 零处理模式 (确保完美重构) ===
+  fade_in_duration: 0.0           # 禁用渐入
+  fade_out_duration: 0.0          # 禁用渐出
+  normalize_audio: false          # 禁用标准化
+  remove_click_noise: false       # 禁用咔嗒声处理
+  smooth_transitions: false       # 禁用平滑过渡
+  # 长度过滤器 (保持时间轴完整)
+  min_segment_duration: null      # 不过滤短片段
+  max_segment_duration: null      # 不过滤长片段
+
+# ============================================================================
+# BPM自适应无缝分割 (推荐主路线)
+# ============================================================================
+vocal_pause_splitting:
+  # === 核心分割参数 ===
+  min_pause_duration: 1.2        # 基础最小停顿时长(秒)
+  head_offset: -0.5              # 头部切割偏移(秒)
+  tail_offset: 0.5               # 尾部切割偏移(秒)
+  
+  # === Silero VAD 配置 ===
+  vad_method: "silero"           # 必须使用silero
+  voice_threshold: 0.45          # 人声检测阈值
+  
+  # === 零处理模式 ===
+  zero_processing: true          # 启用零处理模式
+  preserve_original: true        # 保持原始音频特性
+  
+  # === 质量控制 ===
+  min_confidence: 0.6            # 最小置信度阈值
+  enable_zero_crossing_align: false # 禁用零交叉对齐
+  
+  # === BPM自适应增强系统 ===
+  enable_bpm_adaptation: true    # 启用BPM自适应
+  bmp_adaptive_settings:         # 注意：保持历史兼容性，实际读取bpm_adaptive_settings
+    # BPM分析参数
+    tempo_analysis_window: 30.0     # BPM分析窗口(秒)
+    tempo_min_bpm: 50              # 最小BPM检测范围
+    tempo_max_bpm: 200             # 最大BPM检测范围
+    tempo_prior: 120               # BPM先验估计
+    
+    # BPM分类阈值
+    slow_bpm_threshold: 80         # 慢歌上限
+    fast_bpm_threshold: 120        # 快歌下限
+    
+    # 节拍对齐
+    enable_beat_alignment: true        # 启用节拍对齐
+    beat_alignment_tolerance: 0.3      # 节拍对齐容差(秒)
+    min_beat_strength: 0.6            # 最小节拍强度阈值
+    
+    # 复杂度自适应
+    enable_complexity_adaptation: true  # 启用复杂度自适应
+    complexity_segments: 5             # 复杂度分析段数
+    max_threshold_boost: 0.2           # 最大阈值提升幅度
+    min_threshold_reduction: 0.15      # 最小阈值降低幅度
+    
+    # === 停顿时长乘数配置 ===
+    pause_duration_multipliers:
+      slow_song_multiplier: 1.5        # 慢歌(BPM<80): 1.2s×1.5=1.8s
+      fast_song_multiplier: 0.7        # 快歌(BPM>120): 1.2s×0.7=0.84s  
+      medium_song_multiplier: 1.0      # 中速歌: 1.2s×1.0=1.2s
+    
+    # === 多乐器复杂度乘数 ===
+    complexity_multipliers:
+      instrument_4_plus_base: 1.4      # 4+乐器基础系数
+      instrument_4_plus_step: 0.1      # 每增加1乐器的步进
+      instrument_3_base: 1.2           # 3乐器基础系数
+      instrument_3_complexity_factor: 0.4  # 复杂度影响因子
+      instrument_2_base: 1.1           # 2乐器基础系数
+      instrument_2_complexity_factor: 0.2  # 复杂度影响因子
+    
+    # === 切割偏移乘数配置 ===
+    offset_multipliers:
+      slow_song_offset_multiplier: 1.2    # 慢歌: ±0.5s → ±0.6s
+      fast_song_offset_multiplier: 0.8    # 快歌: ±0.5s → ±0.4s
+      medium_song_offset_multiplier: 1.0  # 中速歌: 保持±0.5s
+
+  # === 新增：统一配置入口 ===  
+  bpm_adaptive_settings:
+    # BPM分析参数
+    tempo_analysis_window: 30.0     # BPM分析窗口(秒)
+    tempo_min_bpm: 50              # 最小BPM检测范围
+    tempo_max_bpm: 200             # 最大BPM检测范围
+    tempo_prior: 120               # BPM先验估计
+    
+    # BPM分类阈值
+    slow_bpm_threshold: 80         # 慢歌上限
+    fast_bpm_threshold: 120        # 快歌下限
+    
+    # 节拍对齐
+    enable_beat_alignment: true        # 启用节拍对齐
+    beat_alignment_tolerance: 0.3      # 节拍对齐容差(秒)
+    min_beat_strength: 0.6            # 最小节拍强度阈值
+    
+    # 复杂度自适应
+    enable_complexity_adaptation: true  # 启用复杂度自适应
+    complexity_segments: 5             # 复杂度分析段数
+    max_threshold_boost: 0.2           # 最大阈值提升幅度
+    min_threshold_reduction: 0.15      # 最小阈值降低幅度
+    
+    # === 停顿时长乘数配置 ===
+    pause_duration_multipliers:
+      slow_song_multiplier: 1.5        # 慢歌(BPM<80): 1.2s×1.5=1.8s
+      fast_song_multiplier: 0.7        # 快歌(BPM>120): 1.2s×0.7=0.84s  
+      medium_song_multiplier: 1.0      # 中速歌: 1.2s×1.0=1.2s
+    
+    # === 多乐器复杂度乘数 ===
+    complexity_multipliers:
+      instrument_4_plus_base: 1.4      # 4+乐器基础系数
+      instrument_4_plus_step: 0.1      # 每增加1乐器的步进
+      instrument_3_base: 1.2           # 3乐器基础系数
+      instrument_3_complexity_factor: 0.4  # 复杂度影响因子
+      instrument_2_base: 1.1           # 2乐器基础系数
+      instrument_2_complexity_factor: 0.2  # 复杂度影响因子
+    
+    # === 切割偏移乘数配置 ===
+    offset_multipliers:
+      slow_song_offset_multiplier: 1.2    # 慢歌: ±0.5s → ±0.6s
+      fast_song_offset_multiplier: 0.8    # 快歌: ±0.5s → ±0.4s
+      medium_song_offset_multiplier: 1.0  # 中速歌: 保持±0.5s
+
+# ============================================================================
+# 输出设置
+# ============================================================================
+output:
+  directory: '../output'         # 输出目录
+  naming_pattern: 'vocal_segment_{index:02d}'
+  include_metadata: true         # 包含元数据
+  save_debug_info: true          # 保存调试信息
+  save_separated_vocal: false    # 不保存分离的人声(无缝模式不需要)
+  save_breath_map: false         # 不保存换气图(已废弃)
+  save_analysis_report: true     # 保存分析报告
+
+# ============================================================================
+# 日志设置
+# ============================================================================
+logging:
+  level: 'INFO'
+  file: 'smart_splitter.log'
+  format: '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+  max_file_size: '10MB'
+  backup_count: 3
+
+# ============================================================================
+# 历史兼容性配置 (已废弃但保留以避免导入错误)
+# ============================================================================
+# 注意：以下配置项已不再使用，仅为代码兼容性保留
+
+# 传统智能分割调度器 (已废弃)
+smart_splitting:
+  use_pause_priority_algorithm: false  # 不使用停顿优先级
+  use_precise_voice_algorithm: false   # 不使用精确人声分割
+  min_segment_length: 5               # 最小片段长度(秒) - 兼容性
+  max_segment_length: 15              # 最大片段长度(秒) - 兼容性
+  target_segment_length: 8            # 目标片段长度(秒) - 兼容性
+
+# 人声分离 (已废弃 - 无缝模式直接使用原音频)
+vocal_separation:
+  hpss_margin: 1.0
+  hpss_power: 1.0
+  mask_threshold: 0.3
+  mask_smoothing: 3
+  vocal_freq_min: 80
+  vocal_freq_max: 4000
+  vocal_core_min: 200
+  vocal_core_max: 1000
+  min_vocal_ratio: 0.15
+  max_noise_ratio: 0.3
+
+# 换气检测 (已废弃 - 已被Silero VAD替代)
+breath_detection:
+  energy_window: 0.04
+  energy_hop: 0.005
+  energy_threshold: 0.018
+  spectral_window: 0.08
+  spectral_threshold: 0.2
+  min_pause_duration: 0.8
+  max_pause_duration: 3.0
+  pause_merge_threshold: 0.06
+  breath_energy_drop: 0.6
+  breath_duration_min: 0.8
+  breath_duration_max: 1.2
+
+# 内容分析 (已废弃 - 传统模式专用)
+content_analysis:
+  min_vocal_segment: 3.0
+  max_vocal_segment: 30.0
+  continuity_threshold: 0.5
+  semantic_gap_max: 1.0
+  vocal_clarity_min: 0.6
+  content_completeness: 0.8
+
+# 停顿优先级算法 (备用算法)
+pause_priority:
+  duration_weight: 0.5
+  intensity_weight: 0.2
+  energy_weight: 0.2
+  stability_weight: 0.1
+  min_split_interval: 3.0
+  max_splits_per_minute: 8
+  min_pause_duration: 0.1
+  min_priority_score: 0.3
+
+# 精确人声分割 (备用算法)
+precise_voice_splitting:
+  preferred_vad_method: "silero"
+  min_silence_duration: 1.0
+  min_voice_duration: 0.8
+  silence_threshold: 0.15
+  short_pause_duration: 0.3
+  medium_pause_duration: 0.6
+  long_pause_duration: 1.2
+  split_in_silence_center: true
+  avoid_boundary_splits: true
+  boundary_buffer: 2.0
+  placement_strategy: "center_internal_offset_edges"
+  use_breath_pauses: false
+  cut_offset_before_vocal_start: 0.5
+  cut_offset_after_vocal_end: 0.5
+  min_split_gap: 2.0
+  merge_silence_below: 2.0
+  min_voice_duration: 1.2
+  min_vocal_content_ratio: 0.4
+  max_silence_ratio: 0.3
+  fade_in_duration: 0.1
+  fade_out_duration: 0.1
+  normalize_audio: false
+  remove_click_noise: false
+  smooth_transitions: false

@@ -1,0 +1,47 @@
+# 适应编曲复杂度变化的优化配置建议
+# 基于你的观察：后半部分编曲复杂，导致分割精度下降
+
+vocal_pause_splitting:
+  # === 针对编曲复杂度的关键调整 ===
+  
+  # 1. 渐进式阈值策略（解决编曲复杂度变化问题）
+  voice_threshold: 0.45      # 提高到0.45，在复杂编曲中更保守
+                            # 原来0.35在后半部分容易误判，现在更严格
+  
+  min_pause_duration: 1.2   # 提高到1.2秒，确保只在真正的长停顿处分割
+                            # 避免在复杂编曲中的短暂"伪停顿"处切割
+  
+  # 2. 增强的Silero VAD参数  
+  min_confidence: 0.6       # 提高置信度要求到0.6（原0.3太宽松）
+                            # 在复杂编曲中需要更高确信度
+  
+  # 3. 复杂编曲适应性参数
+  enable_energy_boost: true    # 新增：启用能量增强检测
+  complex_arrangement_mode: true # 新增：复杂编曲模式（后续实现）
+  
+  # 4. 时间分段检测（针对你的观察）
+  enable_time_adaptive: true    # 新增：启用时间自适应
+  early_section_threshold: 0.35 # 前半部分（0-50%）使用较低阈值
+  late_section_threshold: 0.55  # 后半部分（50-100%）使用较高阈值
+  transition_point: 0.5         # 转换点：50%音频长度处
+
+# 如果还是产生1-3s超短片段，进一步严格化：
+strict_mode:
+  min_pause_duration: 1.5       # 极严格：只在1.5s+长停顿分割
+  voice_threshold: 0.5          # 极高阈值：只检测非常确定的人声停顿
+  min_segment_length: 4.0       # 最小片段4秒，彻底避免超短片段
+
+# 针对复杂编曲的Silero VAD增强设置
+enhanced_silero:
+  # 更保守的检测参数（减少在复杂编曲中的误判）
+  min_speech_duration_ms: 600   # 增加到600ms（原250ms太短）
+  min_silence_duration_ms: 1200 # 增加到1200ms（原1000ms）
+  speech_pad_ms: 50            # 增加语音填充到50ms（原10ms）
+  
+  # 窗口大小调整（适应复杂频谱）
+  window_size_samples: 1024    # 增加到1024（原512），更稳定的检测
+  
+  # 针对编曲复杂度的分段处理
+  use_progressive_threshold: true # 启用渐进阈值
+  early_threshold: 0.35          # 前段阈值
+  late_threshold: 0.55           # 后段阈值

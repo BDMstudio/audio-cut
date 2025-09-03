@@ -1,0 +1,231 @@
+# 智能人声分割器配置文件 (v1.1.4 Late-Safe 微调版)
+# 目标：解决“普遍提前 ~1s 切”的问题
+# 核心策略：静音为锚 + 滞回与连续帧防抖 + 右向微吸附节拍 + 看未来(lookahead)守卫 + 右偏切点
+
+# ============================================================================
+# 核心音频设置
+# ============================================================================
+audio:
+  sample_rate: 16000              # Silero 稳定推理域（内部或前置统一重采样）
+  channels: 1
+  format: 'wav'
+  quality: 320
+
+# ============================================================================
+# Silero VAD 高级配置
+# ============================================================================
+advanced_vad:
+  # ---- 基本门限与时间窗 ----
+  silero_min_silence_ms: 1300           # ↑ 强化静音下限，抑制早判静音
+  silero_min_speech_ms: 1000
+  silero_window_size_samples: 480       # 16k × 30ms
+  silero_speech_pad_ms: 240             # ↑ 边界保护更厚，避免切在拖腔/尾音
+
+  # ---- 概率滞回 + 连续帧（强防抖）----
+  silero_prob_threshold_up: 0.55        # 静音->语音
+  silero_prob_threshold_down: 0.40      # ↓ 语音->静音（降低，延后转静音时刻）
+  silero_min_consecutive_silence_frames: 40  # 40 × 30ms ≈ 1.2s 持续静音
+  silero_min_consecutive_speech_frames: 12   # 12 × 30ms ≈ 0.36s
+  silero_hangover_ms: 300               # ★ 语音挂起延时：检测降为静音后仍保持语音态 300ms
+  silero_prob_smoothing_ms: 120         # ★ 概率平滑（EMA/中值滤波皆可）
+
+  # ---- 备用 WebRTC VAD ----
+  webrtc_aggressiveness: 1
+
+# ============================================================================
+# 质量控制 (核心)
+# ============================================================================
+quality_control:
+  validate_split_points: true
+  min_pause_at_split: 1.0                # 分割点处静音必须 ≥1.0s
+  min_vocal_content_ratio: 0.5
+  max_silence_ratio: 0.55
+  max_vocal_at_split: 0.10               # ↓ 切点人声能量更严，避免“嘴上切”
+  enable_zero_crossing_align: true
+  min_split_gap: 2.5                      # ↑ 切点之间更松距，防密集碎切
+
+  # ---- 未来静默守卫（离线场景可用，强力避免早切）----
+  post_silence_guard_ms: 1000            # ★ 候选切点之后至少 1000ms 仍需保持静音
+  bilateral_guard_ms: 0                   # 左右双侧守卫（保留接口，默认 0）
+  energy_floor_dbfs: -55                  # 静音平台能量地板（dBFS）
+
+  # === 零处理模式（保持波形一致性）===
+  fade_in_duration: 0.0
+  fade_out_duration: 0.0
+  normalize_audio: false
+  remove_click_noise: false
+  smooth_transitions: false
+  min_segment_duration: null
+  max_segment_duration: null
+
+# ============================================================================
+# BPM 自适应无缝分割（主路线：静音锚定 + 右向微吸附）
+# ============================================================================
+vocal_pause_splitting:
+  # ---- 核心分割参数 ----
+  min_pause_duration: 1.2               # 基础规则
+  head_offset: -0.5                      # 头部切割：回撤 0.5s（回归产品规范）
+  tail_offset: 0.8                       # 尾部切割：延后 0.8s（更抗早切）
+
+  # ---- VAD 选择与阈值 ----
+  vad_method: "silero"
+  voice_threshold: 0.50                  # 与滞回并存时，仅作保底门槛
+  min_confidence: 0.65
+  zero_processing: true
+  preserve_original: true
+
+  # ---- 切点精修护栏（以静音中心为锚，右偏微调）----
+  enable_zero_crossing_align: true
+  max_shift_from_silence_center: 0.08    # ←→ 最大偏移（秒）
+  silence_center_bias_ratio: 0.60        # ★ 在静音平台内，取“平台宽度×0.6”的右偏位置
+  require_silence_plateau_ms: 400        # ↑ 必须处于至少 400ms 的平坦静音平台
+  plateau_flatness_db: 6                 # ↑ 平坦度更严格
+  boundary_backoff_ms: 180               # ↑ 临近人声边界时向静音中心回退距离
+
+  # ==========================================================================
+  # BPM 自适应（只在静音平台内微吸附，且禁止提前吸附）
+  # ==========================================================================
+  enable_bpm_adaptation: true
+
+  bpm_adaptive_settings:
+    # ---- BPM 分析参数 ----
+    tempo_analysis_window: 30.0
+    tempo_min_bpm: 60
+    tempo_max_bpm: 190
+    tempo_prior: 120
+
+    # ---- BPM 分类阈值 ----
+    slow_bpm_threshold: 80
+    fast_bpm_threshold: 120
+
+    # ---- 节拍对齐（严控：不可向左提前）----
+    enable_beat_alignment: true
+    beat_alignment_tolerance: 0.12       # ↓ 更小容差，避免被拍点“拖走”
+    min_beat_strength: 0.40              # ↓ 兼顾复杂编曲
+    beat_align_mode: "snap_within_silence"
+    beat_snap_direction: "right_only"    # ★ 只允许靠右吸附，禁止向左提前
+    beat_cannot_advance: true            # ★ 吸附不得早于静音中心
+    prefer_fraction_of_beat: "1/2"
+    max_snap_distance_of_beat_fraction: 0.08
+
+    # ---- 复杂度自适应（仅调阈，不破底线）----
+    enable_complexity_adaptation: true
+    complexity_segments: 5
+    max_threshold_boost: 0.2
+    min_threshold_reduction: 0.15
+
+    # ---- 停顿时长乘数（带总下限钳制）----
+    pause_duration_multipliers:
+      slow_song_multiplier: 1.20         # 慢：1.2×1.2=1.44s
+      fast_song_multiplier: 0.95         # 快：1.2×0.95=1.14s（仍≥1.0s）
+      medium_song_multiplier: 1.00
+    min_pause_duration_floor: 1.10       # ★ 强钳制：任何自适应后仍不得 < 1.10s
+
+    # ---- 切割偏移乘数（以 ±0.5/0.8 为基准轻微缩放）----
+    offset_multipliers:
+      slow_song_offset_multiplier: 1.10  # 慢：head -0.55 / tail +0.88
+      fast_song_offset_multiplier: 0.95  # 快：head -0.475 / tail +0.76
+      medium_song_offset_multiplier: 1.00
+
+# ============================================================================
+# 输出设置
+# ============================================================================
+output:
+  directory: '../output'
+  naming_pattern: 'vocal_segment_{index:02d}'
+  include_metadata: true
+  save_debug_info: true
+  save_separated_vocal: false
+  save_breath_map: false
+  save_analysis_report: true
+
+# ============================================================================
+# 日志设置
+# ============================================================================
+logging:
+  level: 'INFO'
+  file: 'smart_splitter.log'
+  format: '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+  max_file_size: '10MB'
+  backup_count: 3
+
+# ============================================================================
+# 历史兼容性配置 (保留以避免导入错误)
+# ============================================================================
+bmp_adaptive_settings: {}                 # 旧键占位，代码层映射到 bpm_adaptive_settings
+
+smart_splitting:
+  use_pause_priority_algorithm: false
+  use_precise_voice_algorithm: false
+  min_segment_length: 5
+  max_segment_length: 15
+  target_segment_length: 8
+
+vocal_separation:
+  hpss_margin: 1.0
+  hpss_power: 1.0
+  mask_threshold: 0.3
+  mask_smoothing: 3
+  vocal_freq_min: 80
+  vocal_freq_max: 4000
+  vocal_core_min: 200
+  vocal_core_max: 1000
+  min_vocal_ratio: 0.15
+  max_noise_ratio: 0.3
+
+breath_detection:
+  energy_window: 0.04
+  energy_hop: 0.005
+  energy_threshold: 0.018
+  spectral_window: 0.08
+  spectral_threshold: 0.2
+  min_pause_duration: 0.8
+  max_pause_duration: 3.0
+  pause_merge_threshold: 0.06
+  breath_energy_drop: 0.6
+  breath_duration_min: 0.8
+  breath_duration_max: 1.2
+
+content_analysis:
+  min_vocal_segment: 3.0
+  max_vocal_segment: 30.0
+  continuity_threshold: 0.5
+  semantic_gap_max: 1.0
+  vocal_clarity_min: 0.6
+  content_completeness: 0.8
+
+pause_priority:
+  duration_weight: 0.5
+  intensity_weight: 0.2
+  energy_weight: 0.2
+  stability_weight: 0.1
+  min_split_interval: 3.0
+  max_splits_per_minute: 8
+  min_pause_duration: 0.1
+  min_priority_score: 0.3
+
+precise_voice_splitting:
+  preferred_vad_method: "silero"
+  min_silence_duration: 1.0
+  min_voice_duration: 0.8
+  silence_threshold: 0.15
+  short_pause_duration: 0.3
+  medium_pause_duration: 0.6
+  long_pause_duration: 1.2
+  split_in_silence_center: true
+  avoid_boundary_splits: true
+  boundary_buffer: 2.0
+  placement_strategy: "center_internal_offset_edges"
+  use_breath_pauses: false
+  cut_offset_before_vocal_start: 0.5
+  cut_offset_after_vocal_end: 0.5
+  min_split_gap: 2.0
+  merge_silence_below: 2.0
+  min_voice_duration: 1.2
+  min_vocal_content_ratio: 0.4
+  max_silence_ratio: 0.3
+  fade_in_duration: 0.1
+  fade_out_duration: 0.1
+  normalize_audio: false
+  remove_click_noise: false
+  smooth_transitions: false
