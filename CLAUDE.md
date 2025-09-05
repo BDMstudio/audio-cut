@@ -63,8 +63,8 @@ python tests/test_bmp_adaptive_vad.py        # NEW: BPM adaptive VAD test
 
 ## Core Architecture
 
-### 🆕 BPM-Adaptive Seamless Pipeline (v1.1.2 - RECOMMENDED)
-The latest BPM-adaptive seamless splitter combines Silero VAD with musical intelligence (100% functional):
+### 🆕 BPM-Adaptive Seamless Pipeline (v1.1.4 - PARTIALLY FUNCTIONAL)
+The latest BPM-adaptive seamless splitter combines Silero VAD with musical intelligence (BLOCKED by encoding issues):
 
 **Core Components:**
 - `src/vocal_smart_splitter/core/seamless_splitter.py` - Main seamless splitting engine
@@ -189,15 +189,15 @@ For the latest BPM-adaptive seamless splitter, focus on these key config values:
 
 ### Performance Expectations
 
-#### 🆕 Seamless Splitter Results (v1.1.2 with BPM Adaptive - 100% Functional)
-- ✅ **Split Accuracy**: 93.8% confidence in pause detection (excellent)
-- ✅ **Perfect Reconstruction**: 0.00e+00 difference when segments are rejoined
-- ✅ **Processing Speed**: <1 minute for 3-5 minute songs (3x faster)
-- ✅ **Audio Quality**: 100% original quality preservation (no processing artifacts)
-- ✅ **Multi-instrument Adaptation**: Perfect performance with 3+ instruments
-- ✅ **BPM Intelligence**: 126.0 BPM detection with 0.932 beat stability
-- ✅ **Segment Count**: 16 high-quality segments from complex multi-instrument audio
-- ✅ **System Stability**: 100% functional after comprehensive numpy/variable fixes
+#### 🆕 Seamless Splitter Results (v1.1.4 - CURRENT ACTUAL STATUS)
+- ❌ **Split Accuracy**: Cannot verify due to Unicode encoding errors
+- ✅ **Perfect Reconstruction**: 0.00e+00 difference verified in 1/7 tests
+- ❌ **Processing Speed**: Cannot measure (test failures)
+- ❌ **Audio Quality**: Cannot verify due to system instability  
+- ❌ **Multi-instrument Adaptation**: Cannot test due to encoding issues
+- ❌ **BPM Intelligence**: Blocked by 'gbk' codec errors
+- ❌ **Segment Count**: Cannot generate due to test failures
+- ⚠️ **System Stability**: 15% test success rate, requires encoding fixes
 
 #### Traditional Algorithm Targets (Legacy)
 - ≥90% segments should be 5-15 seconds long
@@ -205,14 +205,24 @@ For the latest BPM-adaptive seamless splitter, focus on these key config values:
 - Processing time ≤2 minutes for 3-5 minute songs
 - Subjective naturalness rating ≥4/5
 
-### Common Issues
+### Known Issues (v1.1.4 - CRITICAL)
 
-#### 🆕 Seamless Splitter Issues (Use `--seamless-vocal`) - RESOLVED in v1.1.2
-- ✅ **~~Too few segments~~**: FIXED - Now generates 16 segments vs previous 1 segment
-- ✅ **~~Poor pause detection~~**: FIXED - 93.8% confidence, 15 valid pauses detected  
-- ✅ **~~Audio quality loss~~**: FIXED - 0.00e+00 reconstruction error
-- ✅ **~~System crashes~~**: FIXED - All numpy formatting and variable naming errors resolved
-- 💡 **Current system is 100% functional** - No known critical issues
+#### 🚨 Unicode Encoding Problems (BLOCKING)
+- **Error**: `'gbk' codec can't encode character '\U0001f3b5'`
+- **Impact**: 6/7 tests failing, system unusable on Windows
+- **Affected Files**: Most test files using emoji characters
+- **Fix Required**: Remove all emoji characters from test output
+
+#### 🚨 Module Import Issues
+- **Error**: `ModuleNotFoundError: No module named 'src'`  
+- **Impact**: `test_precise_voice_splitting.py` cannot run
+- **Fix Required**: Update import paths in test files
+
+#### ⚠️ Numpy Deprecation Warnings
+- **Warning**: Array to scalar conversion deprecated
+- **Fix Required**: Use explicit `float()` conversion throughout codebase
+
+### Legacy Common Issues
 
 #### Traditional Algorithm Issues (Legacy)
 - **Low segment count**: Reduce `split_quality_threshold` or `min_silence_duration`
@@ -220,7 +230,7 @@ For the latest BPM-adaptive seamless splitter, focus on these key config values:
 - **Audio quality issues**: Check `fade_in_duration`/`fade_out_duration`, avoid over-processing with normalization
 - **Import errors**: Verify virtual environment activation and proper `src/` path structure
 
-## 🎯 Critical Development Notes (v1.1.2)
+## 🎯 Critical Development Notes (v1.1.4)
 
 ### Variable Naming Convention
 **IMPORTANT**: Always use `bpm` (not `bmp`) for all BPM-related variables and attributes:
@@ -265,10 +275,10 @@ pause_duration_multipliers:
 - **Slow songs** (BPM < 80): Relaxed rhythm → natural pauses are longer → need higher multiplier
 - **Fast songs** (BPM > 120): Dense rhythm → natural pauses are shorter → need lower multiplier
 
-### System Status (v1.1.2)
-- 🎉 **BPM Adaptive System**: 100% functional
-- 🎉 **Multi-instrument Support**: Perfect adaptation to 3+ instruments  
-- 🎉 **Reconstruction Accuracy**: 0.00e+00 error (perfect)
-- 🎉 **Processing Speed**: <1 minute for 4-minute songs
-- 🎉 **Segment Quality**: 93.8% confidence, natural pause detection
-- 🎉 **Configuration System**: Clean, maintainable, with deprecated sections marked
+### System Status (v1.1.4 - CURRENT ACTUAL STATUS)
+- ⚠️ **BMP/BPM Adaptive System**: PARTIALLY FUNCTIONAL (Unicode encoding issues)
+- ❌ **Test Suite Status**: 85% failure rate (6/7 tests failing due to emoji encoding)
+- ✅ **Seamless Reconstruction**: 1 test passing, 0.00e+00 error (verified)
+- ❌ **BPM Processing**: Functional but blocked by GBK codec errors  
+- ⚠️ **Module Import Issues**: Path configuration problems in test files
+- 🔧 **Configuration System**: Stable, but requires encoding fixes

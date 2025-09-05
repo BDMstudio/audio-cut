@@ -135,19 +135,31 @@ class DualPathVocalDetector:
             self.stats['single_path_fallback'] += 1
             logger.info("使用单路检测模式")
             
-        # 交叉验证和融合
-        if use_dual_path:
-            # 暂时直接使用分离检测结果（跳过复杂的交叉验证）
-            logger.info(f"直接使用分离检测结果：{len(separated_pauses)} 个停顿")
-            validated_pauses = self._convert_to_validated_pauses(separated_pauses, single_path=False, source="separated")
-        else:
-            # 单路模式：优先使用分离检测结果（如果可用）
-            if separated_pauses and separation_result and separation_result.separation_confidence > 0.1:
-                logger.info(f"使用分离检测结果（{len(separated_pauses)}个停顿，质量: {separation_result.separation_confidence:.3f}）")
-                validated_pauses = self._convert_to_validated_pauses(separated_pauses, single_path=True, source="separated")
+        # 智能决策：选择更好的检测结果
+        if use_dual_path and separation_result:
+            # 双路可用时，比较质量选择最佳结果
+            mixed_quality = len(mixed_pauses) * 0.1  # 混音检测基础质量
+            separated_quality = separation_result.separation_confidence * len(separated_pauses) * 0.1
+            
+            logger.info(f"双路检测质量评估: 混音={mixed_quality:.3f}({len(mixed_pauses)}个), 分离={separated_quality:.3f}({len(separated_pauses)}个)")
+            
+            if separated_quality > mixed_quality and separation_result.separation_confidence > 0.3:
+                logger.info(f"选择分离检测结果：{len(separated_pauses)} 个停顿（质量更优）")
+                validated_pauses = self._convert_to_validated_pauses(separated_pauses, single_path=False, source="separated")
             else:
+                logger.info(f"选择混音检测结果：{len(mixed_pauses)} 个停顿（质量更优）")
+                validated_pauses = self._convert_to_validated_pauses(mixed_pauses, single_path=False, source="mixed")
+        else:
+            # 单路模式：优先使用混音检测结果
+            if mixed_pauses:
                 logger.info(f"使用混音检测结果（{len(mixed_pauses)}个停顿）")
                 validated_pauses = self._convert_to_validated_pauses(mixed_pauses, single_path=True, source="mixed")
+            elif separated_pauses and separation_result and separation_result.separation_confidence > 0.1:
+                logger.info(f"降级使用分离检测结果（{len(separated_pauses)}个停顿，质量: {separation_result.separation_confidence:.3f}）")
+                validated_pauses = self._convert_to_validated_pauses(separated_pauses, single_path=True, source="separated")
+            else:
+                logger.warning("无有效检测结果")
+                validated_pauses = []
         
         # 统计和报告
         processing_time = time.time() - start_time

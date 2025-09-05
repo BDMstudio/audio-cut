@@ -32,18 +32,18 @@ def run_test(test_file):
         ], capture_output=True, text=True, timeout=600)
         
         if result.returncode == 0:
-            logger.info(f"✅ {test_file} - 测试通过")
+            logger.info(f"[PASS] {test_file} - 测试通过")
             return True
         else:
-            logger.error(f"❌ {test_file} - 测试失败")
+            logger.error(f"[FAIL] {test_file} - 测试失败")
             logger.error(f"错误输出: {result.stderr}")
             return False
             
     except subprocess.TimeoutExpired:
-        logger.error(f"⏰ {test_file} - 测试超时")
+        logger.error(f"[TIMEOUT] {test_file} - 测试超时")
         return False
     except Exception as e:
-        logger.error(f"💥 {test_file} - 测试异常: {e}")
+        logger.error(f"[ERROR] {test_file} - 测试异常: {e}")
         return False
 
 def main():
@@ -76,9 +76,9 @@ def main():
     logger.info(f"测试完成: {passed} 通过, {failed} 失败")
     
     if failed == 0:
-        logger.info("🎉 所有测试通过!")
+        logger.info("所有测试通过!")
     else:
-        logger.warning(f"⚠️  有 {failed} 个测试失败")
+        logger.warning(f"有 {failed} 个测试失败")
 
 if __name__ == "__main__":
     main()

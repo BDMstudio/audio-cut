@@ -15,7 +15,10 @@
       "Read(/E:\\BDM_STATION\\Desktop\\BDM_projects\\audio-cut\\src\\vocal_smart_splitter\\core/**)",
       "Read(/E:\\BDM_STATION\\Desktop\\BDM_projects\\audio-cut\\src\\vocal_smart_splitter\\core/**)",
       "Read(/E:\\BDM_STATION\\Desktop\\BDM_projects\\audio-cut\\src\\vocal_smart_splitter\\core/**)",
-      "Read(/E:\\BDM_STATION\\Desktop\\BDM_projects\\audio-cut\\src\\vocal_smart_splitter/**)"
+      "Read(/E:\\BDM_STATION\\Desktop\\BDM_projects\\audio-cut\\src\\vocal_smart_splitter/**)",
+      "Bash(tree:*)",
+      "Bash(find:*)",
+      "Bash(sed:*)"
     ],
     "deny": [],
     "ask": []

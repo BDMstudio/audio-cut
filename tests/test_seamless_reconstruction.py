@@ -267,9 +267,9 @@ def main():
     logger.info(f"综合测试结果: {'PASS' if overall_pass else 'FAIL'}")
     
     if overall_pass:
-        logger.info("✅ 无缝分割系统运行正常，可以投入使用")
+        logger.info("[SUCCESS] 无缝分割系统运行正常，可以投入使用")
     else:
-        logger.warning("⚠️ 系统存在问题，需要进一步调试")
+        logger.warning("[WARNING] 系统存在问题，需要进一步调试")
     
     return overall_pass
 

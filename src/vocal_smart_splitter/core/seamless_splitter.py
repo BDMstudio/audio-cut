@@ -470,7 +470,8 @@ class SeamlessSplitter:
         Returns:
             结果报告
         """
-        pause_report = self.vocal_pause_detector.generate_pause_report(vocal_pauses)
+        # 生成停顿报告（兼容v1.1.4+双路检测）
+        pause_report = self._generate_pause_report_from_pauses(vocal_pauses)
         
         segment_info = []
         for segment in segments:
@@ -534,3 +535,37 @@ class SeamlessSplitter:
         
         logger.debug(f"转换完成: {len(validated_pauses)} 个ValidatedPause -> {len(vocal_pauses)} 个VocalPause")
         return vocal_pauses
+    
+    def _generate_pause_report_from_pauses(self, vocal_pauses: List) -> Dict:
+        """从人声停顿列表生成报告（兼容方法）
+        
+        Args:
+            vocal_pauses: 人声停顿列表
+            
+        Returns:
+            停顿报告字典
+        """
+        if not vocal_pauses:
+            return {
+                'total_pauses': 0,
+                'avg_confidence': 0.0,
+                'total_pause_duration': 0.0,
+                'pause_types': {'head': 0, 'middle': 0, 'tail': 0}
+            }
+        
+        # 统计停顿类型
+        pause_types = {'head': 0, 'middle': 0, 'tail': 0}
+        total_duration = 0.0
+        total_confidence = 0.0
+        
+        for pause in vocal_pauses:
+            pause_types[pause.position_type] += 1
+            total_duration += pause.duration
+            total_confidence += pause.confidence
+        
+        return {
+            'total_pauses': len(vocal_pauses),
+            'avg_confidence': total_confidence / len(vocal_pauses),
+            'total_pause_duration': total_duration,
+            'pause_types': pause_types
+        }

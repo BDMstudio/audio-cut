@@ -6,7 +6,7 @@
 # 核心音频设置
 # ============================================================================
 audio:
-  sample_rate: 16000              # Silero 稳定推理域（内部或前置统一重采样）
+  sample_rate: 44100              # 标准采样率，保证Demucs和BPM检测精度
   channels: 1
   format: 'wav'
   quality: 320
@@ -16,6 +16,7 @@ audio:
 # ============================================================================
 advanced_vad:
   # ---- 基本门限与时间窗 ----
+  silero_target_sample_rate: 16000      # Silero VAD内部重采样目标
   silero_min_silence_ms: 1300           # ↑ 强化静音下限，抑制早判静音
   silero_min_speech_ms: 1000
   silero_window_size_samples: 480       # 16k × 30ms
@@ -100,8 +101,8 @@ vocal_pause_splitting:
 
     # ---- 节拍对齐（严控：不可向左提前）----
     enable_beat_alignment: true
-    beat_alignment_tolerance: 0.12       # ↓ 更小容差，避免被拍点“拖走”
-    min_beat_strength: 0.40              # ↓ 兼顾复杂编曲
+    beat_alignment_tolerance: 0.08       # 进一步降低容差，提高节拍对齐精度
+    min_beat_strength: 0.50              # 提高节拍强度要求，确保可靠对齐
     beat_align_mode: "snap_within_silence"
     beat_snap_direction: "right_only"    # ★ 只允许靠右吸附，禁止向左提前
     beat_cannot_advance: true            # ★ 吸附不得早于静音中心
@@ -116,8 +117,8 @@ vocal_pause_splitting:
 
     # ---- 停顿时长乘数（带总下限钳制）----
     pause_duration_multipliers:
-      slow_song_multiplier: 1.20         # 慢：1.2×1.2=1.44s
-      fast_song_multiplier: 0.95         # 快：1.2×0.95=1.14s（仍≥1.0s）
+      slow_song_multiplier: 1.10         # 慢：1.2×1.1=1.32s（降低乘数避免过度延长）
+      fast_song_multiplier: 0.90         # 快：1.2×0.9=1.08s（更严格的快歌检测）
       medium_song_multiplier: 1.00
     min_pause_duration_floor: 1.10       # ★ 强钳制：任何自适应后仍不得 < 1.10s
 
@@ -156,10 +157,10 @@ enhanced_separation:
   # 双路检测配置
   dual_detection:
     enable_cross_validation: true          # 启用交叉验证以获得更好的检测效果
-    pause_matching_tolerance: 0.2          # 停顿匹配容差(秒)
-    confidence_boost_factor: 1.2           # 双路验证置信度提升
-    mixed_audio_weight: 0.4                # 混音检测权重
-    separated_audio_weight: 0.6            # 分离音频检测权重
+    pause_matching_tolerance: 0.15         # 降低容差，提高停顿匹配精度
+    confidence_boost_factor: 1.1           # 适度降低置信度提升避免过度自信
+    mixed_audio_weight: 0.3                # 降低混音检测权重
+    separated_audio_weight: 0.7            # 提高Demucs分离音频检测权重
 
 # ============================================================================
 # 输出设置
@@ -186,7 +187,7 @@ logging:
 # ============================================================================
 # 历史兼容性配置 (保留以避免导入错误)
 # ============================================================================
-bmp_adaptive_settings: {}                 # 旧键占位，代码层映射到 bpm_adaptive_settings
+bpm_adaptive_settings: {}                 # 修正拼写错误：bpm_adaptive_settings
 
 smart_splitting:
   use_pause_priority_algorithm: false

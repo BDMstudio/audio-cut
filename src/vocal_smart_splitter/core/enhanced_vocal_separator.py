@@ -428,35 +428,57 @@ class EnhancedVocalSeparator:
             else:
                 audio_stereo = audio
             
-            # 转换为torch张量
+            # 转换为torch张量并确保正确的维度顺序
             audio_tensor = torch.from_numpy(audio_stereo).float()
+            
+            # 确保形状为 [batch, channels, length]
             if audio_tensor.dim() == 2:
-                audio_tensor = audio_tensor.unsqueeze(0)  # 添加batch维度
+                audio_tensor = audio_tensor.unsqueeze(0)  # 添加batch维度 -> [1, channels, length]
+            elif audio_tensor.dim() == 1:
+                # 单声道转立体声并添加batch维度
+                audio_tensor = audio_tensor.unsqueeze(0).repeat(2, 1).unsqueeze(0)
             
             # 确保音频在正确的设备上
             audio_tensor = audio_tensor.to(device)
+            
+            logger.debug(f"Demucs输入张量形状: {audio_tensor.shape}")
             
             # 执行分离
             with torch.no_grad():
                 sources = demucs.apply.apply_model(
                     model,
-                    audio_tensor[0],  # 取第一个batch
+                    audio_tensor,  # 直接传递完整张量
                     shifts=1,
                     split=True,
                     overlap=0.25,
                     progress=False
                 )
             
-            # 提取人声轨道 (sources shape: [num_sources, channels, time])
-            # Demucs HTDemucs模型输出顺序: drums, bass, other, vocals
-            vocal_track = sources[3].mean(0).cpu().numpy()  # 取vocals并转为单声道
+            # 提取人声轨道
+            logger.debug(f"Demucs输出张量形状: {sources.shape}")
+            
+            # HTDemucs模型输出顺序: drums, bass, other, vocals (索引3是vocals)
+            if sources.dim() == 4:  # [batch, num_sources, channels, time]
+                vocals = sources[0, 3]  # 取第一个batch的vocals
+            elif sources.dim() == 3:  # [num_sources, channels, time] 
+                vocals = sources[3]  # 直接取vocals
+            else:
+                raise ValueError(f"意外的Demucs输出维度: {sources.shape}")
+            
+            # 转为单声道并转为numpy
+            if vocals.dim() == 2:  # [channels, time]
+                vocal_track = vocals.mean(0).cpu().numpy()  # 立体声转单声道
+            elif vocals.dim() == 1:  # [time]
+                vocal_track = vocals.cpu().numpy()  # 已经是单声道
+            else:
+                raise ValueError(f"意外的vocals维度: {vocals.shape}")
             
             processing_time = time.time() - start_time
             
             result = SeparationResult(
                 vocal_track=vocal_track,
                 instrumental_track=None,
-                backend_used="demucs_v4", 
+                backend_used="demucs_v4",
                 processing_time=processing_time
             )
             
