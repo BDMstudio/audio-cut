@@ -128,6 +128,40 @@ vocal_pause_splitting:
       medium_song_offset_multiplier: 1.00
 
 # ============================================================================
+# 检测专用增强分离器 (v1.1.4+)
+# ============================================================================
+enhanced_separation:
+  # 分离器选择：mdx23(推荐) / demucs_v4 / hpss_fallback
+  backend: "demucs_v4"
+  enable_fallback: true                    # 启用后端降级
+  min_separation_confidence: 0.15         # 分离质量门槛 (降低阈值以启用双路检测)
+  
+  # MDX23专用配置
+  mdx23:
+    project_path: "E:/AI_Models/MVSEP-MDX23-music-separation-model"  # MDX23项目路径（外部独立安装）
+    model_name: "MDX23C_D1581"             # 默认模型名称  
+    model_path: ""                         # 自定义模型路径（优先级更高）
+    executable_path: "python inference.py" # 可执行文件路径
+    timeout: 300                           # 处理超时时间(秒)
+    chunk_size: 512000                     # 内存控制，较小值减少内存占用
+    overlap: 0.25                          # 重叠度，提高分离质量
+    enable_gpu: true                       # GPU加速
+    
+  # Demucs v4配置  
+  demucs_v4:
+    model: "htdemucs"                      # 模型名称
+    device: "auto"                         # 设备选择: auto/cpu/cuda
+    segment: 4                             # 分段处理，减少内存占用
+    
+  # 双路检测配置
+  dual_detection:
+    enable_cross_validation: true          # 启用交叉验证以获得更好的检测效果
+    pause_matching_tolerance: 0.2          # 停顿匹配容差(秒)
+    confidence_boost_factor: 1.2           # 双路验证置信度提升
+    mixed_audio_weight: 0.4                # 混音检测权重
+    separated_audio_weight: 0.6            # 分离音频检测权重
+
+# ============================================================================
 # 输出设置
 # ============================================================================
 output:

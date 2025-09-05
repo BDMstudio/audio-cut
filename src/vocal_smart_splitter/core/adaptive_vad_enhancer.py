@@ -1140,18 +1140,18 @@ class AdaptiveVADEnhancer:
         beat_alignments = [seg.beat_alignment for seg in segments]
         
         logger.info("=== BPM感知复杂度分析摘要 ===")
-        logger.info(f"🎵 音乐特征: {float(bpm_features.main_bpm):.1f} BPM ({bpm_features.bpm_category})")
-        logger.info(f"🎼 节拍稳定性: {float(bpm_features.beat_strength):.3f}")
-        logger.info(f"📊 复杂度范围: {float(min(complexity_scores)):.3f} - {float(max(complexity_scores)):.3f}")
-        logger.info(f"📊 平均复杂度: {float(np.mean(complexity_scores)):.3f}")
-        logger.info(f"⚙️  VAD阈值范围: {float(min(thresholds)):.3f} - {float(max(thresholds)):.3f}")
-        logger.info(f"⏱️  停顿时长范围: {float(min(min_pauses)):.2f}s - {float(max(min_pauses)):.2f}s")
-        logger.info(f"🎵 BPM影响因子: {float(np.mean(bpm_influences)):.3f}")
-        logger.info(f"🎼 节拍对齐度: {float(np.mean(beat_alignments)):.3f}")
+        logger.info(f"音乐特征: {float(bpm_features.main_bpm):.1f} BPM ({bpm_features.bpm_category})")
+        logger.info(f"节拍稳定性: {float(bpm_features.beat_strength):.3f}")
+        logger.info(f"复杂度范围: {float(min(complexity_scores)):.3f} - {float(max(complexity_scores)):.3f}")
+        logger.info(f"平均复杂度: {float(np.mean(complexity_scores)):.3f}")
+        logger.info(f"VAD阈值范围: {float(min(thresholds)):.3f} - {float(max(thresholds)):.3f}")
+        logger.info(f"停顿时长范围: {float(min(min_pauses)):.2f}s - {float(max(min_pauses)):.2f}s")
+        logger.info(f"BPM影响因子: {float(np.mean(bpm_influences)):.3f}")
+        logger.info(f"节拍对齐度: {float(np.mean(beat_alignments)):.3f}")
         
         # BPM自适应效果分析
         bpm_factors = bpm_features.adaptive_factors
-        logger.info(f"🔧 BPM自适应调整: 阈值{bpm_factors['threshold_modifier']:+.3f}, 停顿×{bpm_factors['min_pause_modifier']:.2f}")
+        logger.info(f"BPM自适应调整: 阈值{bpm_factors['threshold_modifier']:+.3f}, 停顿×{bpm_factors['min_pause_modifier']:.2f}")
         
         # 检测编曲复杂度趋势
         first_half = complexity_scores[:len(complexity_scores)//2]

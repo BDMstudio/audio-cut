@@ -34,3 +34,6 @@ Thumbs.db
 *.mp3
 !input/.gitkeep
 
+# External model repositories (should be installed separately)
+MVSEP-MDX23-music-separation-model/
+

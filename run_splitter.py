@@ -177,7 +177,7 @@ def main():
             # 显示拼接验证结果
             validation = result.get('seamless_validation', {})
             if validation:
-                logger.info(f"拼接验证: {'✅ 完美重构' if validation.get('perfect_reconstruction') else '❌ 存在差异'}")
+                logger.info(f"拼接验证: {'完美重构' if validation.get('perfect_reconstruction') else '存在差异'}")
                 if 'max_difference' in validation:
                     logger.info(f"最大差异: {validation['max_difference']:.2e}")
                     

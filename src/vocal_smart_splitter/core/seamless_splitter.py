@@ -42,11 +42,14 @@ class SeamlessSplitter:
         
         # 初始化核心模块
         self.audio_processor = AudioProcessor(sample_rate)
-        # 新版本：直接使用Silero VAD，无需人声分离
-        from .vocal_pause_detector import VocalPauseDetectorV2, VocalPause
-        self.vocal_pause_detector = VocalPauseDetectorV2(sample_rate)
-        # 导入VocalPause类型
-        self.VocalPause = VocalPause
+        
+        # v1.1.4+ 增强版：使用双路检测器（混音+分离交叉验证）
+        from .dual_path_detector import DualPathVocalDetector, ValidatedPause
+        from .vocal_pause_detector import VocalPause  # 保持兼容性
+        
+        self.dual_detector = DualPathVocalDetector(sample_rate)
+        self.ValidatedPause = ValidatedPause
+        self.VocalPause = VocalPause  # 向后兼容
         
         # 从配置加载参数
         self.min_pause_duration = get_config('vocal_pause_splitting.min_pause_duration', 1.0)
@@ -73,15 +76,19 @@ class SeamlessSplitter:
             # 1. 加载原始音频（保持原始参数）
             original_audio, original_sr = self._load_original_audio(input_path)
             
-            # 2. 直接在原始音频上检测人声停顿（无需人声分离）
-            vocal_pauses = self.vocal_pause_detector.detect_vocal_pauses(original_audio)
+            # 2. v1.1.4+ 使用双路检测器（混音+分离交叉验证）
+            dual_result = self.dual_detector.detect_with_dual_validation(original_audio)
+            validated_pauses = dual_result.validated_pauses
             
-            # 模拟分离质量报告（保持兼容性）
-            separation_quality = {'overall_score': 0.9}  # Silero VAD直接检测，质量较高
+            # 提取质量报告（真实分离质量）
+            separation_quality = dual_result.quality_report
             
-            if not vocal_pauses:
-                logger.warning("未检测到符合条件的人声停顿，无法分割")
+            if not validated_pauses:
+                logger.warning("双路检测未找到符合条件的人声停顿，无法分割")
                 return self._create_single_segment_result(original_audio, input_path, output_dir)
+            
+            # 转换为兼容格式（ValidatedPause -> VocalPause）
+            vocal_pauses = self._convert_validated_to_vocal_pauses(validated_pauses)
             
             # 4. 生成精确分割点
             cut_points = self._generate_precise_cut_points(vocal_pauses, len(original_audio))
@@ -158,9 +165,13 @@ class SeamlessSplitter:
         """
         cut_points = []
         
-        for pause in vocal_pauses:
+        logger.info(f"开始从 {len(vocal_pauses)} 个停顿生成分割点...")
+        
+        for i, pause in enumerate(vocal_pauses):
             # 转换为样本位置
             cut_sample = int(pause.cut_point * self.sample_rate)
+            
+            logger.info(f"停顿 {i+1}: 时间={pause.cut_point:.2f}s -> 样本={cut_sample}")
             
             # 确保在有效范围内
             cut_sample = np.clip(cut_sample, 0, audio_length - 1)
@@ -179,7 +190,7 @@ class SeamlessSplitter:
         if cut_points[-1] != audio_length:
             cut_points.append(audio_length)
         
-        logger.debug(f"生成 {len(cut_points)} 个精确分割点")
+        logger.info(f"生成 {len(cut_points)} 个精确分割点: {[cp/self.sample_rate for cp in cut_points]}")
         return cut_points
     
     def _align_to_zero_crossing(self, cut_sample: int, window_size: int = 100) -> int:
@@ -497,3 +508,29 @@ class SeamlessSplitter:
                 'preserve_original': self.preserve_original
             }
         }
+    
+    def _convert_validated_to_vocal_pauses(self, validated_pauses) -> List:
+        """将ValidatedPause转换为VocalPause以保持向后兼容性
+        
+        Args:
+            validated_pauses: List[ValidatedPause] 双路检测的验证结果
+            
+        Returns:
+            List[VocalPause]: 兼容格式的停顿列表
+        """
+        vocal_pauses = []
+        
+        for validated in validated_pauses:
+            # 创建VocalPause对象
+            vocal_pause = self.VocalPause(
+                start_time=validated.start_time,
+                end_time=validated.end_time,
+                duration=validated.duration,
+                position_type=validated.position_type,
+                confidence=validated.confidence,
+                cut_point=validated.cut_point
+            )
+            vocal_pauses.append(vocal_pause)
+        
+        logger.debug(f"转换完成: {len(validated_pauses)} 个ValidatedPause -> {len(vocal_pauses)} 个VocalPause")
+        return vocal_pauses

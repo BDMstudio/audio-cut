@@ -243,6 +243,7 @@ logger.info(f"BPM: {bmp_features.main_bpm:.1f}")
 2. **`quality_control`** - Audio processing and validation settings
 3. **`advanced_vad`** - Silero VAD core parameters
 4. **`audio`/`output`/`logging`** - Basic system settings
+5. **Do not use non-UTF-8 encoding such as emoji in your code.**
 
 **Deprecated Sections** (kept for compatibility):
 - `vocal_separation` - Legacy HPSS vocal isolation

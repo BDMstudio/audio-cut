@@ -16,9 +16,9 @@ logger = logging.getLogger(__name__)
 try:
     from .adaptive_vad_enhancer import AdaptiveVADEnhancer
     ADAPTIVE_VAD_AVAILABLE = True
-    logger.info("✅ 自适应VAD增强器可用")
+    logger.info("自适应VAD增强器可用")
 except ImportError as e:
-    logger.warning(f"⚠️  自适应VAD增强器不可用: {e}")
+    logger.warning(f"自适应VAD增强器不可用: {e}")
     ADAPTIVE_VAD_AVAILABLE = False
 
 @dataclass
@@ -56,7 +56,7 @@ class VocalPauseDetectorV2:
         if self.enable_bpm_adaptation and ADAPTIVE_VAD_AVAILABLE:
             try:
                 self.adaptive_enhancer = AdaptiveVADEnhancer(sample_rate)
-                logger.info("🎵 BPM自适应增强器已启用")
+                logger.info("BPM自适应增强器已启用")
             except Exception as e:
                 logger.warning(f"BPM自适应增强器初始化失败: {e}")
                 self.enable_bpm_adaptation = False
@@ -88,7 +88,7 @@ class VocalPauseDetectorV2:
              self.save_audio, self.read_audio,
              self.VADIterator, self.collect_chunks) = utils
             
-            logger.info("✅ Silero VAD模型加载成功")
+            logger.info("Silero VAD模型加载成功")
             
         except Exception as e:
             logger.error(f"Silero VAD初始化失败: {e}")
@@ -460,7 +460,12 @@ class VocalPauseDetectorV2:
         else:
             adaptive_head_offset, adaptive_tail_offset = self.head_offset, self.tail_offset
         
-        for pause in vocal_pauses:
+        logger.info(f"计算 {len(vocal_pauses)} 个停顿的切割点...")
+        
+        for i, pause in enumerate(vocal_pauses):
+            original_start = pause.start_time
+            original_end = pause.end_time
+            
             if pause.position_type == 'head':
                 # 头部停顿：使用自适应偏移
                 pause.cut_point = pause.end_time + adaptive_head_offset
@@ -473,6 +478,8 @@ class VocalPauseDetectorV2:
             
             # 确保切割点在有效范围内
             pause.cut_point = max(0, pause.cut_point)
+            
+            logger.info(f"停顿 {i+1} ({pause.position_type}): {original_start:.2f}s-{original_end:.2f}s → 切点: {pause.cut_point:.2f}s")
         
         return vocal_pauses
     

@@ -3,7 +3,19 @@
     "allow": [
       "Bash(python tests/test_bmp_adaptive_vad.py:*)",
       "Bash(dir:*)",
-      "Bash(python:*)"
+      "Bash(python:*)",
+      "WebFetch(domain:github.com)",
+      "Read(/E:\\BDM_STATION\\Desktop\\BDM_projects\\audio-cut\\src\\vocal_smart_splitter\\core/**)",
+      "Read(/E:\\BDM_STATION\\Desktop\\BDM_projects\\audio-cut\\src\\vocal_smart_splitter\\core/**)",
+      "Read(/E:\\BDM_STATION\\Desktop\\BDM_projects\\audio-cut\\src\\vocal_smart_splitter\\core/**)",
+      "Read(/E:\\BDM_STATION\\Desktop\\BDM_projects\\audio-cut\\src\\vocal_smart_splitter\\core/**)",
+      "Read(/E:\\BDM_STATION\\Desktop\\BDM_projects\\audio-cut\\src\\vocal_smart_splitter\\core/**)",
+      "Read(/E:\\BDM_STATION\\Desktop\\BDM_projects\\audio-cut\\src\\vocal_smart_splitter\\core/**)",
+      "Read(/E:\\BDM_STATION\\Desktop\\BDM_projects\\audio-cut\\src\\vocal_smart_splitter\\core/**)",
+      "Read(/E:\\BDM_STATION\\Desktop\\BDM_projects\\audio-cut\\src\\vocal_smart_splitter\\core/**)",
+      "Read(/E:\\BDM_STATION\\Desktop\\BDM_projects\\audio-cut\\src\\vocal_smart_splitter\\core/**)",
+      "Read(/E:\\BDM_STATION\\Desktop\\BDM_projects\\audio-cut\\src\\vocal_smart_splitter\\core/**)",
+      "Read(/E:\\BDM_STATION\\Desktop\\BDM_projects\\audio-cut\\src\\vocal_smart_splitter/**)"
     ],
     "deny": [],
     "ask": []
