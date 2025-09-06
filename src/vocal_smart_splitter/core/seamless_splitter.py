@@ -13,6 +13,7 @@ from pathlib import Path
 
 from vocal_smart_splitter.utils.config_manager import get_config
 from vocal_smart_splitter.utils.audio_processor import AudioProcessor
+from vocal_smart_splitter.utils.adaptive_parameter_calculator import AdaptiveParameterCalculator
 # 注意：新版本不再需要人声分离，直接使用Silero VAD
 
 logger = logging.getLogger(__name__)
@@ -42,6 +43,11 @@ class SeamlessSplitter:
         
         # 初始化核心模块
         self.audio_processor = AudioProcessor(sample_rate)
+        self.adaptive_calculator = AdaptiveParameterCalculator()
+        
+        # BPM自适应参数
+        self.current_adaptive_params = None
+        self.bpm_info = None
         
         # v1.1.4+ 增强版：使用双路检测器（混音+分离交叉验证）
         from .dual_path_detector import DualPathVocalDetector, ValidatedPause
@@ -59,6 +65,37 @@ class SeamlessSplitter:
         self.preserve_original = get_config('vocal_pause_splitting.preserve_original', True)
         
         logger.info(f"无缝分割器初始化完成 (采样率: {sample_rate})")
+    
+    def apply_bpm_adaptive_parameters(self, bpm: float, complexity: float, 
+                                     instrument_count: int) -> None:
+        """应用BPM自适应参数到无缝分割器
+        
+        Args:
+            bpm: 检测到的BPM值
+            complexity: 编曲复杂度 (0-1)
+            instrument_count: 乐器数量
+        """
+        try:
+            # 计算自适应参数
+            self.current_adaptive_params = self.adaptive_calculator.calculate_all_parameters(
+                bpm=bpm, complexity=complexity, instrument_count=instrument_count
+            )
+            
+            self.bpm_info = {
+                'bpm': bpm,
+                'complexity': complexity,
+                'instrument_count': instrument_count,
+                'category': self.current_adaptive_params.category,
+                'compensation_factor': self.current_adaptive_params.compensation_factor
+            }
+            
+            logger.info(f"无缝分割器BPM自适应参数已应用: {self.bpm_info['category']}歌曲 "
+                       f"BPM={float(bpm):.1f}, 节拍间隔={self.current_adaptive_params.beat_interval:.3f}s")
+                       
+        except Exception as e:
+            logger.error(f"无缝分割器应用BPM自适应参数失败: {e}")
+            # 使用默认参数继续
+            self.current_adaptive_params = None
     
     def split_audio_seamlessly(self, input_path: str, output_dir: str) -> Dict:
         """执行无缝分割
@@ -154,7 +191,7 @@ class SeamlessSplitter:
     
     def _generate_precise_cut_points(self, vocal_pauses: List, 
                                    audio_length: int) -> List[int]:
-        """生成精确的样本级分割点
+        """生成精确的样本级分割点 - BPM感知与置信度加权版本
         
         Args:
             vocal_pauses: 人声停顿列表
@@ -163,15 +200,31 @@ class SeamlessSplitter:
         Returns:
             分割点样本位置列表
         """
+        logger.info(f"开始从 {len(vocal_pauses)} 个停顿生成分割点 (BPM感知模式)...")
+        
+        # Phase 2.3: 置信度加权的分割决策
+        scored_pauses = self._score_pauses_with_confidence(vocal_pauses)
+        
+        # Phase 2.3: 节拍对齐优先级机制
+        if self.current_adaptive_params:
+            aligned_pauses = self._apply_beat_alignment_priority(scored_pauses)
+        else:
+            aligned_pauses = scored_pauses
+            logger.info("未启用BPM自适应，使用标准对齐")
+        
+        # 转换为样本位置
         cut_points = []
-        
-        logger.info(f"开始从 {len(vocal_pauses)} 个停顿生成分割点...")
-        
-        for i, pause in enumerate(vocal_pauses):
+        for pause_info in aligned_pauses:
+            pause = pause_info['pause']
+            confidence_score = pause_info['confidence_score']
+            beat_alignment_score = pause_info.get('beat_alignment_score', 0.0)
+            
             # 转换为样本位置
             cut_sample = int(pause.cut_point * self.sample_rate)
             
-            logger.info(f"停顿 {i+1}: 时间={pause.cut_point:.2f}s -> 样本={cut_sample}")
+            logger.debug(f"停顿: 时间={pause.cut_point:.2f}s, "
+                        f"置信度={confidence_score:.3f}, "
+                        f"节拍对齐={beat_alignment_score:.3f}")
             
             # 确保在有效范围内
             cut_sample = np.clip(cut_sample, 0, audio_length - 1)
@@ -185,13 +238,172 @@ class SeamlessSplitter:
         cut_points = sorted(list(set(cut_points)))
         
         # 确保首尾
-        if cut_points[0] != 0:
+        if cut_points and cut_points[0] != 0:
             cut_points.insert(0, 0)
-        if cut_points[-1] != audio_length:
+        if cut_points and cut_points[-1] != audio_length:
             cut_points.append(audio_length)
+        elif not cut_points:
+            cut_points = [0, audio_length]
         
-        logger.info(f"生成 {len(cut_points)} 个精确分割点: {[cp/self.sample_rate for cp in cut_points]}")
+        logger.info(f"生成 {len(cut_points)} 个精确分割点")
         return cut_points
+    
+    def _score_pauses_with_confidence(self, vocal_pauses: List) -> List[Dict]:
+        """Phase 2.3: 基于置信度对停顿进行评分和筛选
+        
+        Args:
+            vocal_pauses: 原始停顿列表
+            
+        Returns:
+            带置信度评分的停顿列表
+        """
+        scored_pauses = []
+        
+        for pause in vocal_pauses:
+            confidence_score = self._calculate_pause_confidence(pause)
+            
+            # 只保留置信度足够高的停顿
+            confidence_threshold = get_config('vocal_pause_splitting.min_confidence', 0.65)
+            
+            if confidence_score >= confidence_threshold:
+                scored_pauses.append({
+                    'pause': pause,
+                    'confidence_score': confidence_score,
+                    'selected': True
+                })
+            else:
+                logger.debug(f"跳过低置信度停顿: 时间={pause.cut_point:.2f}s, "
+                           f"置信度={confidence_score:.3f} < {confidence_threshold}")
+        
+        # 按置信度排序（可选）
+        scored_pauses.sort(key=lambda x: x['confidence_score'], reverse=True)
+        
+        logger.info(f"置信度筛选: {len(vocal_pauses)} -> {len(scored_pauses)} 个停顿")
+        return scored_pauses
+    
+    def _calculate_pause_confidence(self, pause) -> float:
+        """计算停顿的置信度
+        
+        Args:
+            pause: 停顿对象
+            
+        Returns:
+            置信度分数 (0-1)
+        """
+        confidence_factors = []
+        weights = []
+        
+        # 1. 停顿持续时间可靠性 (40%)
+        duration_score = min(1.0, pause.duration / 2.0)  # 2秒以上为满分
+        confidence_factors.append(duration_score)
+        weights.append(0.4)
+        
+        # 2. 静音强度可靠性 (30%)
+        if hasattr(pause, 'confidence'):
+            silence_score = pause.confidence
+        else:
+            # 基于持续时间的推断评分
+            silence_score = min(1.0, pause.duration / 1.5)
+        confidence_factors.append(silence_score)
+        weights.append(0.3)
+        
+        # 3. 边界清晰度 (20%)
+        # 这里可以基于停顿前后的能量对比等因素
+        boundary_score = 0.8  # 默认评分
+        confidence_factors.append(boundary_score)
+        weights.append(0.2)
+        
+        # 4. 位置合理性 (10%)
+        # 避免过于靠近开头或结尾的停顿
+        position_score = self._calculate_position_reasonableness(pause.cut_point)
+        confidence_factors.append(position_score)
+        weights.append(0.1)
+        
+        # 加权平均
+        weighted_confidence = sum(score * weight for score, weight in zip(confidence_factors, weights))
+        
+        return weighted_confidence
+    
+    def _calculate_position_reasonableness(self, cut_time: float) -> float:
+        """计算分割位置的合理性"""
+        # 避免过于靠近开头（前5秒）或结尾（后5秒）
+        if cut_time < 5.0:
+            return max(0.3, cut_time / 5.0)
+        # 这里需要知道总时长才能准确计算，简化处理
+        return 1.0
+        
+    def _apply_beat_alignment_priority(self, scored_pauses: List[Dict]) -> List[Dict]:
+        """Phase 2.3: 应用节拍对齐优先级机制
+        
+        Args:
+            scored_pauses: 带置信度的停顿列表
+            
+        Returns:
+            应用节拍对齐优化后的停顿列表
+        """
+        if not self.current_adaptive_params:
+            return scored_pauses
+            
+        beat_interval = self.current_adaptive_params.beat_interval
+        aligned_pauses = []
+        
+        for pause_info in scored_pauses:
+            pause = pause_info['pause']
+            original_time = pause.cut_point
+            
+            # 计算节拍对齐质量
+            beat_alignment_score = self._calculate_beat_alignment_quality(original_time, beat_interval)
+            
+            # 如果原始位置节拍对齐较差，尝试调整到最近的节拍
+            if beat_alignment_score < 0.7:  # 对齐质量阈值
+                aligned_time = self._align_to_nearest_beat(original_time, beat_interval)
+                aligned_score = self._calculate_beat_alignment_quality(aligned_time, beat_interval)
+                
+                # 如果调整后质量明显提升，则使用调整后的时间
+                if aligned_score > beat_alignment_score + 0.2:
+                    pause.cut_point = aligned_time
+                    beat_alignment_score = aligned_score
+                    logger.debug(f"节拍对齐调整: {original_time:.3f}s -> {aligned_time:.3f}s")
+            
+            pause_info['beat_alignment_score'] = beat_alignment_score
+            aligned_pauses.append(pause_info)
+        
+        # 按综合质量重新排序（置信度 + 节拍对齐）
+        for pause_info in aligned_pauses:
+            combined_score = (pause_info['confidence_score'] * 0.7 + 
+                            pause_info['beat_alignment_score'] * 0.3)
+            pause_info['combined_score'] = combined_score
+        
+        aligned_pauses.sort(key=lambda x: x['combined_score'], reverse=True)
+        
+        logger.info(f"节拍对齐优化完成，平均对齐质量: "
+                   f"{np.mean([p['beat_alignment_score'] for p in aligned_pauses]):.3f}")
+        
+        return aligned_pauses
+    
+    def _calculate_beat_alignment_quality(self, time: float, beat_interval: float) -> float:
+        """计算时间点的节拍对齐质量
+        
+        Args:
+            time: 时间点
+            beat_interval: 节拍间隔
+            
+        Returns:
+            对齐质量分数 (0-1)
+        """
+        beat_position = time / beat_interval
+        distance_to_beat = abs(beat_position - round(beat_position))
+        
+        # 距离越近质量越高，最大偏移0.5个节拍为0分
+        alignment_quality = max(0.0, 1.0 - (distance_to_beat / 0.5))
+        
+        return alignment_quality
+    
+    def _align_to_nearest_beat(self, time: float, beat_interval: float) -> float:
+        """将时间对齐到最近的节拍"""
+        beat_position = time / beat_interval
+        aligned_beat = round(beat_position)
+        return aligned_beat * beat_interval
     
     def _align_to_zero_crossing(self, cut_sample: int, window_size: int = 100) -> int:
         """将分割点对齐到最近的零交叉点

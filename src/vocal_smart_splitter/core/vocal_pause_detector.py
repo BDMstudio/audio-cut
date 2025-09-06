@@ -9,6 +9,7 @@ from typing import List, Dict, Tuple, Optional
 from dataclasses import dataclass
 
 from ..utils.config_manager import get_config
+from ..utils.adaptive_parameter_calculator import create_adaptive_calculator, AdaptiveParameters
 
 logger = logging.getLogger(__name__)
 
@@ -35,19 +36,31 @@ class VocalPauseDetectorV2:
     """改进的人声停顿检测器 - 直接在原始音频上使用Silero VAD"""
     
     def __init__(self, sample_rate: int = 44100):
-        """初始化人声停顿检测器
+        """初始化人声停顿检测器 (v1.2.0 - BPM自适应增强)
         
         Args:
             sample_rate: 采样率
         """
         self.sample_rate = sample_rate
         
-        # 配置参数
-        self.min_pause_duration = get_config('vocal_pause_splitting.min_pause_duration', 1.0)
-        self.voice_threshold = get_config('vocal_pause_splitting.voice_threshold', 0.3)
+        # 🆕 v1.2.0: BPM自适应参数计算器
+        self.adaptive_calculator = create_adaptive_calculator()
+        
+        # 🔄 动态参数（将被AdaptiveParameterCalculator覆盖）
+        self.current_adaptive_params: Optional[AdaptiveParameters] = None
+        
+        # 静态配置参数（不受BPM影响）
         self.min_confidence = get_config('vocal_pause_splitting.min_confidence', 0.5)
         self.head_offset = get_config('vocal_pause_splitting.head_offset', -0.5)
         self.tail_offset = get_config('vocal_pause_splitting.tail_offset', 0.5)
+        
+        # ❌ 以下参数已迁移到动态计算（保留作为fallback）
+        self.fallback_min_pause_duration = get_config('vocal_pause_splitting.min_pause_duration', 1.0)
+        self.fallback_voice_threshold = get_config('vocal_pause_splitting.voice_threshold', 0.3)
+        
+        # 🔄 初始化时使用fallback值（将在检测时被动态参数覆盖）
+        self.min_pause_duration = self.fallback_min_pause_duration
+        self.voice_threshold = self.fallback_voice_threshold
         
         # BPM感知自适应增强器
         self.enable_bpm_adaptation = get_config('vocal_pause_splitting.enable_bpm_adaptation', True)
@@ -66,7 +79,68 @@ class VocalPauseDetectorV2:
         # 初始化Silero VAD
         self._init_silero_vad()
         
-        logger.info("人声停顿检测器初始化完成 (采样率: {})".format(sample_rate))
+        logger.info(f"人声停顿检测器初始化完成 (采样率: {sample_rate}, BPM自适应: {'开启' if self.enable_bpm_adaptation else '关闭'})")
+    
+    def apply_adaptive_parameters(self, bpm: float, complexity: float, instrument_count: int):
+        """应用BPM自适应参数 (v1.2.0)
+        
+        Args:
+            bpm: 检测到的BPM值
+            complexity: 编曲复杂度 (0-1)
+            instrument_count: 乐器数量
+        """
+        try:
+            # 使用AdaptiveParameterCalculator计算参数
+            self.current_adaptive_params = self.adaptive_calculator.calculate_all_parameters(
+                bpm, complexity, instrument_count
+            )
+            
+            # 应用动态参数到配置系统
+            override_params = self.adaptive_calculator.get_static_override_parameters(
+                self.current_adaptive_params
+            )
+            self.adaptive_calculator.apply_dynamic_parameters(
+                self.current_adaptive_params, override_params
+            )
+            
+            # 更新实例变量（用于直接访问）
+            self.min_pause_duration = self.current_adaptive_params.min_pause_duration
+            self.voice_threshold = self.current_adaptive_params.vad_threshold
+            
+            logger.info("=== BPM自适应参数已应用 ===")
+            logger.info(f"BPM: {self.current_adaptive_params.bpm_value} ({self.current_adaptive_params.category})")
+            logger.info(f"停顿时长: {self.current_adaptive_params.min_pause_duration:.3f}s")
+            logger.info(f"VAD阈值: {self.current_adaptive_params.vad_threshold:.3f}")
+            logger.info(f"补偿系数: {self.current_adaptive_params.compensation_factor:.3f}")
+            
+            return True
+            
+        except Exception as e:
+            logger.error(f"应用BPM自适应参数失败: {e}")
+            # 使用fallback参数
+            self.min_pause_duration = self.fallback_min_pause_duration
+            self.voice_threshold = self.fallback_voice_threshold
+            return False
+    
+    def get_current_parameters_info(self) -> Dict:
+        """获取当前参数信息（用于调试和监控）"""
+        if self.current_adaptive_params:
+            return {
+                'mode': 'adaptive',
+                'bpm': self.current_adaptive_params.bpm_value,
+                'category': self.current_adaptive_params.category,
+                'min_pause_duration': self.current_adaptive_params.min_pause_duration,
+                'vad_threshold': self.current_adaptive_params.vad_threshold,
+                'compensation_factor': self.current_adaptive_params.compensation_factor,
+                'complexity_score': self.current_adaptive_params.complexity_score,
+                'instrument_count': self.current_adaptive_params.instrument_count
+            }
+        else:
+            return {
+                'mode': 'fallback',
+                'min_pause_duration': self.fallback_min_pause_duration,
+                'vad_threshold': self.fallback_voice_threshold
+            }
     
     def _init_silero_vad(self):
         """初始化Silero VAD"""

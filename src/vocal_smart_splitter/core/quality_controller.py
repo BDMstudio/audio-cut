@@ -9,11 +9,12 @@ from typing import List, Tuple, Dict, Optional
 
 from vocal_smart_splitter.utils.config_manager import get_config
 from vocal_smart_splitter.utils.audio_processor import AudioProcessor
+from vocal_smart_splitter.utils.adaptive_parameter_calculator import AdaptiveParameterCalculator
 
 logger = logging.getLogger(__name__)
 
 class QualityController:
-    """质量控制器，确保分割结果的质量"""
+    """BPM感知的质量控制器，确保分割结果的质量"""
     
     def __init__(self, sample_rate: int = 22050):
         """初始化质量控制器
@@ -23,11 +24,19 @@ class QualityController:
         """
         self.sample_rate = sample_rate
         self.audio_processor = AudioProcessor(sample_rate)
+        self.adaptive_calculator = AdaptiveParameterCalculator()
         
         # 从配置加载参数
         self.validate_split_points = get_config('quality_control.validate_split_points', True)
-        self.min_pause_at_split = get_config('quality_control.min_pause_at_split', 0.1)
-        self.max_vocal_at_split = get_config('quality_control.max_vocal_at_split', 0.05)
+        
+        # 动态参数（将被BPM自适应系统覆盖）
+        self.current_adaptive_params = None
+        self.bpm_info = None
+        
+        # 🔄 以下参数将被BPM自适应系统动态覆盖
+        self.min_pause_at_split = get_config('quality_control.min_pause_at_split', 1.0)
+        self.max_vocal_at_split = get_config('quality_control.max_vocal_at_split', 0.10)
+        self.min_split_gap = get_config('quality_control.min_split_gap', 2.5)
         
         self.min_vocal_content_ratio = get_config('quality_control.min_vocal_content_ratio', 0.4)
         self.max_silence_ratio = get_config('quality_control.max_silence_ratio', 0.3)
@@ -39,7 +48,63 @@ class QualityController:
         self.remove_click_noise = get_config('quality_control.remove_click_noise', True)
         self.smooth_transitions = get_config('quality_control.smooth_transitions', True)
         
-        logger.info("质量控制器初始化完成")
+        logger.info("BPM感知质量控制器初始化完成")
+    
+    def apply_bpm_adaptive_parameters(self, bpm: float, complexity: float, 
+                                     instrument_count: int) -> None:
+        """应用BPM自适应参数
+        
+        Args:
+            bpm: 检测到的BPM值
+            complexity: 编曲复杂度 (0-1)
+            instrument_count: 乐器数量
+        """
+        try:
+            # 计算自适应参数
+            self.current_adaptive_params = self.adaptive_calculator.calculate_all_parameters(
+                bpm=bpm, complexity=complexity, instrument_count=instrument_count
+            )
+            
+            self.bpm_info = {
+                'bpm': bpm,
+                'complexity': complexity,
+                'instrument_count': instrument_count,
+                'category': self.current_adaptive_params.category,
+                'compensation_factor': self.current_adaptive_params.compensation_factor
+            }
+            
+            # 动态覆盖质量控制参数
+            self.min_pause_at_split = self.current_adaptive_params.min_pause_duration
+            self.min_split_gap = self.current_adaptive_params.min_split_gap
+            self.max_vocal_at_split = min(0.15, 0.10 + complexity * 0.05)  # 基于复杂度调整
+            
+            logger.info(f"BPM自适应参数已应用: {self.bpm_info['category']}歌曲 "
+                       f"BPM={float(bpm):.1f}, 停顿要求={self.min_pause_at_split:.3f}s, "
+                       f"分割间隙={self.min_split_gap:.3f}s")
+                       
+        except Exception as e:
+            logger.error(f"应用BPM自适应参数失败: {e}")
+            # 使用默认参数继续
+            self.current_adaptive_params = None
+    
+    def get_current_quality_parameters(self) -> Dict:
+        """获取当前质量控制参数信息"""
+        if self.current_adaptive_params:
+            return {
+                'min_pause_at_split': self.min_pause_at_split,
+                'min_split_gap': self.min_split_gap,
+                'max_vocal_at_split': self.max_vocal_at_split,
+                'adaptive_mode': True,
+                'bpm_info': self.bpm_info
+            }
+        else:
+            return {
+                'min_pause_at_split': self.min_pause_at_split,
+                'min_split_gap': self.min_split_gap,
+                'max_vocal_at_split': self.max_vocal_at_split,
+                'adaptive_mode': False,
+                'bpm_info': None
+            }
     
     def validate_and_process_segments(self, audio: np.ndarray,
                                     vocal_track: np.ndarray,
@@ -152,7 +217,7 @@ class QualityController:
     
     def _validate_single_segment(self, segment: Dict, 
                                vocal_track: np.ndarray) -> Dict:
-        """验证单个片段 - 修复版本：专注分割准确性而非片段质量
+        """验证单个片段 - BPM感知版本：基于音乐理论的质量评估
         
         Args:
             segment: 片段信息
@@ -171,25 +236,50 @@ class QualityController:
         validation_result = {
             'is_valid': True,
             'failure_reason': None,
-            'quality_metrics': {}
+            'quality_metrics': {},
+            'musical_assessment': {}
         }
         
-        # 新的验证策略：只检查基本的技术问题，不强加人为的质量标准
+        # BPM感知验证策略：基于音乐理论的质量评估
         
-        # 1. 检查片段长度 - 大幅放宽限制，允许自然停顿产生的短片段
+        # 1. 检查片段长度 - BPM自适应长度判断
         duration = segment['duration']
         
-        # 按配置判断长度边界；如果未配置，则不过滤长度
-        min_len = get_config('quality_control.min_segment_duration', None)
-        max_len = get_config('quality_control.max_segment_duration', None)
-        if min_len is not None and duration < float(min_len):
-            validation_result['is_valid'] = False
-            validation_result['failure_reason'] = f"片段过短: {duration:.2f}s (<{float(min_len):.2f}s)"
-            return validation_result
-        if max_len is not None and duration > float(max_len):
-            validation_result['is_valid'] = False
-            validation_result['failure_reason'] = f"片段过长: {duration:.2f}s (>{float(max_len):.2f}s)"
-            return validation_result
+        # 使用BPM自适应长度标准（如果可用）
+        if self.current_adaptive_params:
+            # 基于音乐节拍的合理长度范围
+            beat_interval = self.current_adaptive_params.beat_interval
+            min_beats = 8  # 至少2个乐句（每乐句4拍）
+            max_beats = 32 # 最多8个乐句
+            
+            adaptive_min_len = min_beats * beat_interval
+            adaptive_max_len = max_beats * beat_interval
+            
+            # 音乐理论验证
+            validation_result['musical_assessment']['expected_duration_range'] = (adaptive_min_len, adaptive_max_len)
+            validation_result['musical_assessment']['beat_count'] = duration / beat_interval
+            
+            # 只在极端情况下拒绝
+            if duration < adaptive_min_len * 0.5:  # 少于1个乐句
+                validation_result['is_valid'] = False
+                validation_result['failure_reason'] = f"音乐长度过短: {duration:.2f}s (少于{adaptive_min_len*0.5:.1f}s最小音乐单位)"
+                return validation_result
+            if duration > adaptive_max_len * 2:  # 超过16个乐句
+                validation_result['is_valid'] = False
+                validation_result['failure_reason'] = f"音乐长度过长: {duration:.2f}s (超过{adaptive_max_len*2:.1f}s最大音乐单位)"
+                return validation_result
+        else:
+            # 回退到配置文件设置
+            min_len = get_config('quality_control.min_segment_duration', None)
+            max_len = get_config('quality_control.max_segment_duration', None)
+            if min_len is not None and duration < float(min_len):
+                validation_result['is_valid'] = False
+                validation_result['failure_reason'] = f"片段过短: {duration:.2f}s (<{float(min_len):.2f}s)"
+                return validation_result
+            if max_len is not None and duration > float(max_len):
+                validation_result['is_valid'] = False
+                validation_result['failure_reason'] = f"片段过长: {duration:.2f}s (>{float(max_len):.2f}s)"
+                return validation_result
         
         # 2. 检查音频数据完整性
         if len(audio_data) == 0:
@@ -223,10 +313,177 @@ class QualityController:
             validation_result['quality_metrics']
         )
         
+        # 🆕 基于音乐理论的额外质量评估
+        if self.current_adaptive_params:
+            musical_quality = self._assess_musical_quality(segment, validation_result['musical_assessment'])
+            validation_result['quality_metrics']['musical_quality'] = musical_quality
+        
         # 记录但不过滤 - 让所有在自然停顿处的分割都保留
         logger.debug(f"片段 {segment['index']}: {duration:.2f}s, 人声比例: {vocal_content_ratio:.2f}")
         
         return validation_result
+    
+    def _assess_musical_quality(self, segment: Dict, musical_assessment: Dict) -> float:
+        """基于音乐理论评估片段质量
+        
+        Args:
+            segment: 片段信息
+            musical_assessment: 音乐评估数据
+            
+        Returns:
+            音乐质量分数 (0-1)
+        """
+        if not self.current_adaptive_params:
+            return 0.5  # 无BPM信息时的默认分数
+            
+        quality_score = 0.0
+        total_weight = 0.0
+        
+        # 1. 节拍对齐质量 (30%)
+        if 'beat_count' in musical_assessment:
+            beat_count = musical_assessment['beat_count']
+            # 更接近整数拍数的片段质量更高
+            beat_alignment_quality = 1.0 - (abs(beat_count - round(beat_count)) / 0.5)
+            beat_alignment_quality = max(0.0, min(1.0, beat_alignment_quality))
+            quality_score += beat_alignment_quality * 0.3
+            total_weight += 0.3
+        
+        # 2. 音乐长度合理性 (25%)
+        if 'expected_duration_range' in musical_assessment:
+            min_expected, max_expected = musical_assessment['expected_duration_range']
+            duration = segment['duration']
+            
+            # 在期望范围内的质量最高
+            if min_expected <= duration <= max_expected:
+                duration_quality = 1.0
+            else:
+                # 超出范围的质量递减
+                if duration < min_expected:
+                    duration_quality = duration / min_expected
+                else:
+                    duration_quality = max_expected / duration
+                duration_quality = max(0.2, min(1.0, duration_quality))
+            
+            quality_score += duration_quality * 0.25
+            total_weight += 0.25
+        
+        # 3. BPM类别适应性 (20%)
+        category_quality = self._assess_category_adaptation(segment)
+        quality_score += category_quality * 0.20
+        total_weight += 0.20
+        
+        # 4. 复杂度补偿效果 (15%)
+        complexity_quality = self._assess_complexity_adaptation(segment)
+        quality_score += complexity_quality * 0.15
+        total_weight += 0.15
+        
+        # 5. 基础音频质量 (10%)
+        if 'audio_quality' in segment.get('quality_metrics', {}):
+            audio_quality = segment['quality_metrics']['audio_quality']
+            quality_score += audio_quality * 0.10
+            total_weight += 0.10
+        
+        return quality_score / total_weight if total_weight > 0 else 0.5
+    
+    def _assess_category_adaptation(self, segment: Dict) -> float:
+        """评估BPM类别适应质量"""
+        if not self.bpm_info:
+            return 0.5
+            
+        duration = segment['duration']
+        category = self.bpm_info['category']
+        bpm = self.bpm_info['bpm']
+        
+        # 根据不同类别的期望特征评估
+        if category == 'slow':
+            # 慢歌：期望较长的片段，允许自然呼吸
+            ideal_range = (8.0, 20.0)
+        elif category == 'medium':
+            # 中速：标准流行歌曲长度
+            ideal_range = (6.0, 15.0)
+        elif category == 'fast':
+            # 快歌：较短的片段，紧凑节奏
+            ideal_range = (4.0, 12.0)
+        else:  # very_fast
+            # 极快：很短的片段
+            ideal_range = (3.0, 8.0)
+        
+        if ideal_range[0] <= duration <= ideal_range[1]:
+            return 1.0
+        elif duration < ideal_range[0]:
+            return max(0.3, duration / ideal_range[0])
+        else:
+            return max(0.3, ideal_range[1] / duration)
+    
+    def _assess_complexity_adaptation(self, segment: Dict) -> float:
+        """评估复杂度适应质量"""
+        if not self.bpm_info:
+            return 0.5
+            
+        complexity = self.bpm_info['complexity']
+        compensation_factor = self.bpm_info['compensation_factor']
+        
+        # 复杂度越高，补偿因子应该越大
+        expected_compensation = 1.0 + complexity * 0.5
+        compensation_accuracy = 1.0 - abs(compensation_factor - expected_compensation) / expected_compensation
+        
+        return max(0.2, compensation_accuracy)
+    
+    def validate_split_gaps(self, split_points: List[Dict]) -> List[Dict]:
+        """验证和调整分割间隙 - 节拍感知版本
+        
+        Args:
+            split_points: 分割点列表
+            
+        Returns:
+            调整后的分割点列表
+        """
+        if not split_points or not self.current_adaptive_params:
+            return split_points
+            
+        validated_points = []
+        beat_interval = self.current_adaptive_params.beat_interval
+        min_gap = self.min_split_gap
+        
+        logger.info(f"开始节拍感知分割间隙验证，最小间隙: {min_gap:.3f}s")
+        
+        for i, point in enumerate(split_points):
+            if i == 0:
+                validated_points.append(point)
+                continue
+                
+            prev_point = validated_points[-1]
+            current_gap = point['split_time'] - prev_point['split_time']
+            
+            # 检查是否满足最小间隙要求
+            if current_gap < min_gap:
+                # 尝试节拍对齐调整
+                adjusted_time = self._align_to_beat(
+                    prev_point['split_time'] + min_gap, beat_interval
+                )
+                
+                # 如果调整后的时间合理，则使用调整后的时间
+                if adjusted_time < point['split_time'] + beat_interval:
+                    point_copy = point.copy()
+                    point_copy['split_time'] = adjusted_time
+                    point_copy['adjustment_reason'] = f"节拍对齐间隙调整: {current_gap:.3f}s -> {min_gap:.3f}s"
+                    validated_points.append(point_copy)
+                    logger.debug(f"调整分割点 {i}: {point['split_time']:.3f}s -> {adjusted_time:.3f}s")
+                else:
+                    # 跳过此分割点
+                    logger.debug(f"跳过过近的分割点 {i}: 间隙 {current_gap:.3f}s < {min_gap:.3f}s")
+                    continue
+            else:
+                validated_points.append(point)
+        
+        logger.info(f"分割间隙验证完成: {len(split_points)} -> {len(validated_points)} 个分割点")
+        return validated_points
+    
+    def _align_to_beat(self, time: float, beat_interval: float) -> float:
+        """将时间对齐到最近的节拍"""
+        beat_position = time / beat_interval
+        aligned_beat = round(beat_position)
+        return aligned_beat * beat_interval
     
     def _calculate_audio_quality(self, audio_data: np.ndarray) -> Dict:
         """计算音频质量指标 - 仅用于记录，不用于过滤

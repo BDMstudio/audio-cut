@@ -5,6 +5,7 @@
 
 import os
 import sys
+import time  # 统一在顶部导入time模块
 import numpy as np
 import librosa
 import logging
@@ -240,7 +241,6 @@ class EnhancedVocalSeparator:
     
     def _separate_with_mdx23(self, audio: np.ndarray) -> SeparationResult:
         """使用MDX23进行分离"""
-        import time
         start_time = time.time()
         
         try:
@@ -278,11 +278,17 @@ class EnhancedVocalSeparator:
             
             # 执行MDX23分离
             logger.debug(f"执行MDX23命令: {' '.join(mdx23_cmd)}")
+            
+            # 确保在项目根目录执行命令
+            current_dir = os.getcwd()
+            project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))  # 回到项目根目录
+            
             result = subprocess.run(
                 mdx23_cmd, 
                 capture_output=True, 
                 text=True,
-                timeout=get_config('enhanced_separation.mdx23.timeout', 300)  # 5分钟超时
+                timeout=get_config('enhanced_separation.mdx23.timeout', 300),  # 5分钟超时
+                cwd=project_root  # 在项目根目录执行
             )
             
             if result.returncode != 0:
@@ -322,35 +328,52 @@ class EnhancedVocalSeparator:
     
     def _build_mdx23_command(self, input_file: str, output_dir: str) -> List[str]:
         """构建MDX23命令行参数"""
-        # 获取MDX23项目路径
+        
+        # 获取MDX23项目路径并转为绝对路径
         project_path = get_config('enhanced_separation.mdx23.project_path', './MVSEP-MDX23-music-separation-model')
+        
+        # 如果是相对路径，基于项目根目录计算绝对路径
+        if not os.path.isabs(project_path):
+            project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
+            project_path = os.path.join(project_root, project_path)
+        
         inference_script = os.path.join(project_path, 'inference.py')
+        
+        # 确保inference.py存在
+        if not os.path.exists(inference_script):
+            raise FileNotFoundError(f"MDX23 inference.py not found at: {inference_script}")
         
         # 基础命令
         cmd = [sys.executable, inference_script]
         
+        # 转换输入输出路径为绝对路径
+        abs_input_file = os.path.abspath(input_file)
+        abs_output_dir = os.path.abspath(output_dir)
+        
         # 添加参数
         cmd.extend([
-            '--input_audio', input_file,
-            '--output_folder', output_dir
+            '--input_audio', abs_input_file,
+            '--output_folder', abs_output_dir
         ])
         
-        # 可选参数
-        model_name = get_config('enhanced_separation.mdx23.model_name', 'MDX23C_D1581')
-        if model_name:
-            cmd.extend(['--model_name', model_name])
-            
-        # GPU设置
-        if get_config('enhanced_separation.mdx23.enable_gpu', True):
-            cmd.append('--gpu')
+        # GPU设置 (默认使用GPU，只在需要时才指定--cpu)
+        if not get_config('enhanced_separation.mdx23.enable_gpu', True):
+            cmd.append('--cpu')
+        elif get_config('enhanced_separation.mdx23.enable_large_gpu', False):
+            cmd.append('--large_gpu')  # 大型GPU模式，将所有模型加载到GPU
         
-        # 其他参数
-        chunk_size = get_config('enhanced_separation.mdx23.chunk_size', 512000)
-        overlap = get_config('enhanced_separation.mdx23.overlap', 0.25)
+        # 性能优化参数
+        chunk_size = get_config('enhanced_separation.mdx23.chunk_size', 1000000)
+        overlap_large = get_config('enhanced_separation.mdx23.overlap_large', 0.25)
+        
+        # 单ONNX模式（节省GPU内存，如果需要）
+        if get_config('enhanced_separation.mdx23.use_single_onnx', False):
+            cmd.append('--single_onnx')
         
         cmd.extend([
             '--chunk_size', str(chunk_size),
-            '--overlap', str(overlap)
+            '--overlap_large', str(overlap_large),
+            '--only_vocals'  # 只生成人声和伴奏，节省时间
         ])
         
         return cmd
@@ -407,36 +430,82 @@ class EnhancedVocalSeparator:
     
     def _separate_with_demucs(self, audio: np.ndarray) -> SeparationResult:
         """使用Demucs v4进行分离"""
-        import time
         start_time = time.time()
         
         try:
-            # 使用demucs进行分离
+            # PyTorch 2.8.0兼容性修复 - 必须在导入demucs之前
             import torch
+            import torch.serialization
+            
+            # 应用Demucs兼容性修复
+            try:
+                import demucs.htdemucs
+                import demucs.hdemucs
+                torch.serialization.add_safe_globals([demucs.htdemucs.HTDemucs])
+                torch.serialization.add_safe_globals([demucs.hdemucs.HDemucs])
+                logger.debug("[COMPAT] Demucs兼容性修复已应用")
+            except (ImportError, AttributeError):
+                logger.debug("[COMPAT] Demucs兼容性修复跳过")
+            
+            # 使用demucs进行分离
             import demucs.pretrained
             import demucs.apply
             
+            # 从配置获取设备和模型参数
+            config_device = get_config('enhanced_separation.demucs_v4.device', 'auto')
+            model_name = get_config('enhanced_separation.demucs_v4.model', 'htdemucs')
+            segment_size = get_config('enhanced_separation.demucs_v4.segment', 8)
+            shifts = get_config('enhanced_separation.demucs_v4.shifts', 1)
+            overlap = get_config('enhanced_separation.demucs_v4.overlap', 0.25)
+            split = get_config('enhanced_separation.demucs_v4.split', True)
+            
+            # 设备选择逻辑
+            if config_device == 'cuda' and torch.cuda.is_available():
+                device = 'cuda'
+                # GPU内存管理：清理缓存
+                torch.cuda.empty_cache()
+                gpu_name = torch.cuda.get_device_name()
+                gpu_memory = torch.cuda.get_device_properties(0).total_memory / 1024**3
+                logger.debug(f"使用GPU: {gpu_name} ({gpu_memory:.1f}GB)")
+            elif config_device == 'auto':
+                device = 'cuda' if torch.cuda.is_available() else 'cpu'
+                if device == 'cuda':
+                    torch.cuda.empty_cache()
+                logger.debug(f"自动选择设备: {device}")
+            else:
+                device = 'cpu'
+                logger.debug("使用CPU模式")
+            
             # 加载预训练模型
-            device = 'cuda' if torch.cuda.is_available() else 'cpu'
-            model = demucs.pretrained.get_model(name='htdemucs')
+            model = demucs.pretrained.get_model(name=model_name)
             model.to(device)
             
-            # 准备音频数据
+            # 准备音频数据 - 修复维度问题
             if audio.ndim == 1:
                 # 单声道转立体声
-                audio_stereo = np.stack([audio, audio])
+                audio_stereo = np.stack([audio, audio], axis=0)  # [2, length]
             else:
-                audio_stereo = audio
+                # 确保是 [channels, length] 格式
+                if audio.shape[0] > audio.shape[1]:
+                    audio_stereo = audio.T  # 转置为 [channels, length]
+                else:
+                    audio_stereo = audio
             
-            # 转换为torch张量并确保正确的维度顺序
+            # 转换为torch张量
             audio_tensor = torch.from_numpy(audio_stereo).float()
             
             # 确保形状为 [batch, channels, length]
             if audio_tensor.dim() == 2:
-                audio_tensor = audio_tensor.unsqueeze(0)  # 添加batch维度 -> [1, channels, length]
+                # [channels, length] -> [1, channels, length]
+                audio_tensor = audio_tensor.unsqueeze(0)
             elif audio_tensor.dim() == 1:
-                # 单声道转立体声并添加batch维度
-                audio_tensor = audio_tensor.unsqueeze(0).repeat(2, 1).unsqueeze(0)
+                # [length] -> [1, 2, length] (单声道转立体声)
+                audio_tensor = audio_tensor.unsqueeze(0).unsqueeze(0).repeat(1, 2, 1)
+            
+            # 验证最终形状
+            if audio_tensor.dim() != 3 or audio_tensor.shape[1] not in [1, 2]:
+                logger.error(f"音频张量形状错误: {audio_tensor.shape}，期望 [batch, channels, length]")
+                raise ValueError(f"音频张量形状错误: {audio_tensor.shape}")
             
             # 确保音频在正确的设备上
             audio_tensor = audio_tensor.to(device)
@@ -444,36 +513,112 @@ class EnhancedVocalSeparator:
             logger.debug(f"Demucs输入张量形状: {audio_tensor.shape}")
             
             # 执行分离
-            with torch.no_grad():
-                sources = demucs.apply.apply_model(
-                    model,
-                    audio_tensor,  # 直接传递完整张量
-                    shifts=1,
-                    split=True,
-                    overlap=0.25,
-                    progress=False
-                )
+            try:
+                with torch.no_grad():
+                    # 自适应调整segment大小以避免形状错误
+                    audio_length = audio_tensor.shape[-1]
+                    # 确保segment大小是合理的（至少为2，最大为音频长度的1/4）
+                    min_segment = 2
+                    max_segment = max(min_segment, audio_length // 8)  # 更保守的分段
+                    adjusted_segment = min(max(min_segment, segment_size), max_segment)
+                    
+                    logger.debug(f"Demucs参数: segment={adjusted_segment}, audio_length={audio_length}, input_shape={audio_tensor.shape}")
+                    
+                    sources = demucs.apply.apply_model(
+                        model,
+                        audio_tensor,
+                        shifts=shifts,
+                        split=split,
+                        overlap=overlap,
+                        segment=adjusted_segment,  # 使用调整后的分段大小
+                        progress=False
+                    )
+            except Exception as demucs_error:
+                logger.warning(f"Demucs apply_model失败: {demucs_error}")
+                # 尝试使用更保守的参数
+                try:
+                    with torch.no_grad():
+                        # 最保守的参数配置
+                        conservative_segment = max(2, audio_tensor.shape[-1] // 16)  # 更小的分段
+                        sources = demucs.apply.apply_model(
+                            model,
+                            audio_tensor,
+                            shifts=1,           # 最少的shifts
+                            split=True,         # 强制split
+                            overlap=0.05,       # 最小overlap
+                            segment=conservative_segment,  # 更小的segment
+                            progress=False
+                        )
+                    logger.debug(f"使用保守参数成功执行Demucs (segment={conservative_segment})")
+                except Exception as conservative_error:
+                    logger.error(f"保守参数也失败: {conservative_error}")
+                    # 尝试最后的救援措施：使用CPU和最小参数
+                    try:
+                        logger.info("尝试CPU模式作为最后救援...")
+                        cpu_tensor = audio_tensor.cpu()
+                        model_cpu = model.cpu()
+                        with torch.no_grad():
+                            sources = demucs.apply.apply_model(
+                                model_cpu,
+                                cpu_tensor,
+                                shifts=1,
+                                split=True,
+                                overlap=0.0,
+                                segment=1,
+                                progress=False
+                            )
+                        logger.debug("CPU救援模式成功")
+                    except Exception:
+                        raise demucs_error  # 如果所有方法都失败，抛出原始错误
             
             # 提取人声轨道
             logger.debug(f"Demucs输出张量形状: {sources.shape}")
             
             # HTDemucs模型输出顺序: drums, bass, other, vocals (索引3是vocals)
-            if sources.dim() == 4:  # [batch, num_sources, channels, time]
-                vocals = sources[0, 3]  # 取第一个batch的vocals
-            elif sources.dim() == 3:  # [num_sources, channels, time] 
-                vocals = sources[3]  # 直接取vocals
-            else:
-                raise ValueError(f"意外的Demucs输出维度: {sources.shape}")
-            
-            # 转为单声道并转为numpy
-            if vocals.dim() == 2:  # [channels, time]
-                vocal_track = vocals.mean(0).cpu().numpy()  # 立体声转单声道
-            elif vocals.dim() == 1:  # [time]
-                vocal_track = vocals.cpu().numpy()  # 已经是单声道
-            else:
-                raise ValueError(f"意外的vocals维度: {vocals.shape}")
+            try:
+                if sources.dim() == 4:  # [batch, num_sources, channels, time]
+                    if sources.shape[1] < 4:
+                        raise ValueError(f"输出源数量不足: {sources.shape[1]} < 4")
+                    vocals = sources[0, 3]  # 取第一个batch的vocals
+                elif sources.dim() == 3:  # [num_sources, channels, time] 
+                    if sources.shape[0] < 4:
+                        raise ValueError(f"输出源数量不足: {sources.shape[0]} < 4")
+                    vocals = sources[3]  # 直接取vocals
+                else:
+                    logger.warning(f"意外的Demucs输出维度: {sources.shape}, 尝试使用第一个输出")
+                    # 尝试使用第一个可用的输出作为人声
+                    if sources.dim() >= 2:
+                        vocals = sources[0] if sources.dim() == 3 else sources[0, 0] if sources.dim() == 4 else sources
+                    else:
+                        raise ValueError(f"无法处理的Demucs输出维度: {sources.shape}")
+                
+                logger.debug(f"提取的vocals形状: {vocals.shape}")
+                
+                # 转为单声道并转为numpy
+                if vocals.dim() == 2:  # [channels, time]
+                    vocal_track = vocals.mean(0).cpu().numpy()  # 立体声转单声道
+                elif vocals.dim() == 1:  # [time]
+                    vocal_track = vocals.cpu().numpy()  # 已经是单声道
+                elif vocals.dim() == 3:  # [batch, channels, time] - 额外batch维度
+                    vocal_track = vocals[0].mean(0).cpu().numpy()  # 取第一个batch并转单声道
+                else:
+                    logger.warning(f"意外的vocals维度: {vocals.shape}, 尝试展平")
+                    # 作为最后手段，尝试展平为1D
+                    vocal_track = vocals.flatten().cpu().numpy()
+                    
+            except Exception as extraction_error:
+                logger.error(f"人声提取失败: {extraction_error}")
+                # 应急措施：使用混音作为人声（虽然质量较低）
+                logger.warning("使用原始音频作为应急人声输出")
+                vocal_track = audio.mean(axis=0) if audio.ndim > 1 else audio
             
             processing_time = time.time() - start_time
+            
+            # GPU内存清理
+            if device == 'cuda':
+                del model, sources, audio_tensor, vocals
+                torch.cuda.empty_cache()
+                logger.debug("GPU内存已清理")
             
             result = SeparationResult(
                 vocal_track=vocal_track,
@@ -491,7 +636,6 @@ class EnhancedVocalSeparator:
     
     def _separate_with_hpss(self, audio: np.ndarray) -> SeparationResult:
         """使用传统HPSS方法分离（兜底方案）"""
-        import time
         start_time = time.time()
         
         try:

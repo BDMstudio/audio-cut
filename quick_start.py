@@ -18,6 +18,15 @@
 - 零配置，开箱即用
 """
 
+# PyTorch 2.8.0兼容性修复 - 必须在导入torch相关模块之前执行
+try:
+    with open('pytorch_compatibility_fix.py', 'r', encoding='utf-8') as f:
+        exec(f.read())
+    print("[COMPAT] PyTorch 2.8.0兼容性修复已加载")
+except Exception as e:
+    print(f"[WARN] 兼容性修复加载失败: {e}")
+    print("[INFO] 如果遇到模型加载问题，请运行: python fix_pytorch_compatibility.py")
+
 import os
 import sys
 from pathlib import Path

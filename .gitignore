@@ -37,3 +37,28 @@ Thumbs.db
 # External model repositories (should be installed separately)
 MVSEP-MDX23-music-separation-model/
 
+# Temporary test files and debug scripts
+test_*.py
+debug_*.py
+check_*.py
+gpu_*.py
+fix_*.py
+setup_*.py
+system_check.py
+pytorch_compatibility_fix*.py
+
+# Temporary reports and documentation
+*_REPORT.md
+*_UPDATE.md
+*_GUIDE.md
+*_SUMMARY.md
+SPEED_OPTIMIZATION.md
+mdx23_config.txt
+
+# Backup files
+*.backup
+*.bak
+
+# Claude settings (local only)
+.claude/settings.local.json
+

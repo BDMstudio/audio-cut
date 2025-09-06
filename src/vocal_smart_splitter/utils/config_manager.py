@@ -256,3 +256,24 @@ def get_config(key_path: str, default: Any = None) -> Any:
         配置值
     """
     return get_config_manager().get(key_path, default)
+
+def set_runtime_config(config_overrides: Dict[str, Any]):
+    """设置运行时配置覆盖（用于动态参数）
+    
+    Args:
+        config_overrides: 配置覆盖字典，键为配置路径，值为新值
+    """
+    config_manager = get_config_manager()
+    
+    for key_path, value in config_overrides.items():
+        config_manager.set(key_path, value)
+    
+    logger.info(f"已设置 {len(config_overrides)} 个运行时配置覆盖")
+
+def reset_runtime_config():
+    """重置运行时配置（重新加载原始配置文件）"""
+    global _config_manager
+    if _config_manager:
+        original_path = _config_manager.config_path
+        _config_manager = ConfigManager(str(original_path))
+        logger.info("运行时配置已重置")
