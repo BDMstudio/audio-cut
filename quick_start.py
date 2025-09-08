@@ -54,6 +54,57 @@ def find_audio_files():
     
     return sorted(audio_files)
 
+def check_backend_availability():
+    """检查各分离后端的可用性，返回可用后端列表"""
+    available_backends = {}
+    
+    # 检查PyTorch和CUDA
+    try:
+        import torch
+        gpu_available = torch.cuda.is_available()
+        if gpu_available:
+            gpu_name = torch.cuda.get_device_name(0)
+            gpu_memory = torch.cuda.get_device_properties(0).total_memory / 1024**3
+            gpu_info = f"{gpu_name} ({gpu_memory:.1f}GB)"
+        else:
+            gpu_info = "不可用"
+    except ImportError:
+        return {}
+    
+    # 检查MDX23
+    mdx23_path = Path(project_root) / "MVSEP-MDX23-music-separation-model"
+    if mdx23_path.exists() and (mdx23_path / "models").exists():
+        onnx_files = list((mdx23_path / "models").glob("*.onnx"))
+        if onnx_files:
+            available_backends['mdx23'] = {
+                'name': 'MDX23 (最高质量)',
+                'description': f'ONNX神经网络分离，找到{len(onnx_files)}个模型',
+                'gpu_required': True,
+                'gpu_available': gpu_available
+            }
+    
+    # 检查Demucs
+    try:
+        import demucs.pretrained
+        available_backends['demucs_v4'] = {
+            'name': 'Demucs v4 (高质量)',
+            'description': 'Facebook开源神经网络分离',
+            'gpu_required': False,  # CPU也能工作，但GPU更快
+            'gpu_available': gpu_available
+        }
+    except ImportError:
+        pass
+    
+    # HPSS总是可用作为后备
+    available_backends['hpss_fallback'] = {
+        'name': 'HPSS (传统方法)',
+        'description': '谐波-冲击分离，速度快但质量一般',
+        'gpu_required': False,
+        'gpu_available': True  # 总是可用
+    }
+    
+    return available_backends, gpu_info
+
 def check_system_status():
     """检查系统状态"""
     print("\n" + "=" * 60)
@@ -75,62 +126,77 @@ def check_system_status():
         print("[ERR] PyTorch未安装")
         return False
     
-    # 检查MDX23
-    mdx23_available = False
-    mdx23_path = Path(project_root) / "MVSEP-MDX23-music-separation-model"
-    if mdx23_path.exists():
-        models_path = mdx23_path / "models"
-        if models_path.exists():
-            onnx_files = list(models_path.glob("*.onnx"))
-            if onnx_files:
-                print(f"[OK] MDX23已安装: {mdx23_path}")
-                print(f"    找到{len(onnx_files)}个ONNX模型文件")
-                for f in onnx_files[:3]:  # 显示前3个
-                    print(f"    - {f.name} ({f.stat().st_size / 1024**2:.1f} MB)")
-                mdx23_available = True
-            else:
-                print(f"[!] MDX23模型文件缺失，请运行: python download_mdx23.py")
-        else:
-            print(f"[!] MDX23 models目录不存在")
-    else:
-        print(f"[!] MDX23未安装，建议克隆: https://github.com/ZFTurbo/MVSEP-MDX23-music-separation-model")
+    # 检查各个后端
+    available_backends, gpu_info = check_backend_availability()
+    print(f"\n[INFO] 可用的分离后端:")
+    for backend_id, info in available_backends.items():
+        status = "✓" if (not info['gpu_required'] or info['gpu_available']) else "!"
+        print(f"  [{status}] {info['name']}: {info['description']}")
     
-    # 检查配置的backend
-    try:
-        from src.vocal_smart_splitter.utils.config_manager import get_config
-        backend = get_config('enhanced_separation.backend', 'auto')
-        enable_gpu = get_config('enhanced_separation.gpu_config.enable_gpu', True)
-        print(f"\n[配置信息]")
-        print(f"  分离后端: {backend}")
-        print(f"  GPU加速: {'启用' if enable_gpu else '禁用'}")
-        
-        # 确定最终backend
-        if backend == 'auto':
-            if mdx23_available and torch.cuda.is_available():
-                final_backend = 'mdx23'
-            else:
-                final_backend = 'hpss_fallback'
-                print(f"  [!] 将使用HPSS后备方案（MDX23不可用）")
-        else:
-            final_backend = backend
-        
-        print(f"  最终后端: {final_backend}")
-        
-        # 如果是增强模式但MDX23不可用，给出警告
-        if final_backend == 'hpss_fallback' and not mdx23_available:
-            print("\n" + "=" * 60)
-            print("[警告] MDX23未安装，无法使用高精度分离")
-            print("建议安装MDX23以获得更好的分割效果：")
-            print("1. git clone https://github.com/ZFTurbo/MVSEP-MDX23-music-separation-model")
-            print("2. python download_mdx23.py")
-            print("当前将使用HPSS基础方案")
-            print("=" * 60)
-            
-    except Exception as e:
-        print(f"[!] 配置读取失败: {e}")
-    
-    print("=" * 60)
     return True
+
+def select_backend():
+    """让用户选择分离后端"""
+    available_backends, gpu_info = check_backend_availability()
+    
+    print("\n" + "=" * 60)
+    print("选择分离技术")
+    print("=" * 60)
+    print("请选择要使用的人声分离技术：")
+    print()
+    
+    backend_options = []
+    option_num = 1
+    
+    for backend_id, info in available_backends.items():
+        if not info['gpu_required'] or info['gpu_available']:
+            print(f"  {option_num}. {info['name']}")
+            print(f"     {info['description']}")
+            if info['gpu_required'] and info['gpu_available']:
+                print(f"     [GPU加速] {gpu_info}")
+            elif info['gpu_required'] and not info['gpu_available']:
+                print(f"     [需要GPU] GPU不可用，此选项将无法使用")
+                continue
+            else:
+                print(f"     [CPU/GPU兼容]")
+            print()
+            backend_options.append(backend_id)
+            option_num += 1
+    
+    # 添加自动选择选项
+    print(f"  {option_num}. 自动选择 (推荐)")
+    print(f"     系统自动选择最佳可用后端")
+    print()
+    backend_options.append('auto')
+    
+    try:
+        choice = int(input(f"请选择 (1-{len(backend_options)}): ").strip())
+        if 1 <= choice <= len(backend_options):
+            selected_backend = backend_options[choice - 1]
+            backend_name = available_backends.get(selected_backend, {}).get('name', '自动选择')
+            print(f"[SELECT] 已选择: {backend_name}")
+            return selected_backend
+        else:
+            print("[ERROR] 选择无效，使用自动模式")
+            return 'auto'
+    except ValueError:
+        print("[ERROR] 输入无效，使用自动模式")
+        return 'auto'
+
+def apply_backend_config(selected_backend):
+    """应用用户选择的后端配置，强制使用指定后端"""
+    if selected_backend == 'auto':
+        print(f"\n[CONFIG] 使用自动选择模式")
+        return None
+    
+    # 使用环境变量强制设置后端（这是最可靠的方法）
+    import os
+    os.environ['FORCE_SEPARATION_BACKEND'] = selected_backend
+    
+    print(f"\n[CONFIG] ✓ 强制设置分离后端: {selected_backend}")
+    print(f"[CONFIG] ✓ 环境变量已设置: FORCE_SEPARATION_BACKEND={selected_backend}")
+    
+    return selected_backend
 
 def main():
     """主函数"""
@@ -177,9 +243,16 @@ def main():
     
     print(f"[SELECT] 选择文件: {selected_file.name}")
     
+    # 选择分离后端
+    selected_backend = select_backend()
+    forced_backend = apply_backend_config(selected_backend)
+    
     # 创建输出目录
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    output_dir = project_root / "output" / f"quick_{timestamp}"
+    if forced_backend:
+        output_dir = project_root / "output" / f"quick_{forced_backend}_{timestamp}"
+    else:
+        output_dir = project_root / "output" / f"quick_{timestamp}"
     output_dir.mkdir(parents=True, exist_ok=True)
     
     print(f"[OUTPUT] 输出目录: {output_dir.name}")
