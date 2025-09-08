@@ -2,6 +2,10 @@
 
 一个基于 **BPM自适应 + 智能双路验证** 的人声停顿检测和无缝分割工具，专门针对歌曲场景优化。支持从快速CPU模式到GPU高精度模式的全方位音频处理解决方案。
 
+## 🎯 Features
+
+**Latest Version: v1.2.0 - BPM Adaptive Enhancement Release**
+
 ## 🎯 核心特性
 
 - **🎶 BPM自适应系统**: 节拍驱动的动态参数调整，解决不同音乐风格分割问题
@@ -9,7 +13,7 @@
 - **⚡ 无缝拼接技术**: 样本级精度分割，保证完美重构 (0.00e+00差异)
 - **🎧 零处理输出**: WAV/FLAC无损输出，保持原始音质和采样率
 - **🚀 多模式性能**: CPU快速模式(16s) → GPU高精度模式(45s)灵活切换
-- **🔧 RTX 5060 Ti优化**: 专门针对最新GPU架构优化，PyTorch 2.8.0完全兼容
+- **🔧 GPU优化**: 支持CUDA 12.9，PyTorch 2.8.0完全兼容
 - **🎵 四风格分类**: 慢歌/中速/快歌/极快音乐的智能分类和参数适配
 
 ## 📁 项目结构
@@ -48,13 +52,31 @@ audio-cut/
 ├── MVSEP-MDX23-music-separation-model/ # MDX23模型项目
 ├── quick_start.py          # 🚀 一键快速启动 (推荐)
 ├── run_splitter.py         # 完整功能运行脚本
-├── pytorch_compatibility_fix.py # 🆕 PyTorch 2.8.0兼容性修复
-├── gpu_config.py           # 🆕 GPU配置检查工具
+├── gpu_config.py           # GPU配置工具
 ├── requirements.txt        # 依赖包清单
 ├── README.md              # 项目说明文档
-├── PROJECT_STATUS_REPORT.md # 🆕 详细项目状态报告
-├── CUDA_COMPATIBILITY_REPORT.md # 🆕 RTX 5060 Ti兼容性报告
-└── SPEED_OPTIMIZATION.md  # 🆕 性能优化指南
+├── CLAUDE.md              # 开发指南文档
+├── PROJECT_STATUS_REPORT.md # 项目状态报告
+├── CUDA_COMPATIBILITY_REPORT.md # CUDA兼容性报告
+├── SPEED_OPTIMIZATION.md  # 性能优化指南
+├── MDX23_SETUP.md         # MDX23模型设置指南
+└── PRD.md                 # 产品需求文档
+```
+
+## 🚀 Quick Start
+
+### Simplest Method - One-Click Processing
+```bash
+# Activate virtual environment
+audio_env\Scripts\activate  # Windows
+# or
+source audio_env/bin/activate  # Linux/macOS
+
+# Place your audio files in input/ folder
+# Run the quick start script
+python quick_start.py
+
+# Results will be in output/quick_YYYYMMDD_HHMMSS/
 ```
 
 ## 🚀 快速开始
@@ -70,9 +92,9 @@ audio_env\Scripts\activate     # Windows
 # 安装依赖
 pip install -r requirements.txt
 
-# 🆕 GPU加速环境配置 (RTX 5060 Ti优化版)
-# 安装PyTorch 2.8.0 CUDA版本 (已测试与RTX 50系列完全兼容)
-pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu128
+# 🆕 GPU加速环境配置
+# 安装PyTorch 2.8.0 CUDA 12.9版本
+pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu129
 
 # 验证GPU配置 (可选)
 python check_gpu_config.py
@@ -98,7 +120,7 @@ python quick_start.py
 # ✨ 专业模式 - BPM自适应无缝分割（BPM自适应自动启用）
 python run_splitter.py input/01.mp3 --seamless-vocal
 
-# 💎 GPU高精度模式 (RTX 5060 Ti优化，16GB VRAM)
+# 💎 GPU高精度模式 (支持CUDA GPU)
 # 自动使用MDX23 + Demucs双路检测，处理时间约45秒
 python run_splitter.py input/01.mp3 --seamless-vocal
 
@@ -116,6 +138,14 @@ python run_splitter.py input/01.mp3 --seamless-vocal --verbose
 # 四种音乐风格自动识别：慢歌/中速/快歌/极快（<70/70-100/100-140/>140 BPM）
 ```
 
+### 🆕 BPM-Adaptive Seamless Splitting (Recommended)
+
+**New in v1.2.0**: Fully functional BPM-adaptive system that dynamically adjusts parameters based on:
+- Music tempo (BPM)
+- Arrangement complexity
+- Number of instruments
+- Beat alignment
+
 ### 🌟 统一运行脚本 (v1.1.4+)
 
 #### `run.py` - 完整命令行接口
@@ -130,6 +160,16 @@ python run_splitter.py input/01.mp3 --seamless-vocal --verbose
 - `vocal_segment_01.wav`, `vocal_segment_02.wav`, ... - 分割的音频片段（WAV格式，高质量）
 - `analysis_report.json` - 详细的分析报告
 - `debug_info.json` - 调试信息（如果启用）
+
+## 🔧 Configuration
+
+### Main Configuration File: `src/vocal_smart_splitter/config.yaml`
+
+Key configuration sections:
+- `bpm_adaptive_core`: BPM-driven adaptive parameters (v1.2.0)
+- `advanced_vad`: Silero VAD settings
+- `quality_control`: Audio processing parameters
+- `audio`: Sample rate and format settings
 
 ## ⚙️ 配置参数
 
@@ -191,6 +231,46 @@ audio:
   format: wav            # WAV/FLAC无损输出
   quality: 320           # 最高音频质量
 ```
+
+## 🧪 Advanced Usage
+
+### Available Processing Methods
+
+1. **Quick Start (Simplest)**
+   ```bash
+   python quick_start.py
+   ```
+
+2. **Seamless BPM-Adaptive (Best Quality)**
+   ```bash
+   python run_splitter.py input/song.mp3 --seamless-vocal
+   ```
+
+3. **Traditional Pipeline (Legacy)**
+   ```bash
+   python run_splitter.py input/song.mp3 --min-length 8 --max-length 12
+   ```
+
+## 📢 System Requirements
+
+### Core Dependencies
+- **librosa**: Audio analysis and processing
+- **torch**: PyTorch 2.8.0 for neural networks
+- **silero-vad**: Voice activity detection
+- **numpy/scipy**: Numerical computing
+- **pydub**: Audio format conversion
+
+### Optional Dependencies
+- **demucs**: Advanced vocal separation (MDX23 model)
+- **sklearn**: Machine learning utilities
+
+## 📦 Installation
+
+### Prerequisites
+- Python 3.8+
+- Virtual environment recommended
+- GPU support: CUDA 12.9 compatible (PyTorch 2.8.0)
+- 8GB+ RAM recommended
 
 ## 📊 验收标准
 
