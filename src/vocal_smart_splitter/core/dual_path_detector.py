@@ -107,48 +107,87 @@ class DualPathVocalDetector:
         separation_result = None
         use_dual_path = False
         
-        logger.info(f"检查双路检测条件: 启用={self.enable_dual_detection}, 高质量后端可用={self.separator.is_high_quality_backend_available()}")
+        # 检查后端状态
+        backend_available = self.separator.is_high_quality_backend_available()
+        backend_status = self.separator.backend_status
         
-        if self.enable_dual_detection and self.separator.is_high_quality_backend_available():
+        logger.info(f"双路检测状态检查:")
+        logger.info(f"  配置启用: {self.enable_dual_detection}")
+        logger.info(f"  高质量后端可用: {backend_available}")
+        logger.info(f"  MDX23状态: {'可用' if backend_status['mdx23']['available'] else '不可用'}")
+        if not backend_status['mdx23']['available'] and 'error' in backend_status['mdx23']:
+            logger.info(f"    MDX23错误: {backend_status['mdx23']['error']}")
+        logger.info(f"  Demucs状态: {'可用' if backend_status['demucs_v4']['available'] else '不可用'}")
+        
+        # 强制启用双路检测（测试模式） - 只要有后端就尝试
+        if backend_available:
             logger.info("开始执行人声分离检测...")
             try:
                 separation_result = self.separator.separate_for_detection(audio)
-                logger.info(f"分离完成，质量评估: {separation_result.separation_confidence:.3f} (阈值: {self.min_separation_quality})")
+                logger.info(f"分离完成 - 后端: {separation_result.backend_used}, 质量: {separation_result.separation_confidence:.3f}")
                 
                 # 强制使用分离检测（忽略质量阈值以测试分割效果）
-                logger.info("强制启用分离检测（测试模式）...")
+                logger.info("✓ 强制启用分离检测（测试模式）")
                 separated_pauses = self._detect_on_separated_audio(separation_result.vocal_track)
                 use_dual_path = True  # 强制启用双路
                 self.stats['dual_path_used'] += 1
-                self.stats['high_quality_separations'] += 1
-                logger.info(f"分离路径检测到 {len(separated_pauses)} 个停顿 (质量: {separation_result.separation_confidence:.3f})")
+                
+                if separation_result.backend_used in ['mdx23', 'demucs_v4']:
+                    self.stats['high_quality_separations'] += 1
+                    logger.info(f"✓ 高质量分离 ({separation_result.backend_used}) 检测到 {len(separated_pauses)} 个停顿")
+                else:
+                    logger.info(f"✓ HPSS后备分离检测到 {len(separated_pauses)} 个停顿")
                 
                 if separation_result.separation_confidence < self.min_separation_quality:
-                    logger.warning(f"注意：分离质量较低 ({separation_result.separation_confidence:.3f} < {self.min_separation_quality})，但仍强制使用")
+                    logger.warning(f"  警告: 分离质量较低 ({separation_result.separation_confidence:.3f} < {self.min_separation_quality})")
                     
             except Exception as e:
-                logger.warning(f"分离检测失败，退回单路模式: {e}")
+                logger.error(f"✗ 分离检测失败: {e}")
+                logger.info("退回单路检测模式")
+                use_dual_path = False
         else:
-            logger.info("双路检测未启用或高质量后端不可用")
+            logger.warning("✗ 高质量后端不可用，使用单路检测")
+            use_dual_path = False
         
         if not use_dual_path:
             self.stats['single_path_fallback'] += 1
             logger.info("使用单路检测模式")
             
-        # 智能决策：选择更好的检测结果
+        # 双路检测结果分析和决策
         if use_dual_path and separation_result:
-            # 双路可用时，比较质量选择最佳结果
+            # 对比双路检测结果
             mixed_quality = len(mixed_pauses) * 0.1  # 混音检测基础质量
             separated_quality = separation_result.separation_confidence * len(separated_pauses) * 0.1
             
-            logger.info(f"双路检测质量评估: 混音={mixed_quality:.3f}({len(mixed_pauses)}个), 分离={separated_quality:.3f}({len(separated_pauses)}个)")
+            logger.info(f"\n[双路检测结果对比]")
+            logger.info(f"  混音路径: {len(mixed_pauses)}个停顿, 质量评分={mixed_quality:.3f}")
+            logger.info(f"  分离路径: {len(separated_pauses)}个停顿, 质量评分={separated_quality:.3f}")
+            logger.info(f"  分离后端: {separation_result.backend_used}")
+            logger.info(f"  分离置信度: {separation_result.separation_confidence:.3f}")
             
-            if separated_quality > mixed_quality and separation_result.separation_confidence > 0.3:
-                logger.info(f"选择分离检测结果：{len(separated_pauses)} 个停顿（质量更优）")
-                validated_pauses = self._convert_to_validated_pauses(separated_pauses, single_path=False, source="separated")
+            # 智能选择策略
+            use_separated = False
+            if separation_result.backend_used in ['mdx23', 'demucs_v4']:
+                # 高质量后端的结果更可靠
+                if separated_quality > mixed_quality * 0.8:  # 高质量后端降低阈值
+                    use_separated = True
+                    logger.info(f"  决策: 使用{separation_result.backend_used}分离检测 (高质量后端)")
+                else:
+                    logger.info(f"  决策: 使用混音检测 (分离质量不足)")
             else:
-                logger.info(f"选择混音检测结果：{len(mixed_pauses)} 个停顿（质量更优）")
+                # HPSS后端的结果需要明显更好
+                if separated_quality > mixed_quality and separation_result.separation_confidence > 0.3:
+                    use_separated = True
+                    logger.info(f"  决策: 使用HPSS分离检测 (质量优劣)")
+                else:
+                    logger.info(f"  决策: 使用混音检测 (HPSS质量不足)")
+            
+            if use_separated:
+                validated_pauses = self._convert_to_validated_pauses(separated_pauses, single_path=False, source="separated")
+                logger.info(f"  最终选择: 分离检测 {len(separated_pauses)}个停顿")
+            else:
                 validated_pauses = self._convert_to_validated_pauses(mixed_pauses, single_path=False, source="mixed")
+                logger.info(f"  最终选择: 混音检测 {len(mixed_pauses)}个停顿")
         else:
             # 单路模式：优先使用混音检测结果
             if mixed_pauses:
@@ -167,6 +206,7 @@ class DualPathVocalDetector:
         
         processing_stats = {
             'processing_time': processing_time,
+            'backend_used': separation_result.backend_used if separation_result else 'mixed_only',
             'dual_path_used': use_dual_path,
             'mixed_pauses_count': len(mixed_pauses),
             'separated_pauses_count': len(separated_pauses),

@@ -11,8 +11,6 @@ This is an intelligent vocal splitting tool that analyzes songs and splits them 
 ### Environment Setup
 ```bash
 # Activate virtual environment (required before any development)
-source audio_env/bin/activate  # Linux/macOS
-# or
 audio_env\Scripts\activate     # Windows
 
 # Install dependencies

@@ -114,8 +114,21 @@ class SeamlessSplitter:
             original_audio, original_sr = self._load_original_audio(input_path)
             
             # 2. v1.1.4+ 使用双路检测器（混音+分离交叉验证）
+            logger.info("\n=== 双路人声停顿检测 ===")
             dual_result = self.dual_detector.detect_with_dual_validation(original_audio)
             validated_pauses = dual_result.validated_pauses
+            
+            # 记录双路检测结果
+            logger.info(f"双路检测完成: {len(validated_pauses)}个有效停顿")
+            if dual_result.processing_stats:
+                stats = dual_result.processing_stats
+                logger.info(f"处理统计:")
+                logger.info(f"  混音检测: {stats.get('mixed_detections', 0)}个")
+                logger.info(f"  分离检测: {stats.get('separated_detections', 0)}个")
+                logger.info(f"  使用后端: {stats.get('backend_used', 'unknown')}")
+                logger.info(f"  双路执行: {stats.get('dual_path_used', False)}")
+                if stats.get('separation_confidence'):
+                    logger.info(f"  分离置信度: {stats['separation_confidence']:.3f}")
             
             # 提取质量报告（真实分离质量）
             separation_quality = dual_result.quality_report

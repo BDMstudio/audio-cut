@@ -18,6 +18,7 @@ from dataclasses import dataclass
 
 from ..utils.config_manager import get_config
 from .vocal_separator import VocalSeparator  # 继承现有分离器
+from pathlib import Path  # 添加Path导入
 
 logger = logging.getLogger(__name__)
 
@@ -90,24 +91,44 @@ class EnhancedVocalSeparator:
     def _check_mdx23_availability(self):
         """检测MDX23后端可用性"""
         try:
-            # 检查MDX23是否已安装
-            import_result = self._try_import_mdx23()
-            if import_result['success']:
-                # 检查模型文件
-                model_path = get_config('enhanced_separation.mdx23.model_path', './models/mdx23_pretrained.pth')
-                if os.path.exists(model_path) or self._check_mdx23_models():
-                    self.backend_status['mdx23']['available'] = True
-                    logger.info("✅ MDX23后端可用")
+            # 使用绝对路径检查MDX23项目
+            project_root = Path(__file__).resolve().parents[4]  # 回到项目根目录
+            mdx23_path = project_root / "MVSEP-MDX23-music-separation-model"
+            
+            logger.info(f"检查MDX23路径: {mdx23_path}")
+            
+            if mdx23_path.exists():
+                # 检查inference.py
+                inference_file = mdx23_path / "inference.py"
+                if inference_file.exists():
+                    logger.info(f"✓ 找到MDX23 inference.py: {inference_file}")
+                    
+                    # 检查模型文件
+                    models_dir = mdx23_path / "models"
+                    if models_dir.exists():
+                        onnx_files = list(models_dir.glob("*.onnx"))
+                        if onnx_files:
+                            self.backend_status['mdx23']['available'] = True
+                            self.mdx23_project_path = str(mdx23_path)
+                            self.mdx23_models_found = [f.name for f in onnx_files]
+                            logger.info(f"✓ MDX23后端可用 - 找到{len(onnx_files)}个模型: {self.mdx23_models_found[:3]}")
+                        else:
+                            self.backend_status['mdx23']['error'] = "ONNX模型文件缺失"
+                            logger.warning(f"MDX23模型文件缺失，请在{models_dir}放置.onnx文件")
+                    else:
+                        self.backend_status['mdx23']['error'] = "models目录不存在"
+                        logger.warning(f"MDX23 models目录不存在: {models_dir}")
                 else:
-                    self.backend_status['mdx23']['error'] = "模型文件未找到"
-                    logger.warning("MDX23模型文件缺失，需要下载预训练模型")
+                    self.backend_status['mdx23']['error'] = "inference.py不存在"
+                    logger.warning(f"MDX23 inference.py不存在: {inference_file}")
             else:
-                self.backend_status['mdx23']['error'] = import_result['error']
-                logger.warning(f"⚠️  MDX23导入失败: {import_result['error']}")
+                self.backend_status['mdx23']['error'] = "MDX23项目未安装"
+                logger.warning(f"MDX23项目未找到: {mdx23_path}")
+                logger.info("建议执行: git clone https://github.com/ZFTurbo/MVSEP-MDX23-music-separation-model")
                 
         except Exception as e:
             self.backend_status['mdx23']['error'] = str(e)
-            logger.warning(f"⚠️  MDX23后端检测失败: {e}")
+            logger.error(f"⚠️ MDX23后端检测异常: {e}", exc_info=True)
     
     def _try_import_mdx23(self) -> Dict:
         """尝试导入MDX23相关模块"""
@@ -228,16 +249,27 @@ class EnhancedVocalSeparator:
     
     def _select_optimal_backend(self) -> str:
         """选择最优可用分离后端"""
-        # 优先级：用户指定 > MDX23 > Demucs v4 > HPSS兜底
-        priority_order = [self.backend, 'mdx23', 'demucs_v4', 'hpss_fallback']
+        # 如果用户指定了backend且可用，优先使用
+        if self.backend != 'auto' and self.backend_status.get(self.backend, {}).get('available', False):
+            logger.info(f"使用用户指定后端: {self.backend}")
+            return self.backend
         
-        for backend in priority_order:
-            if self.backend_status[backend]['available']:
-                return backend
-                
-        # 理论上不会到这里，因为HPSS总是可用
-        logger.error("所有分离后端都不可用，这是严重错误")
-        return 'hpss_fallback'
+        # 自动选择：MDX23 > Demucs v4 > HPSS
+        if self.backend_status['mdx23']['available']:
+            logger.info("自动选择MDX23后端（最高质量）")
+            return 'mdx23'
+        elif self.backend_status['demucs_v4']['available']:
+            logger.info("自动选择Demucs v4后端")
+            return 'demucs_v4'
+        else:
+            # 如果是增强模式但没有高质量后端，给出警告
+            if self.backend != 'hpss_fallback':
+                logger.warning("高质量MDX23/Demucs后端不可用，降级到HPSS")
+                if self.backend_status['mdx23']['error']:
+                    logger.warning(f"  MDX23不可用原因: {self.backend_status['mdx23']['error']}")
+                if self.backend_status['demucs_v4']['error']:
+                    logger.warning(f"  Demucs不可用原因: {self.backend_status['demucs_v4']['error']}")
+            return 'hpss_fallback'
     
     def _separate_with_mdx23(self, audio: np.ndarray) -> SeparationResult:
         """使用MDX23进行分离"""
@@ -328,53 +360,50 @@ class EnhancedVocalSeparator:
     
     def _build_mdx23_command(self, input_file: str, output_dir: str) -> List[str]:
         """构建MDX23命令行参数"""
-        
-        # 获取MDX23项目路径并转为绝对路径
-        project_path = get_config('enhanced_separation.mdx23.project_path', './MVSEP-MDX23-music-separation-model')
-        
-        # 如果是相对路径，基于项目根目录计算绝对路径
-        if not os.path.isabs(project_path):
-            project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
-            project_path = os.path.join(project_root, project_path)
-        
-        inference_script = os.path.join(project_path, 'inference.py')
-        
-        # 确保inference.py存在
-        if not os.path.exists(inference_script):
-            raise FileNotFoundError(f"MDX23 inference.py not found at: {inference_script}")
+        # 使用绝对路径
+        project_root = Path(__file__).resolve().parents[4]
+        mdx23_path = project_root / "MVSEP-MDX23-music-separation-model"
+        inference_script = mdx23_path / "inference.py"
         
         # 基础命令
-        cmd = [sys.executable, inference_script]
+        cmd = [sys.executable, str(inference_script)]
         
-        # 转换输入输出路径为绝对路径
-        abs_input_file = os.path.abspath(input_file)
-        abs_output_dir = os.path.abspath(output_dir)
+        # 添加输入输出参数
+        cmd.extend(['--input_audio', input_file])
+        cmd.extend(['--output_folder', output_dir])
         
-        # 添加参数
-        cmd.extend([
-            '--input_audio', abs_input_file,
-            '--output_folder', abs_output_dir
-        ])
+        # 添加模型参数 - 使用Kim_Vocal_2作为默认
+        model_name = get_config('enhanced_separation.mdx23.model_name', 'Kim_Vocal_2')
+        cmd.extend(['--model_name', model_name])
         
-        # GPU设置 (默认使用GPU，只在需要时才指定--cpu)
-        if not get_config('enhanced_separation.mdx23.enable_gpu', True):
-            cmd.append('--cpu')
-        elif get_config('enhanced_separation.mdx23.enable_large_gpu', False):
-            cmd.append('--large_gpu')  # 大型GPU模式，将所有模型加载到GPU
+        # 显示实际使用的模型
+        logger.info(f"MDX23使用模型: {model_name}")
         
-        # 性能优化参数
-        chunk_size = get_config('enhanced_separation.mdx23.chunk_size', 1000000)
-        overlap_large = get_config('enhanced_separation.mdx23.overlap_large', 0.25)
+        # GPU加速参数
+        import torch
+        if torch.cuda.is_available() and get_config('enhanced_separation.gpu_config.enable_gpu', True):
+            cmd.extend(['--gpu', '0'])  # 指定GPU ID
+            
+            # 大GPU模式
+            gpu_memory = torch.cuda.get_device_properties(0).total_memory / 1024**3
+            if gpu_memory > 8 and get_config('enhanced_separation.gpu_config.large_gpu_mode', True):
+                cmd.append('--large_gpu')
+                logger.info(f"MDX23启用大GPU模式 (GPU内存: {gpu_memory:.1f}GB)")
+        else:
+            logger.info("MDX23使用CPU模式")
         
-        # 单ONNX模式（节省GPU内存，如果需要）
-        if get_config('enhanced_separation.mdx23.use_single_onnx', False):
-            cmd.append('--single_onnx')
+        # 其他参数
+        chunk_size = get_config('enhanced_separation.mdx23.chunk_size', 1048576)
+        overlap = get_config('enhanced_separation.mdx23.overlap', 0.25)
         
-        cmd.extend([
-            '--chunk_size', str(chunk_size),
-            '--overlap_large', str(overlap_large),
-            '--only_vocals'  # 只生成人声和伴奏，节省时间
-        ])
+        cmd.extend(['--chunk_size', str(chunk_size)])
+        cmd.extend(['--overlap', str(overlap)])
+        
+        # 添加单次输出参数（避免重复处理）
+        cmd.append('--single_onnx')
+        cmd.append('--only_vocals')  # 只输出人声
+        
+        logger.info(f"MDX23参数: chunk_size={chunk_size}, overlap={overlap}")
         
         return cmd
     

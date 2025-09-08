@@ -20,17 +20,16 @@
 
 # PyTorch 2.8.0兼容性修复 - 必须在导入torch相关模块之前执行
 try:
-    with open('pytorch_compatibility_fix.py', 'r', encoding='utf-8') as f:
-        exec(f.read())
+    import pytorch_compatibility_fix
     print("[COMPAT] PyTorch 2.8.0兼容性修复已加载")
 except Exception as e:
     print(f"[WARN] 兼容性修复加载失败: {e}")
-    print("[INFO] 如果遇到模型加载问题，请运行: python fix_pytorch_compatibility.py")
 
 import os
 import sys
 from pathlib import Path
 from datetime import datetime
+import torch  # 添加torch导入用于系统检查
 
 # 添加项目路径
 project_root = Path(__file__).parent
@@ -55,11 +54,94 @@ def find_audio_files():
     
     return sorted(audio_files)
 
+def check_system_status():
+    """检查系统状态"""
+    print("\n" + "=" * 60)
+    print("系统状态检查")
+    print("=" * 60)
+    
+    # 检查PyTorch和CUDA
+    try:
+        import torch
+        print(f"[OK] PyTorch版本: {torch.__version__}")
+        print(f"[OK] CUDA可用: {torch.cuda.is_available()}")
+        if torch.cuda.is_available():
+            print(f"[OK] CUDA版本: {torch.version.cuda}")
+            print(f"[OK] GPU设备: {torch.cuda.get_device_name(0)}")
+            print(f"[OK] GPU内存: {torch.cuda.get_device_properties(0).total_memory / 1024**3:.1f} GB")
+        else:
+            print("[!] GPU不可用，将使用CPU模式")
+    except ImportError:
+        print("[ERR] PyTorch未安装")
+        return False
+    
+    # 检查MDX23
+    mdx23_available = False
+    mdx23_path = Path(project_root) / "MVSEP-MDX23-music-separation-model"
+    if mdx23_path.exists():
+        models_path = mdx23_path / "models"
+        if models_path.exists():
+            onnx_files = list(models_path.glob("*.onnx"))
+            if onnx_files:
+                print(f"[OK] MDX23已安装: {mdx23_path}")
+                print(f"    找到{len(onnx_files)}个ONNX模型文件")
+                for f in onnx_files[:3]:  # 显示前3个
+                    print(f"    - {f.name} ({f.stat().st_size / 1024**2:.1f} MB)")
+                mdx23_available = True
+            else:
+                print(f"[!] MDX23模型文件缺失，请运行: python download_mdx23.py")
+        else:
+            print(f"[!] MDX23 models目录不存在")
+    else:
+        print(f"[!] MDX23未安装，建议克隆: https://github.com/ZFTurbo/MVSEP-MDX23-music-separation-model")
+    
+    # 检查配置的backend
+    try:
+        from src.vocal_smart_splitter.utils.config_manager import get_config
+        backend = get_config('enhanced_separation.backend', 'auto')
+        enable_gpu = get_config('enhanced_separation.gpu_config.enable_gpu', True)
+        print(f"\n[配置信息]")
+        print(f"  分离后端: {backend}")
+        print(f"  GPU加速: {'启用' if enable_gpu else '禁用'}")
+        
+        # 确定最终backend
+        if backend == 'auto':
+            if mdx23_available and torch.cuda.is_available():
+                final_backend = 'mdx23'
+            else:
+                final_backend = 'hpss_fallback'
+                print(f"  [!] 将使用HPSS后备方案（MDX23不可用）")
+        else:
+            final_backend = backend
+        
+        print(f"  最终后端: {final_backend}")
+        
+        # 如果是增强模式但MDX23不可用，给出警告
+        if final_backend == 'hpss_fallback' and not mdx23_available:
+            print("\n" + "=" * 60)
+            print("[警告] MDX23未安装，无法使用高精度分离")
+            print("建议安装MDX23以获得更好的分割效果：")
+            print("1. git clone https://github.com/ZFTurbo/MVSEP-MDX23-music-separation-model")
+            print("2. python download_mdx23.py")
+            print("当前将使用HPSS基础方案")
+            print("=" * 60)
+            
+    except Exception as e:
+        print(f"[!] 配置读取失败: {e}")
+    
+    print("=" * 60)
+    return True
+
 def main():
     """主函数"""
-    print("=" * 50)
-    print("智能人声分割器 - 快速启动")
-    print("=" * 50)
+    print("=" * 60)
+    print("智能人声分割器 - 快速启动 (增强版)")
+    print("=" * 60)
+    
+    # 检查系统状态
+    if not check_system_status():
+        print("\n[ERROR] 系统检查失败，请检查环境配置")
+        return
     
     # 查找音频文件
     audio_files = find_audio_files()
@@ -110,12 +192,32 @@ def main():
         
         # 获取配置
         sample_rate = get_config('audio.sample_rate', 44100)
+        backend = get_config('enhanced_separation.backend', 'auto')
+        
+        print(f"\n[CONFIG] 使用配置：")
+        print(f"  采样率: {sample_rate} Hz")
+        print(f"  分离后端: {backend}")
+        print(f"  双路检测: 启用")
+        print(f"  BPM自适应: 启用")
         
         # 创建分割器
+        print("\n[INIT] 初始化分割器...")
         splitter = SeamlessSplitter(sample_rate=sample_rate)
         
         # 执行分割
+        print("[PROCESS] 开始分割处理...")
         result = splitter.split_audio_seamlessly(str(selected_file), str(output_dir))
+        
+        # 显示处理统计
+        if 'processing_stats' in result:
+            stats = result['processing_stats']
+            print(f"\n[STATS] 处理统计：")
+            if 'backend_used' in stats:
+                print(f"  实际使用后端: {stats['backend_used']}")
+            if 'dual_path_used' in stats:
+                print(f"  双路检测执行: {'是' if stats['dual_path_used'] else '否'}")
+            if 'processing_time' in stats:
+                print(f"  处理时间: {stats['processing_time']:.1f}秒")
         
         if result.get('success', False):
             print("\n" + "=" * 50)
@@ -143,6 +245,16 @@ def main():
                 print(f"\n[QUALITY] 检测质量:")
                 print(f"  停顿检测: {total_pauses} 个")
                 print(f"  平均置信度: {avg_confidence:.3f}")
+                
+                # 显示双路检测信息
+                if 'dual_detection_info' in pause_info:
+                    dual_info = pause_info['dual_detection_info']
+                    print(f"\n[DUAL-PATH] 双路检测详情:")
+                    print(f"  混音检测: {dual_info.get('mixed_detections', 0)} 个停顿")
+                    print(f"  分离检测: {dual_info.get('separated_detections', 0)} 个停顿")
+                    print(f"  交叉验证: {dual_info.get('validated_pauses', 0)} 个确认")
+                    if 'separation_backend' in dual_info:
+                        print(f"  分离后端: {dual_info['separation_backend']}")
             
             # 重构验证
             if 'seamless_validation' in result:
@@ -163,6 +275,7 @@ def main():
         print("\n请检查环境配置:")
         print("1. 确认已安装依赖: pip install -r requirements.txt")
         print("2. 确认虚拟环境已激活")
+        print("3. 如需MDX23支持: python download_mdx23.py")
         
     except Exception as e:
         print(f"[ERROR] 处理失败: {e}")
