@@ -617,12 +617,65 @@ class VocalPauseDetectorV2:
         
         min_pause_samples = int(min_pause_duration * self.sample_rate)
         
+        # 🆕 第一遍：计算所有中间停顿的平均时长（排除头尾停顿）
+        middle_pause_durations = []
+        # 从最后一个停顿推断音频总长度
+        total_audio_length = pause_segments[-1]['end'] if pause_segments else 0
+        
+        for i, pause in enumerate(pause_segments):
+            duration_samples = pause['end'] - pause['start']
+            duration_seconds = duration_samples / self.sample_rate
+            
+            # 只统计中间停顿，排除头尾停顿
+            is_head = (i == 0 and pause['start'] == 0)
+            is_tail = (i == len(pause_segments) - 1 and pause['end'] >= total_audio_length * 0.95)  # 允许5%的误差
+            
+            if duration_samples >= min_pause_samples and not is_head and not is_tail:
+                middle_pause_durations.append(duration_seconds)
+                
+        logger.info(f"中间停顿统计: 总停顿{len(pause_segments)}个, 中间停顿{len(middle_pause_durations)}个")
+        
+        if not middle_pause_durations:
+            logger.warning("没有找到符合要求的中间停顿，回退到所有停顿")
+            # 回退策略：使用所有符合最小时长的停顿
+            all_pause_durations = []
+            for pause in pause_segments:
+                duration_samples = pause['end'] - pause['start']
+                duration_seconds = duration_samples / self.sample_rate
+                if duration_samples >= min_pause_samples:
+                    all_pause_durations.append(duration_seconds)
+            if not all_pause_durations:
+                return []
+            middle_pause_durations = all_pause_durations
+            
+        # 计算中间停顿时长统计
+        average_pause_duration = np.mean(middle_pause_durations)
+        median_pause_duration = np.median(middle_pause_durations)
+        std_pause_duration = np.std(middle_pause_durations)
+        
+        logger.info(f"停顿时长统计: 平均={average_pause_duration:.3f}s, 中位={median_pause_duration:.3f}s, 标准差={std_pause_duration:.3f}s")
+        
+        # 动态阈值：使用平均值和中位数的较大者作为基准
+        duration_threshold = max(average_pause_duration, median_pause_duration)
+        
+        # 对于变化较大的停顿分布，适当降低阈值
+        if std_pause_duration > average_pause_duration * 0.5:
+            duration_threshold = average_pause_duration * 0.8  # 降低20%
+            logger.info(f"检测到高变异性停顿分布，降低阈值至 {duration_threshold:.3f}s")
+        
+        # 🆕 第二遍：基于平均值筛选分割点
+        valid_pauses = []
+        
         for pause in pause_segments:
             duration_samples = pause['end'] - pause['start']
             duration_seconds = duration_samples / self.sample_rate
             
-            # BPM感知的停顿验证
-            if duration_samples >= min_pause_samples:
+            # 基础时长检查
+            if duration_samples < min_pause_samples:
+                continue
+                
+            # 🎯 关键改进：只选择时长≥阈值的停顿作为分割点
+            if duration_seconds >= duration_threshold:
                 # 根据节拍强度调整置信度
                 confidence = 0.8  # 基础置信度
                 
@@ -632,14 +685,24 @@ class VocalPauseDetectorV2:
                    abs(duration_seconds % (beat_duration * 2)) < 0.1:
                     confidence += 0.1
                 
+                # 停顿越长相对于平均值，置信度越高
+                duration_ratio = duration_seconds / average_pause_duration
+                if duration_ratio >= 1.5:  # 比平均值长50%以上
+                    confidence += 0.1
+                    
                 valid_pauses.append({
                     **pause,
                     'duration': duration_seconds,
                     'confidence': confidence,
-                    'bpm_aligned': abs(duration_seconds % beat_duration) < 0.1
+                    'bpm_aligned': abs(duration_seconds % beat_duration) < 0.1,
+                    'duration_ratio': duration_ratio
                 })
+                
+                logger.debug(f"选择停顿: {duration_seconds:.3f}s (比例: {duration_ratio:.2f}x)")
+            else:
+                logger.debug(f"跳过短停顿: {duration_seconds:.3f}s < {duration_threshold:.3f}s")
         
-        logger.debug(f"BPM自适应过滤后保留 {len(valid_pauses)} 个有效停顿 (BPM: {float(bpm_features.main_bpm):.1f})")
+        logger.info(f"平均值筛选完成: {len(middle_pause_durations)}个候选 → {len(valid_pauses)}个分割点 (阈值: {duration_threshold:.3f}s)")
         return valid_pauses
     
     def _get_adaptive_offsets(self, bpm_features: 'BPMFeatures') -> Tuple[float, float]:

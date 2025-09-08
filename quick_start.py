@@ -130,7 +130,7 @@ def check_system_status():
     available_backends, gpu_info = check_backend_availability()
     print(f"\n[INFO] 可用的分离后端:")
     for backend_id, info in available_backends.items():
-        status = "✓" if (not info['gpu_required'] or info['gpu_available']) else "!"
+        status = "OK" if (not info['gpu_required'] or info['gpu_available']) else "NO"
         print(f"  [{status}] {info['name']}: {info['description']}")
     
     return True
@@ -265,11 +265,14 @@ def main():
         
         # 获取配置
         sample_rate = get_config('audio.sample_rate', 44100)
-        backend = get_config('enhanced_separation.backend', 'auto')
+        config_backend = get_config('enhanced_separation.backend', 'auto')
+        # 获取实际将要使用的后端（优先环境变量）
+        actual_backend = os.environ.get('FORCE_SEPARATION_BACKEND', config_backend)
         
         print(f"\n[CONFIG] 使用配置：")
         print(f"  采样率: {sample_rate} Hz")
-        print(f"  分离后端: {backend}")
+        print(f"  配置文件后端: {config_backend}")
+        print(f"  实际使用后端: {actual_backend} {'(环境变量强制)' if 'FORCE_SEPARATION_BACKEND' in os.environ else ''}")
         print(f"  双路检测: 启用")
         print(f"  BPM自适应: 启用")
         
@@ -286,9 +289,18 @@ def main():
             stats = result['processing_stats']
             print(f"\n[STATS] 处理统计：")
             if 'backend_used' in stats:
-                print(f"  实际使用后端: {stats['backend_used']}")
+                backend = stats['backend_used']
+                print(f"  实际使用后端: {backend}")
+                if backend == 'mixed_only':
+                    print(f"  说明: 仅使用混音检测（未进行人声分离）")
+                elif backend in ['mdx23', 'demucs_v4']:
+                    print(f"  说明: 使用{backend}进行了人声分离增强检测")
+                elif backend == 'hpss_fallback':
+                    print(f"  说明: 使用HPSS备用模式")
             if 'dual_path_used' in stats:
                 print(f"  双路检测执行: {'是' if stats['dual_path_used'] else '否'}")
+            if 'separation_confidence' in stats:
+                print(f"  分离置信度: {stats['separation_confidence']:.3f}")
             if 'processing_time' in stats:
                 print(f"  处理时间: {stats['processing_time']:.1f}秒")
         

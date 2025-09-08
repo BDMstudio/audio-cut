@@ -155,7 +155,7 @@ class DualPathVocalDetector:
             
         # 双路检测结果分析和决策
         if use_dual_path and separation_result:
-            # 对比双路检测结果
+            # 对比双路检测结果 - 修复决策逻辑
             mixed_quality = len(mixed_pauses) * 0.1  # 混音检测基础质量
             separated_quality = separation_result.separation_confidence * len(separated_pauses) * 0.1
             
@@ -165,20 +165,23 @@ class DualPathVocalDetector:
             logger.info(f"  分离后端: {separation_result.backend_used}")
             logger.info(f"  分离置信度: {separation_result.separation_confidence:.3f}")
             
-            # 智能选择策略
+            # 修复的智能选择策略
             use_separated = False
             if separation_result.backend_used in ['mdx23', 'demucs_v4']:
-                # 高质量后端的结果更可靠
-                if separated_quality > mixed_quality * 0.8:  # 高质量后端降低阈值
+                # 高质量后端优先策略：置信度>0.5就优先使用分离结果
+                if separation_result.separation_confidence > 0.5:
                     use_separated = True
-                    logger.info(f"  决策: 使用{separation_result.backend_used}分离检测 (高质量后端)")
+                    logger.info(f"  决策: 使用{separation_result.backend_used}分离检测 (高质量后端+高置信度)")
+                elif len(separated_pauses) > len(mixed_pauses) * 0.7:  # 检测数量不要相差太多
+                    use_separated = True 
+                    logger.info(f"  决策: 使用{separation_result.backend_used}分离检测 (检测数量合理)")
                 else:
-                    logger.info(f"  决策: 使用混音检测 (分离质量不足)")
+                    logger.info(f"  决策: 使用混音检测 (分离置信度不足: {separation_result.separation_confidence:.3f})")
             else:
-                # HPSS后端的结果需要明显更好
+                # HPSS后端需要更保守
                 if separated_quality > mixed_quality and separation_result.separation_confidence > 0.3:
                     use_separated = True
-                    logger.info(f"  决策: 使用HPSS分离检测 (质量优劣)")
+                    logger.info(f"  决策: 使用HPSS分离检测 (质量优势)")
                 else:
                     logger.info(f"  决策: 使用混音检测 (HPSS质量不足)")
             

@@ -155,7 +155,8 @@ class SeamlessSplitter:
             # 8. 生成结果报告
             result = self._generate_result_report(
                 input_path, output_dir, segments, saved_files, 
-                vocal_pauses, separation_quality, validation_result
+                vocal_pauses, separation_quality, validation_result,
+                dual_result.processing_stats  # 传递处理统计
             )
             
             logger.info(f"无缝分割完成: {len(segments)} 个片段")
@@ -680,7 +681,7 @@ class SeamlessSplitter:
     def _generate_result_report(self, input_path: str, output_dir: str,
                                segments: List[SeamlessSegment], saved_files: List[str],
                                vocal_pauses: List, separation_quality: Dict,
-                               validation_result: Dict) -> Dict:
+                               validation_result: Dict, processing_stats: Dict = None) -> Dict:
         """生成结果报告
         
         Args:
@@ -691,6 +692,7 @@ class SeamlessSplitter:
             vocal_pauses: 人声停顿
             separation_quality: 分离质量
             validation_result: 验证结果
+            processing_stats: 处理统计信息
             
         Returns:
             结果报告
@@ -708,7 +710,7 @@ class SeamlessSplitter:
                 'cut_info': segment.cut_info
             })
         
-        return {
+        result = {
             'success': True,
             'input_file': input_path,
             'output_directory': output_dir,
@@ -734,6 +736,12 @@ class SeamlessSplitter:
                 'preserve_original': self.preserve_original
             }
         }
+        
+        # 添加处理统计信息（如果存在）
+        if processing_stats:
+            result['processing_stats'] = processing_stats
+        
+        return result
     
     def _convert_validated_to_vocal_pauses(self, validated_pauses) -> List:
         """将ValidatedPause转换为VocalPause以保持向后兼容性
