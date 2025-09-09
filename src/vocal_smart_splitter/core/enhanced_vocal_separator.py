@@ -36,10 +36,10 @@ class EnhancedVocalSeparator:
     """检测专用高精度人声分离器
     
     设计理念：
-    1. 多后端支持：MDX23(主推) / Demucs v4(备选) / HPSS(兜底)
+    1. 高质量后端支持：MDX23(主推) / Demucs v4(备选)
     2. 检测专用：只返回内存数据，不保存文件，优化性能
     3. 质量评估：自动评估分离质量，为双路检测提供置信度
-    4. 渐进降级：优先使用高精度后端，失败时自动降级
+    4. 智能降级：优先使用MDX23，失败时自动切换到Demucs
     """
     
     def __init__(self, sample_rate: int = 44100):
@@ -66,12 +66,8 @@ class EnhancedVocalSeparator:
         # 初始化后端状态
         self.backend_status = {
             'mdx23': {'available': False, 'error': None},
-            'demucs_v4': {'available': False, 'error': None}, 
-            'hpss_fallback': {'available': True, 'error': None}  # HPSS总是可用
+            'demucs_v4': {'available': False, 'error': None}
         }
-        
-        # 初始化传统分离器作为兜底
-        self.hpss_separator = VocalSeparator(sample_rate)
         
         # 检查和初始化高精度后端
         self._initialize_backends()
@@ -93,8 +89,8 @@ class EnhancedVocalSeparator:
         available_backends = [name for name, status in self.backend_status.items() if status['available']]
         logger.info(f"可用分离后端: {available_backends}")
         
-        if not any(self.backend_status[b]['available'] for b in ['mdx23', 'demucs_v4']) and self.backend != 'hpss_fallback':
-            logger.warning("高精度分离后端不可用，将使用传统HPSS方案")
+        if not any(self.backend_status[b]['available'] for b in ['mdx23', 'demucs_v4']):
+            logger.error("❌ 没有可用的高精度分离后端，请检查MDX23或Demucs安装")
     
     def _check_mdx23_availability(self):
         """检测MDX23后端可用性"""
@@ -247,7 +243,7 @@ class EnhancedVocalSeparator:
         elif selected_backend == 'demucs_v4':
             result = self._separate_with_demucs(audio)
         else:
-            result = self._separate_with_hpss(audio)
+            raise RuntimeError(f"❌ 不支持的分离后端: {selected_backend}")
         
         # 质量评估
         result.separation_confidence = self._assess_separation_quality(audio, result.vocal_track)
@@ -291,7 +287,7 @@ class EnhancedVocalSeparator:
             logger.info(f"✓ 选择用户指定后端: {self.backend}")
             return self.backend
         
-        # 自动选择：MDX23 > Demucs v4 > HPSS
+        # 自动选择：MDX23 > Demucs v4
         if self.backend_status['mdx23']['available']:
             logger.info("✓ 自动选择MDX23后端（最高质量）")
             logger.info(f"  MDX23项目路径: {getattr(self, 'mdx23_project_path', 'Not Set')}")
@@ -301,20 +297,18 @@ class EnhancedVocalSeparator:
             logger.info("✓ 自动选择Demucs v4后端")
             return 'demucs_v4'
         else:
-            # 如果是增强模式但没有高质量后端，给出警告
-            if self.backend != 'hpss_fallback':
-                logger.warning("⚠️ 高质量MDX23/Demucs后端不可用，降级到HPSS")
-                logger.warning("详细错误信息:")
-                if self.backend_status['mdx23']['error']:
-                    logger.warning(f"  MDX23错误: {self.backend_status['mdx23']['error']}")
-                if self.backend_status['demucs_v4']['error']:
-                    logger.warning(f"  Demucs错误: {self.backend_status['demucs_v4']['error']}")
-                logger.warning("建议检查:")
-                logger.warning("  1. MDX23项目是否正确克隆到项目根目录")
-                logger.warning("  2. 模型文件是否已下载到 models/ 目录")
-                logger.warning("  3. 依赖包是否正确安装")
-            logger.info("✓ 使用HPSS后备方案")
-            return 'hpss_fallback'
+            # 没有可用的高质量后端
+            logger.error("❌ 所有高质量分离后端都不可用")
+            logger.error("详细错误信息:")
+            if self.backend_status['mdx23']['error']:
+                logger.error(f"  MDX23错误: {self.backend_status['mdx23']['error']}")
+            if self.backend_status['demucs_v4']['error']:
+                logger.error(f"  Demucs错误: {self.backend_status['demucs_v4']['error']}")
+            logger.error("建议检查:")
+            logger.error("  1. MDX23项目是否正确克隆到项目根目录")
+            logger.error("  2. 模型文件是否已下载到 models/ 目录")
+            logger.error("  3. Demucs是否正确安装")
+            raise RuntimeError("❌ 没有可用的人声分离后端，无法进行纯人声检测")
     
     def _separate_with_mdx23(self, audio: np.ndarray) -> SeparationResult:
         """使用MDX23进行分离"""
@@ -329,12 +323,12 @@ class EnhancedVocalSeparator:
             return self._separate_with_mdx23_cli(audio, start_time)
             
         except Exception as e:
-            logger.warning(f"MDX23分离失败，降级到备用方案: {e}")
-            # 自动降级到下一个可用后端
+            logger.warning(f"MDX23分离失败，尝试降级到Demucs v4: {e}")
+            # 自动降级到Demucs v4
             if self.backend_status['demucs_v4']['available']:
                 return self._separate_with_demucs(audio)
             else:
-                return self._separate_with_hpss(audio)
+                raise RuntimeError(f"❌ MDX23分离失败且无Demucs备选: {e}")
     
     def _separate_with_mdx23_cli(self, audio: np.ndarray, start_time: float) -> SeparationResult:
         """通过CLI接口使用MDX23分离"""
@@ -744,38 +738,9 @@ class EnhancedVocalSeparator:
             return result
             
         except Exception as e:
-            logger.warning(f"Demucs分离失败，降级到HPSS: {e}")
-            return self._separate_with_hpss(audio)
+            logger.error(f"❌ Demucs v4分离失败: {e}")
+            raise RuntimeError(f"❌ Demucs v4分离失败，没有更多备选方案: {e}")
     
-    def _separate_with_hpss(self, audio: np.ndarray) -> SeparationResult:
-        """使用传统HPSS方法分离（兜底方案）"""
-        start_time = time.time()
-        
-        try:
-            # 使用现有的VocalSeparator
-            vocals, instrumental, quality_info = self.hpss_separator.separate_vocals(audio)
-            
-            processing_time = time.time() - start_time
-            
-            result = SeparationResult(
-                vocal_track=vocals,
-                instrumental_track=instrumental,
-                backend_used="hpss_fallback",
-                processing_time=processing_time,
-                quality_metrics=quality_info
-            )
-            
-            logger.debug(f"HPSS分离完成，耗时: {processing_time:.2f}秒")
-            return result
-            
-        except Exception as e:
-            logger.error(f"HPSS分离也失败了，这是严重错误: {e}")
-            # 返回空结果，但不崩溃
-            return SeparationResult(
-                vocal_track=audio,  # 返回原音频
-                backend_used="error_fallback",
-                separation_confidence=0.0
-            )
     
     def _assess_separation_quality(self, original: np.ndarray, vocals: np.ndarray) -> float:
         """评估分离质量，返回置信度 (0-1)

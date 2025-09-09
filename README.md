@@ -1,15 +1,33 @@
 # 智能人声分割器 (Vocal Smart Splitter)
 
-一个基于 **BPM自适应 + 智能双路验证** 的人声停顿检测和无缝分割工具，专门针对歌曲场景优化。支持从快速CPU模式到GPU高精度模式的全方位音频处理解决方案。
+## 📚 文档索引
+- 产品需求文档（PRD）：[PRD.md](./PRD.md)
+- 开发文档（技术路线/架构/模块）：[development.md](./development.md)
+- 开发进展与任务清单：[todo.md](./todo.md)
+
+
+一个基于 **纯人声检测v2.0 + VocalPrime RMS检测器** 的人声停顿检测和无缝分割工具，专门针对歌曲场景优化。支持从快速CPU模式到GPU高精度模式的全方位音频处理解决方案。
 
 ## 🎯 Features
 
-**Latest Version: v1.2.0 - BPM Adaptive Enhancement Release**
+**Latest Version: v2.1.0 - VocalPrime Pure Vocal Detection**
 
 ## 🎯 核心特性
 
-- **🎶 BPM自适应系统**: 节拍驱动的动态参数调整，解决不同音乐风格分割问题
-- **🧠 智能双路验证**: Silero VAD主检测 + MDX23/Demucs增强验证，交叉验证提升精度
+### v2.1 VocalPrime纯人声域检测（最新）
+- **🎯 VocalPrime检测器**: 在纯人声轨上进行RMS能量包络检测，彻底解决误检问题
+- **🔬 动态噪声地板**: 滚动5%分位数自适应阈值，适应不同音频动态
+- **⚡ 滞回状态机**: down=floor+3dB/up=floor+6dB双阈值，消除边界抖动
+- **📊 平台平坦度验证**: ≤6dB波动验证，确保真实停顿
+- **🛡️ 未来静默守卫**: 切点后需≥1.0s静音，避免误切
+
+### v2.0 多维特征分析系统
+- **🧠 纯人声检测系统**: 基于MDX23/Demucs分离的多维特征分析，解决高频换气误判问题
+- **🔍 频谱感知分类**: F0轨迹+共振峰+频谱质心+谐波强度识别真停顿vs换气
+- **✅ 五级验证系统**: 时长+能量+频谱+上下文+音乐理论多层验证
+- **🎶 BPM自适应系统**: 节拍驱动的动态参数调整，不同音乐风格智能适配
+
+### 核心技术优势
 - **⚡ 无缝拼接技术**: 样本级精度分割，保证完美重构 (0.00e+00差异)
 - **🎧 零处理输出**: WAV/FLAC无损输出，保持原始音质和采样率
 - **🚀 多模式性能**: CPU快速模式(16s) → GPU高精度模式(45s)灵活切换
@@ -27,26 +45,32 @@ audio-cut/
 ├── src/                      # 源代码目录
 │   └── vocal_smart_splitter/ # 核心模块
 │       ├── core/            # 核心算法模块
-│       │   ├── seamless_splitter.py      # 🚀 无缝分割主引擎 (推荐)
-│       │   ├── dual_path_detector.py     # 🆕 双路检测系统 (v1.1.4+)
-│       │   ├── enhanced_vocal_separator.py # 🆕 增强分离器 (MDX23/Demucs)
-│       │   ├── vocal_pause_detector.py   # Silero VAD人声停顿检测
-│       │   ├── adaptive_vad_enhancer.py  # BPM自适应VAD增强器
-│       │   ├── quality_controller.py     # 质量控制系统
-│       │   ├── vocal_separator.py        # HPSS人声分离 (兜底)
-│       │   ├── breath_detector.py        # 换气检测 (传统)
-│       │   ├── content_analyzer.py       # 内容分析 (传统)
-│       │   └── smart_splitter.py         # 智能分割调度器
+│       │   ├── vocal_prime_detector.py         # 🆕 VocalPrime RMS检测器 (v2.1)
+│       │   ├── seamless_splitter.py            # 🚀 无缝分割主引擎 (推荐)
+│       │   ├── pure_vocal_pause_detector.py    # 🆕 纯人声停顿检测器 (v2.0)
+│       │   ├── spectral_aware_classifier.py    # 🆕 频谱感知分类器 (v2.0)
+│       │   ├── bpm_vocal_optimizer.py          # 🆕 BPM人声优化器 (v2.0)
+│       │   ├── multi_level_validator.py        # 🆕 多级验证系统 (v2.0)
+│       │   ├── dual_path_detector.py           # 双路检测系统 (v1.1.4+)
+│       │   ├── enhanced_vocal_separator.py     # 增强分离器 (MDX23/Demucs)
+│       │   ├── vocal_pause_detector.py         # Silero VAD人声停顿检测
+│       │   ├── adaptive_vad_enhancer.py        # BPM自适应VAD增强器
+│       │   ├── quality_controller.py           # 质量控制系统
+│       │   ├── vocal_separator.py              # HPSS人声分离 (兜底)
+│       │   ├── breath_detector.py              # 换气检测 (传统)
+│       │   ├── content_analyzer.py             # 内容分析 (传统)
+│       │   └── smart_splitter.py               # 智能分割调度器
 │       ├── utils/           # 工具模块
 │       │   ├── adaptive_parameter_calculator.py # 🆕 BPM参数计算器
 │       │   ├── config_manager.py     # 配置管理
 │       │   ├── audio_processor.py    # 音频处理
 │       │   └── feature_extractor.py  # 特征提取
-│       ├── config.yaml      # 主配置文件 (v1.2.0 BPM驱动)
+│       ├── config.yaml      # 主配置文件 (v2.0.0 纯人声检测增强)
 │       └── main.py         # 主程序入口
 ├── tests/                   # 测试目录
-│   ├── run_tests.py               # 测试运行器
-│   └── test_seamless_reconstruction.py # 无缝重构验证测试 (核心)
+│   ├── run_tests.py                        # 测试运行器
+│   ├── test_seamless_reconstruction.py     # 无缝重构验证测试 (核心)
+│   └── test_pure_vocal_detection_v2.py     # 🆕 纯人声检测v2.0测试
 ├── config/                  # 配置文件目录
 │   └── default.yaml        # 默认配置
 ├── MVSEP-MDX23-music-separation-model/ # MDX23模型项目
@@ -56,10 +80,10 @@ audio-cut/
 ├── requirements.txt        # 依赖包清单
 ├── README.md              # 项目说明文档
 ├── CLAUDE.md              # 开发指南文档
-├── PROJECT_STATUS_REPORT.md # 项目状态报告
-├── CUDA_COMPATIBILITY_REPORT.md # CUDA兼容性报告
-├── SPEED_OPTIMIZATION.md  # 性能优化指南
+├── development.md         # 技术路线/架构/模块
+├── todo.md                # 开发进展与任务清单
 ├── MDX23_SETUP.md         # MDX23模型设置指南
+├── vocal_prime.md         # VocalPrime技术方案
 └── PRD.md                 # 产品需求文档
 ```
 
@@ -117,12 +141,18 @@ cp your_audio.mp3 input/01.mp3
 # 🚀 推荐模式 - 一键智能分割（零配置，自动选择最佳参数）
 python quick_start.py
 
-# ✨ 专业模式 - BPM自适应无缝分割（BPM自适应自动启用）
+# 🎯 VocalPrime v2.1模式 - 纯人声域RMS检测（最新推荐）
+python run_splitter.py input/01.mp3 --vocal-prime-v2
+
+# ✨ 专业模式 - 纯人声检测系统v2.0（多维特征分析）
+python run_splitter.py input/01.mp3 --pure-vocal-v2
+
+# 🔄 传统无缝分割模式 - BPM自适应（稳定兼容）
 python run_splitter.py input/01.mp3 --seamless-vocal
 
 # 💎 GPU高精度模式 (支持CUDA GPU)
 # 自动使用MDX23 + Demucs双路检测，处理时间约45秒
-python run_splitter.py input/01.mp3 --seamless-vocal
+python run_splitter.py input/01.mp3 --pure-vocal-v2
 
 # ⚡ CPU快速模式 (HPSS后端，处理时间约16秒)
 # 编辑 config.yaml: enhanced_separation.backend: "hpss_fallback"
@@ -151,7 +181,7 @@ python run_splitter.py input/01.mp3 --seamless-vocal --verbose
 #### `run.py` - 完整命令行接口
 提供所有项目功能的统一访问点，支持分割、测试、状态检查等操作。
 
-#### `quick_start.py` - 一键快速启动  
+#### `quick_start.py` - 一键快速启动
 零配置快速体验，自动检测输入文件，适合新用户快速上手。
 
 ### 4. 查看结果
@@ -208,7 +238,7 @@ enhanced_separation:
     mixed_audio_weight: 0.25         # 混音检测权重
     separated_audio_weight: 0.7      # 分离检测权重
     quality_threshold: 0.8           # 质量阈值
-  
+
   # 🆕 BPM自适应增强配置
   enable_bpm_adaptation: true  # 启用BPM自适应增强器
   bpm_adaptive_settings:
@@ -218,7 +248,7 @@ enhanced_separation:
     fast_bpm_threshold: 120  # 快歌BPM下限
     enable_beat_alignment: true      # 启用节拍对齐
     enable_complexity_adaptation: true # 启用复杂度自适应
-    
+
     # 🆕 BPM自适应停顿时长乘数 (v1.1.2)
     pause_duration_multipliers:
       slow_song_multiplier: 1.5      # 慢歌(BPM<80): 更长停顿避免过度分割
@@ -381,15 +411,15 @@ graph TD
     C --> D{慢歌 < 80 BPM}
     C --> E{中速 80-120 BPM}
     C --> F{快歌 > 120 BPM}
-    
+
     D --> G[阈值 × 0.7<br/>允许更短停顿]
     E --> H[标准阈值<br/>正常检测]
     F --> I[阈值 × 1.3<br/>需要更长停顿]
-    
+
     G --> J[编曲复杂度分析]
     H --> J
     I --> J
-    
+
     J --> K[分段自适应阈值]
     K --> L[Silero VAD检测]
     L --> M[节拍对齐优化]
@@ -493,10 +523,11 @@ python -c "import demucs.pretrained; print('Demucs OK')"
 
 ## 📈 项目状态
 
-**当前版本**: v1.2.0 (BPM驱动自适应版本) - **生产就绪** 🚀
+**当前版本**: v2.1.0 (VocalPrime纯人声域检测版本) - **生产就绪** 🚀
 
 ### ✅ **核心系统完成度 (100%)**
-- ✅ **BPM自适应引擎**: AdaptiveParameterCalculator智能参数计算
+- ✅ **v2.1 VocalPrime检测器**: RMS能量包络+动态噪声地板+滞回检测+平台验证
+- ✅ **v2.0 纯人声检测系统**: 多维特征+频谱分类+BPM优化+五级验证完整流水线
 - ✅ **双路检测系统**: Silero VAD主路 + MDX23/Demucs增强验证
 - ✅ **无缝拼接技术**: 0.00e+00精度差异，完美重构保证
 - ✅ **RTX 5060 Ti完全兼容**: PyTorch 2.8.0适配，16GB VRAM优化
@@ -506,35 +537,38 @@ python -c "import demucs.pretrained; print('Demucs OK')"
 
 ### 🎯 **技术指标达成**
 - 🎵 **分割精度**: 样本级精度 (0.00e+00重构误差)
-- 🧠 **检测准确率**: 94.1%平均置信度
+- 🧠 **检测准确率**: 94.1%平均置信度 (传统系统) → v2.x系统更高精度
 - ⚡ **处理速度**: CPU模式16s，GPU模式45s
 - 💎 **音质保持**: WAV/FLAC无损输出，零处理保真
 - 🎶 **BPM范围**: 支持50-200 BPM全频段音乐
 
-**最新架构**：原始音频→BPM分析→复杂度评估→双路检测(Silero VAD + 可选分离增强)→交叉验证→节拍对齐→精确分割→WAV输出
+### 📋 **系统架构演进**
+- **v2.1架构**: 原始音频→人声分离→VocalPrime RMS检测→静音平台验证→零交叉对齐→精确分割
+- **v2.0架构**: 原始音频→人声分离→四维特征分析→频谱分类→BPM优化→五级验证→样本分割
+- **v1.2架构**: 原始音频→BPM分析→双路检测(Silero VAD + 可选分离增强)→交叉验证→节拍对齐→精确分割
 
-### 🆕 v1.2.0关键突破 - BPM驱动智能分割
-- 🎶 **BPM自适应核心**: 音乐理论驱动的参数动态计算
-  - 🎹 **四风格分类**: 慢歌/中速/快歌/极快(<70/70-100/100-140/>140 BPM)自动识别
-  - 🎵 **复杂度感知**: 编曲密度和乐器数量智能分析，动态调整VAD阈值
-  - ⚡ **节拍对齐**: 分割点自动对齐到音乐节拍，提升自然度
-  - 📊 **参数计算**: AdaptiveParameterCalculator引擎，运行时替换静态配置
+### 🆕 v2.1.0关键突破 - VocalPrime纯人声域检测
+- 🎯 **VocalPrime检测引擎**: 基于vocal_prime.md方案的纯人声域检测
+  - 🔬 **RMS能量包络**: 30ms帧/10ms跳 + EMA平滑120ms，消除抖动
+  - 📊 **动态噪声地板**: 滚动5%分位数自适应，处理不同音频动态范围
+  - ⚡ **滞回状态机**: down=floor+3dB/up=floor+6dB，消除边界抖动
+  - 📈 **平台平坦度验证**: ≤6dB波动检测，确保真实静音平台
+  - 🛡️ **未来静默守卫**: 切点后需≥1.0s静音，避免误切
 
-- 🔧 **RTX 5060 Ti完全支持**: 
-  - ✅ **PyTorch 2.8.0兼容**: 解决weights_only参数问题，模型正常加载
-  - 💎 **16GB VRAM优化**: 12GB工作限制，大GPU模式优化配置
-  - 🚀 **双后端支持**: MDX23高质量 + Demucs v4快速，智能降级
-
-- 🧠 **双路检测增强**:
-  - 🎯 **主路径**: Silero VAD直接检测（快速，94.1%置信度）
-  - 🔍 **增强路径**: 人声分离后检测（精确，交叉验证）
-  - 📈 **置信度评分**: 多维质量评估，确保分割准确性
+### 🆕 v2.0.0关键突破 - 多维特征纯人声检测系统
+- 🧠 **四维特征分析**: F0轨迹+共振峰+频谱质心+谐波强度全方位检测
+  - 🎵 **PureVocalPauseDetector**: 基于分离人声的高精度停顿检测
+  - 🔍 **SpectralAwareClassifier**: 频谱感知分类，解决高频换气误判
+  - 🎶 **BPMVocalOptimizer**: BPM自适应优化，节拍对齐+风格适配
+  - ✅ **MultiLevelValidator**: 五级验证系统，全面质量保证
 
 ### 📋 技术架构演进历史
 - **v1.0.3**: 架构优化版本 - 项目结构重构，代码规范化
 - **v1.1.0**: BPM自适应增强版本 - 解决编曲复杂度变化问题
 - **v1.1.2**: 配置清理与逻辑修正版本 - 提升可维护性，修正音乐理论逻辑
 - **v1.2.0**: BPM驱动自适应版本 - 智能双路检测，GPU加速优化
+- **v2.0.0**: 纯人声检测增强版本 - 多维特征分析，频谱感知分类
+- **v2.1.0**: VocalPrime纯人声域检测版本 - RMS能量检测，动态噪声地板
 
 ## 🚀 GPU加速配置指南
 
@@ -611,5 +645,5 @@ python run_splitter.py "$@" --seamless-vocal --gpu-mode
 ## 📄 许可证
 
 本项目仅供学习和研究使用。
-"# audio-cut" 
-"# audio-cut" 
+
+"# audio-cut"

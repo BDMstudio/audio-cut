@@ -216,9 +216,9 @@ class VocalPauseDetectorV2:
             # 5. 分类停顿位置（头部/中间/尾部）
             vocal_pauses = self._classify_pause_positions(valid_pauses, speech_timestamps, len(original_audio))
             
-            # 6. 计算切割点
-            vocal_pauses = self._calculate_cut_points(vocal_pauses, bpm_features)
-            
+            # 6. 计算切割点（静音平台中心+右偏+零交叉吸附）
+            vocal_pauses = self._calculate_cut_points(vocal_pauses, bpm_features, original_audio)
+
             # 7. BPM感知的停顿优化（如果启用）
             if self.enable_bpm_adaptation and bpm_features:
                 vocal_pauses = self._optimize_pauses_with_bpm(vocal_pauses, bpm_features)
@@ -257,15 +257,20 @@ class VocalPauseDetectorV2:
             audio_tensor = torch.from_numpy(audio_resampled).float()
             
             # 使用Silero VAD检测语音时间戳
+            # 从配置读取Silero参数（如无则使用安全默认值）
+            min_speech_ms = int(get_config('advanced_vad.silero_min_speech_ms', 250))
+            pad_ms = int(get_config('advanced_vad.silero_speech_pad_ms', 10))
+            win_size = int(get_config('advanced_vad.silero_window_size_samples', 480))
+
             speech_timestamps = self.get_speech_timestamps(
-                audio_tensor, 
+                audio_tensor,
                 self.vad_model,
                 sampling_rate=target_sr,
                 threshold=self.voice_threshold,
-                min_speech_duration_ms=250,  # 降低至250ms检测更短语音片段
-                min_silence_duration_ms=int(self.min_pause_duration * 1000),  # 最小静音时长现为400ms
-                window_size_samples=512,
-                speech_pad_ms=10  # 减少填充提高精度
+                min_speech_duration_ms=min_speech_ms,
+                min_silence_duration_ms=int(self.min_pause_duration * 1000),
+                window_size_samples=win_size,
+                speech_pad_ms=pad_ms
             )
             
             # 将时间戳映射回原始采样率
@@ -518,60 +523,107 @@ class VocalPauseDetectorV2:
         
         return vocal_pauses
     
-    def _calculate_cut_points(self, vocal_pauses: List[VocalPause], bpm_features: Optional['BPMFeatures'] = None) -> List[VocalPause]:
-        """计算精确的切割点位置（BPM自适应）
-        
+    def _calculate_cut_points(self, vocal_pauses: List[VocalPause], bpm_features: Optional['BPMFeatures'] = None, waveform: Optional[np.ndarray] = None) -> List[VocalPause]:
+        """
+        计算精确的切割点位置（静音平台中心+右偏+零交叉吸附；保留BPM自适应能力）
+
         Args:
             vocal_pauses: 人声停顿列表
-            bpm_features: BPM分析特征（用于自适应偏移）
-            
+            bpm_features: BPM分析特征（用于偏移/对齐）
+            waveform: 原始波形（纯人声stem），用于零交叉吸附
+
         Returns:
             包含切割点的停顿列表
         """
-        # 获取BPM自适应偏移（如果启用）
+        # 读取切点精修配置
+        enable_zero_x = get_config('vocal_pause_splitting.enable_zero_crossing_align', True)
+        max_shift_s = float(get_config('vocal_pause_splitting.max_shift_from_silence_center', 0.08))
+        bias_ratio = float(get_config('vocal_pause_splitting.silence_center_bias_ratio', 0.60))
+        backoff_ms = int(get_config('vocal_pause_splitting.boundary_backoff_ms', 180))
+        backoff_s = backoff_ms / 1000.0
+
+        # BPM自适应偏移（备用方案）
         if self.enable_bpm_adaptation and bpm_features:
             adaptive_head_offset, adaptive_tail_offset = self._get_adaptive_offsets(bpm_features)
         else:
             adaptive_head_offset, adaptive_tail_offset = self.head_offset, self.tail_offset
-        
-        logger.info(f"计算 {len(vocal_pauses)} 个停顿的切割点...")
-        
+
+        logger.info(f"计算 {len(vocal_pauses)} 个停顿的切割点（零交叉={enable_zero_x}）...")
+
+        # 新增：支持“人声消失即切割”模式（不破坏默认行为）
+        cut_on_speech_end = bool(get_config('vocal_pause_splitting.cut_at_speech_end', False))
+
         for i, pause in enumerate(vocal_pauses):
-            original_start = pause.start_time
-            original_end = pause.end_time
-            
-            if pause.position_type == 'head':
-                # 头部停顿：使用自适应偏移
-                pause.cut_point = pause.end_time + adaptive_head_offset
-            elif pause.position_type == 'tail':
-                # 尾部停顿：使用自适应偏移
-                pause.cut_point = pause.start_time + adaptive_tail_offset
-            else:  # middle
-                # 中间停顿：在停顿中心点切割
-                pause.cut_point = (pause.start_time + pause.end_time) / 2
-            
-            # 确保切割点在有效范围内
-            pause.cut_point = max(0, pause.cut_point)
-            
-            logger.info(f"停顿 {i+1} ({pause.position_type}): {original_start:.2f}s-{original_end:.2f}s → 切点: {pause.cut_point:.2f}s")
-        
+            width = max(0.0, pause.end_time - pause.start_time)
+
+            if cut_on_speech_end and pause.position_type in ('middle', 'tail'):
+                # 人声消失即切割：选择停顿起点作为基准
+                candidate = pause.start_time
+                # 只向右搜索对齐，避免提前
+                left = pause.start_time
+                right = min(pause.end_time, pause.start_time + max_shift_s)
+            else:
+                # 平台中心右偏：从停顿起点按比例取点（默认0.60 = 偏右）
+                candidate = pause.start_time + width * bias_ratio
+                # 边界回退，避免切在语音边缘抖动
+                left = pause.start_time + backoff_s
+                right = pause.end_time - backoff_s
+                if right <= left:
+                    left, right = pause.start_time, pause.end_time
+
+            # 将候选点限制在区间内
+            candidate = min(max(candidate, left), right)
+
+            # 零交叉吸附（在指定窗口内寻找最小幅度点）
+            if enable_zero_x and waveform is not None and len(waveform) > 0:
+                center_idx = int(candidate * self.sample_rate)
+                # 对“消失即切割”只向右吸附；否则双向
+                radius = int(max_shift_s * self.sample_rate)
+                start_idx = int(left * self.sample_rate) if cut_on_speech_end else max(int(pause.start_time * self.sample_rate), center_idx - radius)
+                end_idx = int(right * self.sample_rate) if cut_on_speech_end else min(int(pause.end_time * self.sample_rate), center_idx + radius)
+                if end_idx > start_idx:
+                    window = waveform[start_idx:end_idx]
+                    local = int(np.argmin(np.abs(window)))
+                    cut_idx = start_idx + local
+                    pause.cut_point = cut_idx / self.sample_rate
+                else:
+                    pause.cut_point = candidate
+            else:
+                # 未启用零交叉吸附
+                if cut_on_speech_end and pause.position_type in ('middle', 'tail'):
+                    pause.cut_point = candidate
+                else:
+                    # 退化为BPM偏移或候选点
+                    if pause.position_type == 'head':
+                        pause.cut_point = pause.end_time + adaptive_head_offset
+                    elif pause.position_type == 'tail':
+                        pause.cut_point = pause.start_time + adaptive_tail_offset
+                    else:
+                        pause.cut_point = candidate
+
+            # 约束范围
+            pause.cut_point = max(0.0, min(pause.cut_point, pause.end_time))
+
+            logger.info(f"停顿 {i+1} ({pause.position_type}): {pause.start_time:.2f}s-{pause.end_time:.2f}s → 切点: {pause.cut_point:.2f}s")
+
         return vocal_pauses
     
-    def _filter_adaptive_pauses(self, pause_segments: List[Dict], 
+    def _filter_adaptive_pauses(self, pause_segments: List[Dict],
                               complexity_segments: List,
                               bpm_features: 'BPMFeatures') -> List[Dict]:
         """基于BPM特征自适应过滤停顿
-        
+
         Args:
             pause_segments: 停顿区域列表
             bpm_features: BPM分析特征
-            
+
         Returns:
             自适应过滤后的停顿列表
         """
-        if not hasattr(self, 'adaptive_enhancer') or not self.adaptive_enhancer:
+        # 关键修复：当未启用BPM自适应、未初始化增强器，或bpm特征不可用时，回退到固定阈值过滤
+        if (not getattr(self, 'enable_bpm_adaptation', False)) or (not hasattr(self, 'adaptive_enhancer')) or (not self.adaptive_enhancer) or (bpm_features is None):
             return self._filter_valid_pauses(pause_segments)
-        
+
         valid_pauses = []
         
         # 基于BPM和乐器复杂度动态调整最小停顿时长
@@ -674,22 +726,34 @@ class VocalPauseDetectorV2:
             if duration_samples < min_pause_samples:
                 continue
                 
-            # 🎯 关键改进：只选择时长≥阈值的停顿作为分割点
+            # 边界停顿放宽：头/尾仅需满足最小停顿时长；中间停顿需 ≥ 动态阈值
+            is_head = (pause.get('start', 0) == 0)
+            is_tail = (pause.get('end', 0) >= total_audio_length * 0.95)
+
+            if is_head or is_tail:
+                duration_ratio = duration_seconds / max(average_pause_duration, 1e-6)
+                valid_pauses.append({
+                    **pause,
+                    'duration': duration_seconds,
+                    'confidence': 0.75,  # 边界停顿基础置信度
+                    'bpm_aligned': False,
+                    'duration_ratio': duration_ratio
+                })
+                logger.debug(f"边界停顿保留: {duration_seconds:.3f}s (head={is_head}, tail={is_tail})")
+                continue
+
+            # 🎯 中间停顿：只选择时长≥阈值的停顿作为分割点
             if duration_seconds >= duration_threshold:
                 # 根据节拍强度调整置信度
                 confidence = 0.8  # 基础置信度
-                
-                # 如果停顿时长与节拍周期对齐，提高置信度
-                beat_duration = 60.0 / bpm_features.main_bpm if bpm_features.main_bpm > 0 else 1.0
-                if abs(duration_seconds % beat_duration) < 0.1 or \
-                   abs(duration_seconds % (beat_duration * 2)) < 0.1:
+                beat_duration = 60.0 / bpm_features.main_bpm if (bpm_features and getattr(bpm_features, 'main_bpm', 0) > 0) else 1.0
+                if abs(duration_seconds % beat_duration) < 0.1 or abs(duration_seconds % (beat_duration * 2)) < 0.1:
                     confidence += 0.1
-                
-                # 停顿越长相对于平均值，置信度越高
-                duration_ratio = duration_seconds / average_pause_duration
-                if duration_ratio >= 1.5:  # 比平均值长50%以上
+
+                duration_ratio = duration_seconds / max(average_pause_duration, 1e-6)
+                if duration_ratio >= 1.5:
                     confidence += 0.1
-                    
+
                 valid_pauses.append({
                     **pause,
                     'duration': duration_seconds,
@@ -697,11 +761,10 @@ class VocalPauseDetectorV2:
                     'bpm_aligned': abs(duration_seconds % beat_duration) < 0.1,
                     'duration_ratio': duration_ratio
                 })
-                
                 logger.debug(f"选择停顿: {duration_seconds:.3f}s (比例: {duration_ratio:.2f}x)")
             else:
                 logger.debug(f"跳过短停顿: {duration_seconds:.3f}s < {duration_threshold:.3f}s")
-        
+
         logger.info(f"平均值筛选完成: {len(middle_pause_durations)}个候选 → {len(valid_pauses)}个分割点 (阈值: {duration_threshold:.3f}s)")
         return valid_pauses
     

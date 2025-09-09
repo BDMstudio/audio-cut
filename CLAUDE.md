@@ -22,28 +22,30 @@ pip install -e .
 
 ### Primary Usage Commands
 ```bash
-# ⚡ FAST MODE - Quick splitting (recommended for daily use) 
+# ⚡ FAST MODE - One-click processing (recommended for daily use) 
 python quick_start.py
-# → Uses optimized HPSS backend, ~16s processing time
+# → Auto-selects best backend, provides 4 processing mode options
 
-# ✨ Seamless vocal pause splitting (BPM adaptive built-in)
-python run_splitter.py input/01.mp3 --seamless-vocal
+# 🎯 VocalPrime v2.1 - Pure vocal domain RMS detection (LATEST)
+python run_splitter.py input/01.mp3 --vocal-prime-v2
 
-# 🎯 HIGH ACCURACY mode (slower but higher quality)
-# Edit config.yaml: enhanced_separation.backend: "mdx23"
+# ✨ Pure vocal detection v2.0 (Multi-dimensional feature analysis) 
+python run_splitter.py input/01.mp3 --pure-vocal-v2
+
+# 🔄 Seamless splitting (BMP adaptive + spectral classification)
 python run_splitter.py input/01.mp3 --seamless-vocal --validate-reconstruction
 
-# Traditional intelligent splitting  
+# Traditional intelligent splitting (legacy compatibility)
 python run_splitter.py input/01.mp3 --min-length 8 --max-length 12 --target-length 10
 
 # Verbose output for debugging
 python run_splitter.py input/01.mp3 --verbose
 
-# Direct usage of core module
+# Direct usage of core module (legacy)
 python src/vocal_smart_splitter/main.py input/01.mp3 -o output/custom_dir
 
 # Speed optimization guide - See SPEED_OPTIMIZATION.md for detailed tuning
-# Note: BPM-adaptive enhancement is automatically enabled when using --seamless-vocal mode
+# Note: BMP-adaptive enhancement is automatically enabled when using --seamless-vocal mode
 ```
 
 ### Testing Commands
@@ -88,21 +90,36 @@ audio-cut/
 └── requirements.txt                     # Dependencies
 ```
 
-### 🆕 BPM-Adaptive Seamless Pipeline (v1.2.0 - FULLY FUNCTIONAL)
-The BPM-adaptive seamless splitter successfully combines Silero VAD with musical intelligence:
+### 🆕 VocalPrime Pure Vocal Domain Detection (v2.1.0 - LATEST)
+The VocalPrime system implements pure vocal domain RMS energy envelope detection based on the vocal_prime.md specification:
 
-**Core Components:**
+**Core VocalPrime Components:**
+- `src/vocal_smart_splitter/core/vocal_prime_detector.py` - 🆕 VocalPrime RMS detector (v2.1)
+- `src/vocal_smart_splitter/core/pure_vocal_pause_detector.py` - 🆕 Pure vocal pause detector (v2.0) 
+- `src/vocal_smart_splitter/core/spectral_aware_classifier.py` - 🆕 Spectral-aware classifier (v2.0)
+- `src/vocal_smart_splitter/core/bmp_vocal_optimizer.py` - 🆕 BMP vocal optimizer (v2.0)
+- `src/vocal_smart_splitter/core/multi_level_validator.py` - 🆕 Multi-level validator (v2.0)
 - `src/vocal_smart_splitter/core/seamless_splitter.py` - Main seamless splitting engine
 - `src/vocal_smart_splitter/core/vocal_pause_detector.py` - Enhanced Silero VAD detector
-- `src/vocal_smart_splitter/core/adaptive_vad_enhancer.py` - NEW: BPM-adaptive VAD enhancer
+- `src/vocal_smart_splitter/core/adaptive_vad_enhancer.py` - BMP-adaptive VAD enhancer (v1.2)
 
-**Processing Pipeline:**
+**v2.1 VocalPrime Processing Pipeline:**
 1. **Audio Loading** - Direct 44.1kHz audio processing
-2. **BPM Analysis** - Automatic tempo detection and music categorization  
-3. **Complexity Assessment** - Dynamic analysis of arrangement complexity
-4. **Adaptive Threshold Generation** - Multi-dimensional threshold adjustment
-5. **Silero VAD Analysis** - Enhanced neural network-based voice activity detection
-6. **Beat Alignment** - Cutting point optimization using musical beats
+2. **Pure Vocal Separation** - MDX23/Demucs high-quality vocal isolation  
+3. **RMS Energy Envelope** - 30ms frame/10ms hop + EMA smoothing (120ms)
+4. **Dynamic Noise Floor** - Rolling 5% percentile adaptive thresholding
+5. **Hysteresis State Machine** - down=floor+3dB, up=floor+6dB dual threshold
+6. **Platform Flatness Verification** - ≤6dB fluctuation validation
+7. **Future Silence Guardian** - Cut point requires ≥1.0s silence ahead
+8. **Zero-Crossing Alignment** - Sample-perfect splitting with right bias
+
+**v2.0 Multi-Dimensional Processing Pipeline:**
+1. **Audio Loading** - Direct 44.1kHz audio processing
+2. **Pure Vocal Separation** - MDX23/Demucs high-quality vocal isolation
+3. **Multi-Dimensional Feature Analysis** - F0 contour + formant + spectral centroid + harmonic ratio
+4. **Spectral Pattern Classification** - True pause vs breath detection using spectral awareness
+5. **BMP-Driven Optimization** - Beat alignment and style-adaptive parameter tuning
+6. **Multi-Level Validation** - Duration + energy + spectral + context + music theory validation
 7. **Sample-Perfect Splitting** - Zero-difference reconstruction splitting
 8. **WAV/FLAC Output** - Lossless audio format with zero processing
 
@@ -300,13 +317,16 @@ pause_duration_multipliers:
 - **Slow songs** (BPM < 80): Relaxed rhythm → natural pauses are longer → need higher multiplier
 - **Fast songs** (BPM > 120): Dense rhythm → natural pauses are shorter → need lower multiplier
 
-### System Status (v1.2.0 - PRODUCTION READY)
-- ✅ **BPM Adaptive System**: FULLY FUNCTIONAL with Phase 2 complete
+### System Status (v2.1.0 - PRODUCTION READY)
+- ✅ **v2.1 VocalPrime System**: RMS energy envelope + dynamic noise floor detection complete
+- ✅ **v2.0 Pure Vocal System**: Multi-dimensional feature analysis + spectral classification complete  
+- ✅ **BMP Adaptive System**: FULLY FUNCTIONAL with Phase 2 complete
 - ✅ **Test Suite**: Core functionality tested and validated
 - ✅ **Seamless Reconstruction**: Perfect 0.00e+00 difference achieved consistently
-- ✅ **BPM Processing**: All 4 music categories (slow/medium/fast/very_fast) working
+- ✅ **BMP Processing**: All 4 music categories (slow/medium/fast/very_fast) working
 - ✅ **Quality Control**: Dynamic parameter adjustment with 94.1% confidence
 - ✅ **GPU Support**: PyTorch 2.8.0 + CUDA 12.9 fully compatible
 - ✅ **Dual Path Detection**: MDX23 + Silero VAD cross-validation enabled
 - ✅ **Configuration System**: Stable with runtime override capability
-- ✅ **Quick Start**: Simplified one-click processing via quick_start.py
+- ✅ **Quick Start**: 4-mode processing selection interface complete
+- ✅ **Method Fixes**: All v2.0 parameter and method name issues resolved

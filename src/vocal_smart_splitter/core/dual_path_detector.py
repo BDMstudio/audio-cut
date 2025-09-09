@@ -153,44 +153,34 @@ class DualPathVocalDetector:
             self.stats['single_path_fallback'] += 1
             logger.info("使用单路检测模式")
             
-        # 双路检测结果分析和决策
+        # 🎯 核心逻辑修复：严格按照人声分离分割流程
         if use_dual_path and separation_result:
-            # 对比双路检测结果 - 修复决策逻辑
-            mixed_quality = len(mixed_pauses) * 0.1  # 混音检测基础质量
-            separated_quality = separation_result.separation_confidence * len(separated_pauses) * 0.1
-            
-            logger.info(f"\n[双路检测结果对比]")
-            logger.info(f"  混音路径: {len(mixed_pauses)}个停顿, 质量评分={mixed_quality:.3f}")
-            logger.info(f"  分离路径: {len(separated_pauses)}个停顿, 质量评分={separated_quality:.3f}")
+            logger.info(f"\n[人声分离分割模式]")
             logger.info(f"  分离后端: {separation_result.backend_used}")
             logger.info(f"  分离置信度: {separation_result.separation_confidence:.3f}")
+            logger.info(f"  混音检测: {len(mixed_pauses)}个停顿")
+            logger.info(f"  分离检测: {len(separated_pauses)}个停顿")
             
-            # 修复的智能选择策略
-            use_separated = False
-            if separation_result.backend_used in ['mdx23', 'demucs_v4']:
-                # 高质量后端优先策略：置信度>0.5就优先使用分离结果
-                if separation_result.separation_confidence > 0.5:
-                    use_separated = True
-                    logger.info(f"  决策: 使用{separation_result.backend_used}分离检测 (高质量后端+高置信度)")
-                elif len(separated_pauses) > len(mixed_pauses) * 0.7:  # 检测数量不要相差太多
-                    use_separated = True 
-                    logger.info(f"  决策: 使用{separation_result.backend_used}分离检测 (检测数量合理)")
-                else:
-                    logger.info(f"  决策: 使用混音检测 (分离置信度不足: {separation_result.separation_confidence:.3f})")
-            else:
-                # HPSS后端需要更保守
-                if separated_quality > mixed_quality and separation_result.separation_confidence > 0.3:
-                    use_separated = True
-                    logger.info(f"  决策: 使用HPSS分离检测 (质量优势)")
-                else:
-                    logger.info(f"  决策: 使用混音检测 (HPSS质量不足)")
+            # 🎯 按照用户要求：严格基于人声分离结果进行分割
+            # 第1步：已完成人声分离
+            # 第2步：验证人声与原音频时长一致性 
+            vocal_duration = len(separation_result.vocal_track) / self.sample_rate
+            original_duration = len(audio) / self.sample_rate
+            duration_diff = abs(vocal_duration - original_duration)
             
-            if use_separated:
+            logger.info(f"  [时长验证] 原音频: {original_duration:.3f}s, 人声: {vocal_duration:.3f}s, 差异: {duration_diff:.3f}s")
+            
+            if duration_diff < 0.1:  # 时长差异小于0.1秒认为一致
+                logger.info(f"  ✓ 时长验证通过，使用人声分离检测结果")
+                # 第3步：基于人声音频确定停顿分割点
+                # 第4步：分割点从人声映射到原音频（样本位置完全对应）
                 validated_pauses = self._convert_to_validated_pauses(separated_pauses, single_path=False, source="separated")
-                logger.info(f"  最终选择: 分离检测 {len(separated_pauses)}个停顿")
+                logger.info(f"  🎯 最终决策: 人声分离检测 {len(separated_pauses)}个停顿")
             else:
+                logger.warning(f"  ⚠️ 时长验证失败，时长差异过大: {duration_diff:.3f}s")
+                logger.info(f"  降级使用混音检测避免时间轴错误")
                 validated_pauses = self._convert_to_validated_pauses(mixed_pauses, single_path=False, source="mixed")
-                logger.info(f"  最终选择: 混音检测 {len(mixed_pauses)}个停顿")
+                logger.info(f"  🔄 降级决策: 混音检测 {len(mixed_pauses)}个停顿")
         else:
             # 单路模式：优先使用混音检测结果
             if mixed_pauses:

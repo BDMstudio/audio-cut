@@ -3,7 +3,9 @@
     "allow": [
       "Bash(python:*)",
       "Read(//e/BDM_STATION/Desktop/BDM_projects/**)",
-      "Bash(set FORCE_SEPARATION_BACKEND=mdx23)"
+      "Bash(set FORCE_SEPARATION_BACKEND=mdx23)",
+      "Bash(tree:*)",
+      "Bash(dir:*)"
     ],
     "deny": [],
     "ask": []

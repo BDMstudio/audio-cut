@@ -81,12 +81,12 @@ class MultiLevelValidator:
             'music_theory': get_config('validator.music_theory_weight', 0.25)
         }
         
-        # 质量等级阈值
+        # 质量等级阈值 (调整为适合音乐场景)
         self.grade_thresholds = {
-            'A': 0.85,  # 优秀
-            'B': 0.70,  # 良好
-            'C': 0.55,  # 合格
-            'D': 0.40   # 较差
+            'A': 0.75,  # 优秀 (从0.85降至0.75)
+            'B': 0.60,  # 良好 (从0.70降至0.60)
+            'C': 0.45,  # 合格 (从0.55降至0.45)
+            'D': 0.30   # 较差 (从0.40降至0.30，确保基本质量停顿不被拒绝)
         }
         
         logger.info("多级验证系统初始化完成")
@@ -468,8 +468,8 @@ class MultiLevelValidator:
         else:
             quality_grade = 'F'  # 不合格
         
-        # 判断是否有效(至少C级)
-        is_valid = quality_grade in ['A', 'B', 'C']
+        # 判断是否有效(至少D级，适合音乐场景)
+        is_valid = quality_grade in ['A', 'B', 'C', 'D']
         
         # 提取基本信息
         if hasattr(pause, 'start_time'):

@@ -131,9 +131,8 @@ class PureVocalPauseDetector:
             y=audio, sr=self.sample_rate, hop_length=self.hop_length
         )[0]
         
-        # 4. 谐波分析
-        harmonic, percussive = librosa.effects.hpss(audio)
-        harmonic_ratio = self._calculate_harmonic_ratio(harmonic, audio)
+        # 4. 谐波分析 - 基于纯人声信号，无需再分离
+        harmonic_ratio = self._calculate_harmonic_ratio_direct(audio)
         
         # 5. 过零率
         zero_crossing_rate = librosa.feature.zero_crossing_rate(
@@ -512,3 +511,86 @@ class PureVocalPauseDetector:
             logger.debug(f"合并相邻停顿: {len(pauses)} -> {len(merged)}")
         
         return merged
+    
+    def _calculate_harmonic_ratio_direct(self, audio: np.ndarray) -> np.ndarray:
+        """直接计算纯人声的谐波比率
+        
+        Args:
+            audio: 纯人声音频信号
+            
+        Returns:
+            谐波比率序列
+        """
+        # 计算短时谱
+        stft = librosa.stft(audio, hop_length=self.hop_length)
+        magnitude = np.abs(stft)
+        
+        # 计算谐波比率：前1/3频段能量 vs 后2/3频段能量
+        n_bins = magnitude.shape[0]
+        low_freq_energy = np.sum(magnitude[:n_bins//3, :], axis=0)
+        high_freq_energy = np.sum(magnitude[n_bins//3:, :], axis=0)
+        
+        # 谐波比率：低频能量占比（人声主要在低频）
+        total_energy = low_freq_energy + high_freq_energy
+        harmonic_ratio = low_freq_energy / (total_energy + 1e-10)
+        
+        return harmonic_ratio
+    
+    def _extract_formants(self, audio: np.ndarray) -> List[np.ndarray]:
+        """提取共振峰特征
+        
+        Args:
+            audio: 音频信号
+            
+        Returns:
+            共振峰能量序列列表
+        """
+        # 使用线性预测编码(LPC)分析共振峰
+        frame_length = int(0.025 * self.sample_rate)  # 25ms窗口
+        hop_length = self.hop_length
+        
+        formant_tracks = [[] for _ in range(3)]  # F1, F2, F3
+        
+        for i in range(0, len(audio) - frame_length, hop_length):
+            frame = audio[i:i + frame_length]
+            
+            if len(frame) < frame_length:
+                break
+                
+            # 预加重
+            frame = np.append(frame[0], frame[1:] - 0.95 * frame[:-1])
+            
+            # LPC分析
+            try:
+                # 使用librosa的LPC
+                lpc_coeffs = librosa.lpc(frame, order=12)
+                
+                # 从LPC系数计算频率响应
+                w, h = signal.freqz(1, lpc_coeffs, worN=512, fs=self.sample_rate)
+                
+                # 找峰值作为共振峰
+                magnitude = np.abs(h)
+                peaks, _ = signal.find_peaks(magnitude, height=np.max(magnitude) * 0.1)
+                
+                # 取前3个峰值的频率
+                peak_freqs = w[peaks] if len(peaks) > 0 else []
+                peak_mags = magnitude[peaks] if len(peaks) > 0 else []
+                
+                # 排序并分配给F1, F2, F3
+                if len(peak_freqs) > 0:
+                    sorted_indices = np.argsort(peak_freqs)
+                    for j in range(min(3, len(sorted_indices))):
+                        if j < len(peak_mags):
+                            formant_tracks[j].append(peak_mags[sorted_indices[j]])
+                        else:
+                            formant_tracks[j].append(0.0)
+                else:
+                    for j in range(3):
+                        formant_tracks[j].append(0.0)
+                        
+            except Exception as e:
+                # LPC分析失败时填充零值
+                for j in range(3):
+                    formant_tracks[j].append(0.0)
+        
+        return [np.array(track) for track in formant_tracks]

@@ -78,10 +78,10 @@ class SpectralAwareClassifier:
             )
         }
         
-        # 从配置加载参数
-        self.breath_threshold = get_config('spectral_classifier.breath_threshold', 0.3)
-        self.pause_threshold = get_config('spectral_classifier.pause_threshold', 0.7)
-        self.uncertain_range = get_config('spectral_classifier.uncertain_range', [0.3, 0.7])
+        # 从配置加载参数 - 调整为更宽松的阈值
+        self.breath_threshold = get_config('spectral_classifier.breath_threshold', 0.85)  # 提高换气阈值，减少误判
+        self.pause_threshold = get_config('spectral_classifier.pause_threshold', 0.35)   # 降低停顿阈值，识别更多
+        self.uncertain_range = get_config('spectral_classifier.uncertain_range', [0.35, 0.65])
         
         # 特征权重
         self.feature_weights = {
@@ -409,7 +409,7 @@ class SpectralAwareClassifier:
         max_class = max(probabilities, key=probabilities.get)
         max_prob = probabilities[max_class]
         
-        # 确定最终类别
+        # 确定最终类别 - 更宽松的决策逻辑
         if max_class == 'breath' and max_prob >= self.breath_threshold:
             final_type = 'breath'
             action = 'filter'  # 过滤掉
@@ -417,11 +417,12 @@ class SpectralAwareClassifier:
             final_type = 'true_pause'
             action = 'keep'  # 保留
         elif self.uncertain_range[0] <= max_prob <= self.uncertain_range[1]:
-            final_type = 'uncertain'
-            action = 'review'  # 需要进一步审查
+            # 对不确定的情况，默认保留作为停顿
+            final_type = 'uncertain_pause'
+            action = 'keep'  # 默认保留
         else:
-            # 根据概率倾向决定
-            if probabilities['true_pause'] > probabilities['breath']:
+            # 根据概率倾向决定 - 倾向于保留停顿
+            if probabilities['true_pause'] >= probabilities['breath'] * 0.7:  # 降低判断标准
                 final_type = 'likely_pause'
                 action = 'keep'
             else:

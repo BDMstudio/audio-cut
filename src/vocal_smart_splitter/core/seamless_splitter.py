@@ -967,7 +967,7 @@ class SeamlessSplitter:
             
         try:
             # 使用增强分离器分离人声
-            separation_result = self.dual_detector.separator.separate_vocals(original_audio)
+            separation_result = self.dual_detector.separator.separate_for_detection(original_audio)
             
             if separation_result.vocal_track is not None:
                 logger.debug(f"成功分离人声 (置信度: {separation_result.separation_confidence:.3f})")

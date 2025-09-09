@@ -52,7 +52,7 @@ bpm_vocal_optimizer:
   
   # 时长控制
   target_segment_range: [8, 15]   # 目标片段时长范围(秒)
-  min_segment_duration: 5.0       # 最小片段时长
+  min_segment_duration: 3.0       # 最小片段时长
   max_segment_duration: 20.0      # 最大片段时长
 
 # 多级验证系统配置
@@ -271,10 +271,10 @@ vocal_pause_splitting:
 # 检测专用增强分离器 (v1.1.4+) - 🆕 RTX 5060 Ti 12GB优化配置
 # ============================================================================
 enhanced_separation:
-  # 分离器选择：mdx23(推荐) / demucs_v4 / hpss_fallback
+  # 分离器选择：mdx23(推荐) / demucs_v4
   backend: "mdx23"                         # 🚀 GPU模式：使用MDX23高质量分离
   enable_fallback: true                    # 启用后端降级
-  min_separation_confidence: 0.15         # ✅ 降低门槛以适应HPSS方法
+  min_separation_confidence: 0.3          # ✅ 提高门槛确保高质量分离（MDX23/Demucs）
 
   # 🆕 GPU配置 (RTX 5060 Ti 16GB, 限制12GB)
   gpu_config:
