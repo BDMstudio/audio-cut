@@ -1,9 +1,79 @@
-# 智能人声分割器配置文件 (v1.2.0 BPM-Adaptive Phase 1)
-# 目标：实现BPM驱动的动态参数调整系统，解决"个别分割不准确"问题
-# 核心策略：节拍感知 + 复杂度自适应 + 动态参数计算 + 静态配置退化兼容
+# 智能人声分割器配置文件 (v2.0.0 纯人声检测增强版)
+# 目标：基于纯人声检测系统解决高频换气误判问题，显著提升分割质量
+# v1.2.0: BPM驱动的动态参数调整系统
+# v2.0.0: 纯人声检测 + 频谱感知分类 + 多级验证系统
 
 # ============================================================================
-# BPM驱动的自适应核心配置 (NEW in v1.2.0)
+# 纯人声检测系统 v2.0 配置 (NEW)
+# 解决高频换气误判问题的核心配置
+# ============================================================================
+pure_vocal_detection:
+  # 系统开关
+  enable: true  # 启用纯人声检测系统v2.0
+  
+  # 基础检测参数
+  min_pause_duration: 0.5         # 最小停顿时长(秒)
+  breath_duration_range: [0.1, 0.3]  # 换气时长范围(秒)
+  
+  # 特征权重配置
+  f0_weight: 0.30                 # 基频特征权重
+  formant_weight: 0.25            # 共振峰特征权重  
+  spectral_weight: 0.25           # 频谱特征权重
+  duration_weight: 0.20           # 时长特征权重
+  
+  # 检测阈值
+  energy_threshold_db: -40        # 能量阈值(dB)
+  f0_drop_threshold: 0.7          # F0下降阈值
+  breath_filter_threshold: 0.3    # 换气过滤阈值
+  pause_confidence_threshold: 0.7  # 停顿置信度阈值
+
+# 频谱感知分类器配置
+spectral_classifier:
+  # 分类阈值
+  breath_threshold: 0.3           # 换气分类阈值
+  pause_threshold: 0.7            # 停顿分类阈值
+  uncertain_range: [0.3, 0.7]    # 不确定范围
+  
+  # 特征权重
+  f0_weight: 0.25
+  formant_weight: 0.20
+  spectral_weight: 0.20
+  duration_weight: 0.20
+  energy_weight: 0.15
+
+# BPM人声优化器配置
+bpm_vocal_optimizer:
+  # 节拍对齐
+  enable_beat_alignment: true     # 启用节拍对齐
+  beat_snap_tolerance: 0.1        # 节拍吸附容差(秒)
+  
+  # 风格适配
+  enable_style_adaptation: true   # 启用风格适配
+  
+  # 时长控制
+  target_segment_range: [8, 15]   # 目标片段时长范围(秒)
+  min_segment_duration: 5.0       # 最小片段时长
+  max_segment_duration: 20.0      # 最大片段时长
+
+# 多级验证系统配置
+validator:
+  # 验证阈值
+  min_pause_duration: 0.3         # 最小停顿时长
+  max_pause_duration: 5.0         # 最大停顿时长
+  energy_drop_threshold: 0.5      # 能量下降阈值
+  spectral_consistency_threshold: 0.7  # 频谱一致性阈值
+  context_coherence_threshold: 0.6     # 上下文一致性阈值
+  music_theory_compliance: 0.7    # 音乐理论符合度阈值
+  
+  # 验证权重
+  duration_weight: 0.15           # 时长验证权重
+  energy_weight: 0.20             # 能量验证权重
+  spectral_weight: 0.20           # 频谱验证权重
+  context_weight: 0.20            # 上下文验证权重
+  music_theory_weight: 0.25       # 音乐理论验证权重
+
+# ============================================================================
+# BPM驱动的自适应核心配置 (v1.2.0)
 # ============================================================================
 bpm_adaptive_core:
   # 基础时间单位：以节拍为基准

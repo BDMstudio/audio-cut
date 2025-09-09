@@ -53,9 +53,27 @@ class SeamlessSplitter:
         from .dual_path_detector import DualPathVocalDetector, ValidatedPause
         from .vocal_pause_detector import VocalPause  # 保持兼容性
         
+        # v2.0+ 纯人声检测系统：解决高频换气误判问题
+        from .pure_vocal_pause_detector import PureVocalPauseDetector
+        from .spectral_aware_classifier import SpectralAwareClassifier
+        from .bpm_vocal_optimizer import BPMVocalOptimizer
+        from .multi_level_validator import MultiLevelValidator, AudioContext
+        
         self.dual_detector = DualPathVocalDetector(sample_rate)
         self.ValidatedPause = ValidatedPause
         self.VocalPause = VocalPause  # 向后兼容
+        
+        # 纯人声检测系统v2.0组件
+        self.enable_pure_vocal_detection = get_config('pure_vocal_detection.enable', True)
+        if self.enable_pure_vocal_detection:
+            self.pure_detector = PureVocalPauseDetector(sample_rate)
+            self.spectral_classifier = SpectralAwareClassifier()
+            self.bpm_optimizer = BPMVocalOptimizer(sample_rate)
+            self.validator = MultiLevelValidator(sample_rate)
+            logger.info("纯人声检测系统v2.0已启用")
+        else:
+            self.pure_detector = None
+            logger.info("使用传统检测系统")
         
         # 从配置加载参数
         self.min_pause_duration = get_config('vocal_pause_splitting.min_pause_duration', 1.0)
@@ -130,11 +148,19 @@ class SeamlessSplitter:
                 if stats.get('separation_confidence'):
                     logger.info(f"  分离置信度: {stats['separation_confidence']:.3f}")
             
+            # 3. v2.0+ 纯人声检测系统增强（如果启用）
+            if self.enable_pure_vocal_detection and validated_pauses:
+                logger.info("\n=== 纯人声检测系统v2.0增强 ===")
+                validated_pauses = self._enhance_with_pure_vocal_detection(
+                    validated_pauses, original_audio, dual_result.processing_stats
+                )
+                logger.info(f"纯人声增强完成: {len(validated_pauses)}个优化停顿")
+            
             # 提取质量报告（真实分离质量）
             separation_quality = dual_result.quality_report
             
             if not validated_pauses:
-                logger.warning("双路检测未找到符合条件的人声停顿，无法分割")
+                logger.warning("停顿检测未找到符合条件的人声停顿，无法分割")
                 return self._create_single_segment_result(original_audio, input_path, output_dir)
             
             # 转换为兼容格式（ValidatedPause -> VocalPause）
@@ -802,3 +828,173 @@ class SeamlessSplitter:
             'total_pause_duration': total_duration,
             'pause_types': pause_types
         }
+    
+    def _enhance_with_pure_vocal_detection(self, validated_pauses: List, 
+                                          original_audio: np.ndarray,
+                                          processing_stats: Dict) -> List:
+        """使用纯人声检测系统v2.0增强停顿检测
+        
+        Args:
+            validated_pauses: 双路检测的结果
+            original_audio: 原始音频
+            processing_stats: 处理统计信息
+            
+        Returns:
+            增强后的停顿列表
+        """
+        logger.info("启动纯人声检测系统v2.0...")
+        
+        try:
+            # 1. 获取分离的纯人声（如果可用）
+            vocal_audio = self._extract_vocal_for_pure_detection(
+                original_audio, processing_stats
+            )
+            
+            if vocal_audio is None:
+                logger.warning("无法获取纯人声，使用原音频进行检测")
+                vocal_audio = original_audio
+            
+            # 2. 纯人声停顿检测
+            pure_pauses = self.pure_detector.detect_pure_vocal_pauses(
+                vocal_audio, original_audio
+            )
+            
+            logger.info(f"纯人声检测: {len(pure_pauses)}个候选停顿")
+            
+            # 3. 频谱感知分类
+            classified_pauses = []
+            for pause in pure_pauses:
+                # 转换为字典格式
+                pause_dict = {
+                    'start_time': pause.start_time,
+                    'end_time': pause.end_time,
+                    'duration': pause.duration,
+                    'confidence': pause.confidence,
+                    **pause.features
+                }
+                
+                # 分类
+                classification = self.spectral_classifier.classify_pause_type(pause_dict)
+                
+                # 只保留真停顿
+                if classification['action'] == 'keep':
+                    classified_pauses.append(pause)
+                    logger.debug(f"保留停顿: {pause.start_time:.2f}s - {classification['reasoning']}")
+                else:
+                    logger.debug(f"过滤停顿: {pause.start_time:.2f}s - {classification['reasoning']}")
+            
+            logger.info(f"频谱分类完成: {len(pure_pauses)} -> {len(classified_pauses)}个停顿")
+            
+            # 4. BPM优化
+            if self.current_adaptive_params:
+                optimized_pauses = self.bpm_optimizer.optimize_with_bpm(
+                    classified_pauses, original_audio, self.current_adaptive_params
+                )
+                logger.info(f"BPM优化完成: {len(classified_pauses)} -> {len(optimized_pauses)}个停顿")
+            else:
+                logger.info("无BPM参数，跳过BPM优化")
+                # 转换格式
+                optimized_pauses = []
+                for pause in classified_pauses:
+                    optimized_pauses.append(type('OptimizedPause', (), {
+                        'start_time': pause.start_time,
+                        'end_time': pause.end_time,
+                        'duration': pause.duration,
+                        'cut_point': (pause.start_time + pause.end_time) / 2,
+                        'confidence': pause.confidence,
+                        'alignment_score': 0.5,
+                        'optimization_reason': 'no_bpm_data'
+                    })())
+            
+            # 5. 多级验证
+            audio_context = AudioContext(
+                audio=original_audio,
+                sample_rate=self.sample_rate,
+                bpm=self.current_adaptive_params.bpm if self.current_adaptive_params else None,
+                total_duration=len(original_audio) / self.sample_rate,
+                energy_profile=np.abs(original_audio),
+                spectral_features={}
+            )
+            
+            final_pauses = self.validator.validate_pauses(optimized_pauses, audio_context)
+            logger.info(f"多级验证完成: {len(optimized_pauses)} -> {len(final_pauses)}个有效停顿")
+            
+            # 6. 转换回ValidatedPause格式
+            enhanced_validated_pauses = []
+            for pause in final_pauses:
+                enhanced_pause = self.ValidatedPause(
+                    start_time=pause.start_time,
+                    end_time=pause.end_time,
+                    duration=pause.duration,
+                    position_type=self._determine_position_type(pause.start_time, 
+                                                              len(original_audio) / self.sample_rate),
+                    confidence=pause.confidence,
+                    cut_point=pause.cut_point,
+                    mixed_detection=True,  # 来自混音检测
+                    separated_detection=True,  # 来自分离检测
+                    separation_confidence=processing_stats.get('separation_confidence', 0.0),
+                    validation_method="pure_vocal_v2"
+                )
+                enhanced_validated_pauses.append(enhanced_pause)
+            
+            # 生成验证报告
+            validation_report = self.validator.generate_validation_report(final_pauses)
+            logger.info(f"验证报告: {validation_report['quality_summary']}")
+            logger.info(f"质量分布: {validation_report['grade_distribution']}")
+            
+            return enhanced_validated_pauses
+            
+        except Exception as e:
+            logger.error(f"纯人声检测增强失败: {e}")
+            # 回退到原始结果
+            logger.info("回退到双路检测结果")
+            return validated_pauses
+    
+    def _extract_vocal_for_pure_detection(self, original_audio: np.ndarray,
+                                        processing_stats: Dict) -> Optional[np.ndarray]:
+        """为纯人声检测提取人声轨道
+        
+        Args:
+            original_audio: 原始音频
+            processing_stats: 处理统计信息
+            
+        Returns:
+            分离的人声轨道或None
+        """
+        # 检查是否有可用的分离器
+        if not hasattr(self.dual_detector, 'separator'):
+            return None
+            
+        try:
+            # 使用增强分离器分离人声
+            separation_result = self.dual_detector.separator.separate_vocals(original_audio)
+            
+            if separation_result.vocal_track is not None:
+                logger.debug(f"成功分离人声 (置信度: {separation_result.separation_confidence:.3f})")
+                return separation_result.vocal_track
+            else:
+                logger.debug("人声分离失败")
+                return None
+                
+        except Exception as e:
+            logger.debug(f"人声分离过程出错: {e}")
+            return None
+    
+    def _determine_position_type(self, start_time: float, total_duration: float) -> str:
+        """确定停顿位置类型
+        
+        Args:
+            start_time: 停顿开始时间
+            total_duration: 音频总时长
+            
+        Returns:
+            位置类型
+        """
+        ratio = start_time / total_duration
+        
+        if ratio < 0.2:
+            return 'head'
+        elif ratio > 0.8:
+            return 'tail'
+        else:
+            return 'middle'
