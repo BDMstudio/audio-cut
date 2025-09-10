@@ -35,6 +35,9 @@ class PureVocalPause:
     pause_type: str  # 'true_pause', 'breath', 'uncertain'
     confidence: float
     features: Dict  # 详细特征信息
+    cut_point: float = 0.0  # 最佳切割点（新增）
+    quality_grade: str = 'B'  # 质量等级（新增）
+    is_valid: bool = True   # 是否有效（新增）
     
 class PureVocalPauseDetector:
     """基于纯人声的多维特征停顿检测器
@@ -73,7 +76,11 @@ class PureVocalPauseDetector:
         self.frame_length = int(sample_rate * 0.025)  # 25ms frame
         self.n_fft = 2048
         
-        logger.info(f"纯人声停顿检测器初始化完成 (采样率: {sample_rate})")
+        # 🔥 关键修复：集成VocalPauseDetectorV2的能量谷检测能力
+        from .vocal_pause_detector import VocalPauseDetectorV2
+        self._cut_point_calculator = VocalPauseDetectorV2(sample_rate)
+        
+        logger.info(f"纯人声停顿检测器初始化完成 (采样率: {sample_rate}) - 已集成能量谷切点计算")
     
     def detect_pure_vocal_pauses(self, vocal_audio: np.ndarray, 
                                 original_audio: Optional[np.ndarray] = None) -> List[PureVocalPause]:
@@ -99,6 +106,10 @@ class PureVocalPauseDetector:
         
         # 4. 分类过滤
         filtered_pauses = self._classify_and_filter(analyzed_pauses)
+        
+        # 🔥 关键修复：使用VocalPauseDetectorV2计算精确切点
+        if filtered_pauses and vocal_audio is not None:
+            filtered_pauses = self._calculate_precise_cut_points(filtered_pauses, vocal_audio)
         
         logger.info(f"检测完成: {len(filtered_pauses)}个高质量停顿点")
         return filtered_pauses
@@ -594,3 +605,53 @@ class PureVocalPauseDetector:
                     formant_tracks[j].append(0.0)
         
         return [np.array(track) for track in formant_tracks]
+    
+    def _calculate_precise_cut_points(self, pure_vocal_pauses: List[PureVocalPause], 
+                                    vocal_audio: np.ndarray) -> List[PureVocalPause]:
+        """使用VocalPauseDetectorV2计算精确切点
+        
+        Args:
+            pure_vocal_pauses: 纯人声停顿列表
+            vocal_audio: 纯人声音频数据
+            
+        Returns:
+            包含精确切点的停顿列表
+        """
+        logger.info(f"🔥 使用能量谷算法计算 {len(pure_vocal_pauses)} 个停顿的精确切点...")
+        
+        # 转换为VocalPause格式以使用能量谷计算
+        from .vocal_pause_detector import VocalPause
+        vocal_pauses = []
+        
+        for i, pure_pause in enumerate(pure_vocal_pauses):
+            vocal_pause = VocalPause(
+                start_time=pure_pause.start_time,
+                end_time=pure_pause.end_time, 
+                duration=pure_pause.duration,
+                position_type='middle',  # 默认中间停顿
+                confidence=pure_pause.confidence,
+                cut_point=(pure_pause.start_time + pure_pause.end_time) / 2  # 临时切点
+            )
+            vocal_pauses.append(vocal_pause)
+        
+        # 🔥 关键修复：调用VocalPauseDetectorV2的能量谷切点计算，传入vocal_audio作为waveform
+        try:
+            vocal_pauses = self._cut_point_calculator._calculate_cut_points(
+                vocal_pauses, 
+                bpm_features=None,  # 纯人声模式不使用BPM对齐
+                waveform=vocal_audio  # 关键：传递纯人声音频数据用于能量谷检测
+            )
+            logger.info("✅ 能量谷切点计算成功")
+        except Exception as e:
+            logger.error(f"❌ 能量谷切点计算失败: {e}") 
+            logger.info("使用停顿中心作为兜底切点")
+            for vocal_pause in vocal_pauses:
+                vocal_pause.cut_point = (vocal_pause.start_time + vocal_pause.end_time) / 2
+        
+        # 将结果映射回PureVocalPause
+        for i, (pure_pause, vocal_pause) in enumerate(zip(pure_vocal_pauses, vocal_pauses)):
+            pure_pause.cut_point = vocal_pause.cut_point
+            pure_pause.quality_grade = 'A' if hasattr(vocal_pause, 'cut_point') and vocal_pause.cut_point != (vocal_pause.start_time + vocal_pause.end_time) / 2 else 'B'
+            logger.debug(f"停顿 {i+1}: [{pure_pause.start_time:.3f}s, {pure_pause.end_time:.3f}s] -> 切点 {pure_pause.cut_point:.3f}s ({pure_pause.quality_grade})")
+        
+        return pure_vocal_pauses

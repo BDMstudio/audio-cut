@@ -6,7 +6,8 @@
       "Bash(set FORCE_SEPARATION_BACKEND=mdx23)",
       "Bash(tree:*)",
       "Bash(dir:*)",
-      "Bash(findstr:*)"
+      "Bash(findstr:*)",
+      "Bash(find:*)"
     ],
     "deny": [],
     "ask": []

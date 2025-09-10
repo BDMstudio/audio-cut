@@ -88,7 +88,7 @@
 - **测试覆盖**: 41个测试文件涵盖unit/integration/contracts/performance层级
 
 ### 🔧 技术债务与对齐差距
-- **pure_vocal_pause_detector.py**: 文档中提及但代码中未找到，功能已迁移到增强Silero VAD
+- **引擎选择统一**: VocalPrime和Silero VAD两套检测引擎均已实现，需统一选择接口
 - **v2.engine切换**: quick_start.py 硬编码使用VocalPauseDetectorV2，缺少 silero|vocal_prime 引擎选择
 - **配置化接口**: vocal_prime_detector.py 使用硬编码参数，未完全接入 get_config() 系统
 
