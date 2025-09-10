@@ -716,37 +716,61 @@ class VocalPauseDetectorV2:
 
     def _calculate_cut_points(self, vocal_pauses: List[VocalPause], bpm_features: Optional['BPMFeatures'] = None, waveform: Optional[np.ndarray] = None) -> List[VocalPause]:
             """
-            计算精确的切割点位置（强制能量谷检测）
+            计算精确的切割点位置 - (v2.1 最终修复版)
+            统一所有停顿类型，强制执行能量谷搜索，并应用偏移量作为谷搜索的边界。
             """
             # 读取切点精修配置
             max_shift_s = float(get_config('vocal_pause_splitting.max_shift_from_silence_center', 0.08))
             backoff_ms = int(get_config('vocal_pause_splitting.boundary_backoff_ms', 180))
-            backoff_s = backoff_ms / 1000.0
             local_rms_ms = int(get_config('vocal_pause_splitting.local_rms_window_ms', 25))
             floor_pct = float(get_config('vocal_pause_splitting.silence_floor_percentile', 5))
             guard_ms = int(get_config('vocal_pause_splitting.lookahead_guard_ms', 120))
+            
+            # 读取头尾偏移量配置
+            head_offset = float(get_config('vocal_pause_splitting.cut_offset_before_vocal_start', -0.5))
+            tail_offset = float(get_config('vocal_pause_splitting.cut_offset_after_vocal_end', 0.5))
 
-            logger.info(f"计算 {len(vocal_pauses)} 个停顿的切割点 (强制能量谷检测模式)...")
+            logger.info(f"计算 {len(vocal_pauses)} 个停顿的切割点 (能量谷优先模式)...")
+            logger.debug(f"偏移配置: head_offset={head_offset}s, tail_offset={tail_offset}s")
 
             for i, pause in enumerate(vocal_pauses):
-                # ✅ --- 关键修复：恢复 left 和 right 变量的定义 ---
-                # 默认搜索范围是整个停顿区域，并向内收缩一个边界缓冲
-                left = pause.start_time + backoff_s
-                right = pause.end_time - backoff_s
-                # 如果收缩后范围无效，则使用原始停顿范围
-                if right <= left:
-                    left, right = pause.start_time, pause.end_time
-                # ✅ --- 修复结束 ---
+                # ✅ --- 核心修复：统一所有停顿类型的处理逻辑 ---
+                
+                # 1. 首先确定能量谷搜索的安全范围 (Search Range)
+                search_start = pause.start_time
+                search_end = pause.end_time
+                
+                # 2. 应用偏移量来调整搜索范围，而不是直接计算切点
+                if pause.position_type == 'head':
+                    # 对于头部停顿，能量谷应该在人声开始前，所以搜索范围向右移动
+                    # head_offset通常是负值（如-0.5），表示在人声开始前0.5秒
+                    search_start = max(search_start, pause.end_time + head_offset - 0.5)  # 在偏移点附近1秒内搜索
+                    search_end = min(search_end, pause.end_time + head_offset + 0.5)
+                elif pause.position_type == 'tail':
+                    # 对于尾部停顿，能量谷应该在人声结束后，所以搜索范围向左移动
+                    # tail_offset通常是正值（如0.5），表示在人声结束后0.5秒
+                    search_start = max(search_start, pause.start_time + tail_offset - 0.5)
+                    search_end = min(search_end, pause.start_time + tail_offset + 0.5)
+                else:
+                    # 中间停顿：在停顿区域内搜索，稍微收缩边界避免太靠近人声
+                    backoff_s = backoff_ms / 1000.0
+                    search_start = pause.start_time + backoff_s
+                    search_end = pause.end_time - backoff_s
+                
+                # 确保搜索范围有效
+                if search_end <= search_start:
+                    search_start, search_end = pause.start_time, pause.end_time
+                
+                logger.debug(f"停顿 {i+1} ({pause.position_type}): 原始范围 [{pause.start_time:.2f}s, {pause.end_time:.2f}s], "
+                           f"能量谷搜索范围 [{search_start:.2f}s, {search_end:.2f}s]")
 
+                # 3. 在确定的安全范围内，强制执行能量谷检测
                 selected_idx: Optional[int] = None
-
-                # 全面采用能量谷检测逻辑
                 if waveform is not None and len(waveform) > 0:
-                    l_idx = max(0, int(left * self.sample_rate))
-                    r_idx = min(len(waveform), int(right * self.sample_rate))
+                    l_idx = max(0, int(search_start * self.sample_rate))
+                    r_idx = min(len(waveform), int(search_end * self.sample_rate))
 
                     if r_idx > l_idx:
-                        # 强制使用能量谷检测
                         valley_idx = self._select_valley_cut_point(
                             waveform, l_idx, r_idx, self.sample_rate,
                             local_rms_ms, guard_ms, floor_pct
@@ -754,21 +778,35 @@ class VocalPauseDetectorV2:
 
                         if valley_idx is not None:
                             selected_idx = valley_idx
-                            logger.debug(f"停顿 {i+1}: 强制使用 valley 切点 idx={selected_idx}")
+                            logger.debug(f"  -> 能量谷切点找到 @ idx={selected_idx}")
                         else:
-                            # 如果找不到能量谷（极少见），回退到停顿中心
-                            selected_idx = int((pause.start_time + pause.end_time) / 2 * self.sample_rate)
-                            logger.warning(f"停顿 {i+1}: 未找到能量谷，回退到中心点")
+                            # 如果在精确范围内找不到谷，则根据停顿类型选择合适的备选点
+                            if pause.position_type == 'head':
+                                # 头部：选择停顿结束位置附近
+                                selected_idx = int((pause.end_time + head_offset) * self.sample_rate)
+                            elif pause.position_type == 'tail':
+                                # 尾部：选择停顿开始位置附近
+                                selected_idx = int((pause.start_time + tail_offset) * self.sample_rate)
+                            else:
+                                # 中间：选择停顿中心
+                                selected_idx = int((pause.start_time + pause.end_time) / 2 * self.sample_rate)
+                            logger.warning(f"  -> 未在搜索区找到能量谷，使用备选点")
                     else:
-                        # 如果搜索范围无效，也回退到中心点
+                        # 搜索范围无效，使用备选策略
                         selected_idx = int((pause.start_time + pause.end_time) / 2 * self.sample_rate)
                 else:
-                    # 如果没有波形数据，同样回退到中心点
+                    # 没有波形数据，使用备选策略
                     selected_idx = int((pause.start_time + pause.end_time) / 2 * self.sample_rate)
 
-                # 将最终选择的样本索引转换为时间
+                # 4. 确保切点在有效范围内
+                if selected_idx is not None:
+                    selected_idx = max(0, min(selected_idx, len(waveform)-1 if waveform is not None else selected_idx))
+                
+                # 5. 更新切点
                 pause.cut_point = selected_idx / self.sample_rate
-                logger.info(f"停顿 {i+1} ({pause.position_type}): {pause.start_time:.2f}s-{pause.end_time:.2f}s → 切点: {pause.cut_point:.2f}s")
+                logger.info(f"停顿 {i+1} ({pause.position_type}): 最终切点 @ {pause.cut_point:.3f}s")
+                
+                # ✅ --- 修复结束 ---
 
             return vocal_pauses
     

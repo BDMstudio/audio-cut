@@ -445,8 +445,8 @@ precise_voice_splitting:
   boundary_buffer: 2.0
   placement_strategy: "center_internal_offset_edges"
   use_breath_pauses: false
-  cut_offset_before_vocal_start: 0.5
-  cut_offset_after_vocal_end: 0.5
+  cut_offset_before_vocal_start: -0.5   # 负值表示在人声开始前切割
+  cut_offset_after_vocal_end: 0.5       # 正值表示在人声结束后切割
   min_split_gap: 2.0
   merge_silence_below: 2.0
   min_voice_duration: 1.2
