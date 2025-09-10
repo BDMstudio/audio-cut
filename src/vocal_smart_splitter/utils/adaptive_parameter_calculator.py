@@ -140,11 +140,12 @@ class AdaptiveParameterCalculator:
         Returns:
             计算得出的自适应参数对象
         """
-        self.logger.info(f"计算自适应参数: BPM={bpm:.1f}, 复杂度={complexity:.3f}, 乐器={instrument_count}")
+        self.logger.info(f"计算自适应参数: BPM={float(bpm):.1f}, 复杂度={float(complexity):.3f}, 乐器={instrument_count}")
         
         # 1. 确定节拍类别
-        category = self._categorize_tempo(bpm)
-        beat_interval = 60.0 / bpm
+        bpm_scalar = float(bpm)
+        category = self._categorize_tempo(bpm_scalar)
+        beat_interval = 60.0 / bpm_scalar
         
         self.logger.debug(f"音乐分类: {category}, 节拍间隔: {beat_interval:.3f}s")
         

@@ -32,7 +32,7 @@ python run_splitter.py input/01.mp3 --vocal-prime-v2
 # ✨ Pure vocal detection v2.0 (Multi-dimensional feature analysis) 
 python run_splitter.py input/01.mp3 --pure-vocal-v2
 
-# 🔄 Seamless splitting (BMP adaptive + spectral classification)
+# 🔄 Seamless splitting (BPM adaptive + spectral classification)
 python run_splitter.py input/01.mp3 --seamless-vocal --validate-reconstruction
 
 # Traditional intelligent splitting (legacy compatibility)
@@ -45,7 +45,7 @@ python run_splitter.py input/01.mp3 --verbose
 python src/vocal_smart_splitter/main.py input/01.mp3 -o output/custom_dir
 
 # Speed optimization guide - See SPEED_OPTIMIZATION.md for detailed tuning
-# Note: BMP-adaptive enhancement is automatically enabled when using --seamless-vocal mode
+# Note: BPM-adaptive enhancement is automatically enabled when using --seamless-vocal mode
 ```
 
 ### Testing Commands
@@ -118,7 +118,7 @@ The VocalPrime system implements pure vocal domain RMS energy envelope detection
 2. **Pure Vocal Separation** - MDX23/Demucs high-quality vocal isolation
 3. **Multi-Dimensional Feature Analysis** - F0 contour + formant + spectral centroid + harmonic ratio
 4. **Spectral Pattern Classification** - True pause vs breath detection using spectral awareness
-5. **BMP-Driven Optimization** - Beat alignment and style-adaptive parameter tuning
+5. **BPM-Driven Optimization** - Beat alignment and style-adaptive parameter tuning
 6. **Multi-Level Validation** - Duration + energy + spectral + context + music theory validation
 7. **Sample-Perfect Splitting** - Zero-difference reconstruction splitting
 8. **WAV/FLAC Output** - Lossless audio format with zero processing
@@ -334,7 +334,7 @@ pause_duration_multipliers:
 - **Core Detectors**: 
   - `vocal_prime_detector.py` (362 lines) - Complete with hysteresis detection
   - `vocal_pause_detector.py` - Silero VAD enhanced version stable
-  - `spectral_aware_classifier.py`, `bmp_vocal_optimizer.py`, `multi_level_validator.py` - All implemented
+  - `spectral_aware_classifier.py`, `bpm_vocal_optimizer.py`, `multi_level_validator.py` - All implemented
 - **Test Suite**: Comprehensive coverage with 41 Python test files covering unit/integration/contracts/performance
 - **Package Structure**: Proper setuptools configuration (v1.0.2), all dependencies managed
 

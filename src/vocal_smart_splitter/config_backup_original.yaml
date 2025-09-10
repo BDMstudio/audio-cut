@@ -66,7 +66,7 @@ vocal_pause_splitting:
   
   # === BPM自适应增强系统 ===
   enable_bpm_adaptation: true    # 启用BPM自适应
-  bmp_adaptive_settings:         # 注意：保持历史兼容性，实际读取bpm_adaptive_settings
+  bpm_adaptive_settings:         # 注意：保持历史兼容性，实际读取bpm_adaptive_settings
     # BPM分析参数
     tempo_analysis_window: 30.0     # BPM分析窗口(秒)
     tempo_min_bpm: 50              # 最小BPM检测范围

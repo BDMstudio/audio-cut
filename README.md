@@ -70,7 +70,7 @@ audio-cut/
 ├── tests/                   # 测试目录
 │   ├── unit/               # 单元测试 ✅
 │   │   ├── test_valley_cut.py          # 谷值切割测试 ✅
-│   │   ├── test_bmp_guard.py           # BPM守护测试 ✅
+│   │   ├── test_bpm_guard.py           # BPM守护测试 ✅
 │   │   └── test_defaults_guard.py      # 默认值守护测试 ✅
 │   ├── integration/        # 集成测试 ✅ 
 │   │   └── test_pipeline_v2_valley.py  # 管道集成测试 ✅

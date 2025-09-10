@@ -43,46 +43,12 @@ class SeamlessSplitter:
         
         # 初始化核心模块
         self.audio_processor = AudioProcessor(sample_rate)
-        self.adaptive_calculator = AdaptiveParameterCalculator()
         
-        # BPM自适应参数
-        self.current_adaptive_params = None
-        self.bpm_info = None
-        
-        # v1.1.4+ 增强版：使用双路检测器（混音+分离交叉验证）
-        from .dual_path_detector import DualPathVocalDetector, ValidatedPause
-        from .vocal_pause_detector import VocalPause  # 保持兼容性
-        
-        # v2.0+ 纯人声检测系统：解决高频换气误判问题
-        from .pure_vocal_pause_detector import PureVocalPauseDetector
-        from .spectral_aware_classifier import SpectralAwareClassifier
-        from .bpm_vocal_optimizer import BPMVocalOptimizer
-        from .multi_level_validator import MultiLevelValidator, AudioContext
-        
-        self.dual_detector = DualPathVocalDetector(sample_rate)
-        self.ValidatedPause = ValidatedPause
-        self.VocalPause = VocalPause  # 向后兼容
-        
-        # 纯人声检测系统v2.0组件
-        self.enable_pure_vocal_detection = get_config('pure_vocal_detection.enable', True)
-        if self.enable_pure_vocal_detection:
-            self.pure_detector = PureVocalPauseDetector(sample_rate)
-            self.spectral_classifier = SpectralAwareClassifier()
-            self.bpm_optimizer = BPMVocalOptimizer(sample_rate)
-            self.validator = MultiLevelValidator(sample_rate)
-            logger.info("纯人声检测系统v2.0已启用")
-        else:
-            self.pure_detector = None
-            logger.info("使用传统检测系统")
-        
-        # 从配置加载参数
-        self.min_pause_duration = get_config('vocal_pause_splitting.min_pause_duration', 1.0)
-        self.head_offset = get_config('vocal_pause_splitting.head_offset', -0.5)
-        self.tail_offset = get_config('vocal_pause_splitting.tail_offset', 0.5)
-        self.zero_processing = get_config('vocal_pause_splitting.zero_processing', True)
-        self.preserve_original = get_config('vocal_pause_splitting.preserve_original', True)
-        
-        logger.info(f"无缝分割器初始化完成 (采样率: {sample_rate})")
+        from .vocal_pause_detector import VocalPauseDetectorV2
+        # ✅ 直接使用我们强化的VAD检测器
+        self.pause_detector = VocalPauseDetectorV2(sample_rate)
+        # 移除或禁用旧的 dual_detector, pure_detector, spectral_classifier 等，因为它们的功能已被整合
+        logger.info(f"无缝分割器初始化完成，使用统一的VocalPauseDetectorV2")
     
     def apply_bpm_adaptive_parameters(self, bpm: float, complexity: float, 
                                      instrument_count: int) -> None:
@@ -128,71 +94,37 @@ class SeamlessSplitter:
         logger.info(f"开始无缝分割: {input_path}")
         
         try:
-            # 1. 加载原始音频（保持原始参数）
+            # 1. 加载音频
             original_audio, original_sr = self._load_original_audio(input_path)
             
-            # 2. v1.1.4+ 使用双路检测器（混音+分离交叉验证）
-            logger.info("\n=== 双路人声停顿检测 ===")
-            dual_result = self.dual_detector.detect_with_dual_validation(original_audio)
-            validated_pauses = dual_result.validated_pauses
+            # ✅ 2. 直接调用智能化的停顿检测器
+            # 它内部会处理BPM分析、自适应参数和VAD检测
+            logger.info("\n=== 统一化人声停顿检测 ===")
+            vocal_pauses = self.pause_detector.detect_vocal_pauses(original_audio)
             
-            # 记录双路检测结果
-            logger.info(f"双路检测完成: {len(validated_pauses)}个有效停顿")
-            if dual_result.processing_stats:
-                stats = dual_result.processing_stats
-                logger.info(f"处理统计:")
-                logger.info(f"  混音检测: {stats.get('mixed_detections', 0)}个")
-                logger.info(f"  分离检测: {stats.get('separated_detections', 0)}个")
-                logger.info(f"  使用后端: {stats.get('backend_used', 'unknown')}")
-                logger.info(f"  双路执行: {stats.get('dual_path_used', False)}")
-                if stats.get('separation_confidence'):
-                    logger.info(f"  分离置信度: {stats['separation_confidence']:.3f}")
-            
-            # 3. v2.0+ 纯人声检测系统增强（如果启用）
-            if self.enable_pure_vocal_detection and validated_pauses:
-                logger.info("\n=== 纯人声检测系统v2.0增强 ===")
-                validated_pauses = self._enhance_with_pure_vocal_detection(
-                    validated_pauses, original_audio, dual_result.processing_stats
-                )
-                logger.info(f"纯人声增强完成: {len(validated_pauses)}个优化停顿")
-            
-            # 提取质量报告（真实分离质量）
-            separation_quality = dual_result.quality_report
-            
-            if not validated_pauses:
-                logger.warning("停顿检测未找到符合条件的人声停顿，无法分割")
+            if not vocal_pauses:
+                logger.warning("未找到符合条件的人声停顿，无法分割")
                 return self._create_single_segment_result(original_audio, input_path, output_dir)
             
-            # 转换为兼容格式（ValidatedPause -> VocalPause）
-            vocal_pauses = self._convert_validated_to_vocal_pauses(validated_pauses)
+            # 3. 生成精确分割点
+            cut_points_samples = [int(p.cut_point * self.sample_rate) for p in vocal_pauses]
             
-            # 4. 生成精确分割点
-            cut_points = self._generate_precise_cut_points(vocal_pauses, len(original_audio))
-            
-            # ✅ 新增：最终能量校验安全卫士
-            logger.info("[FINAL CHECK] 应用最终能量守卫...")
+            # 4. 应用最终的能量守卫和安全过滤
+            logger.info("[FINAL CHECK] 应用最终能量守卫和安全过滤器...")
             from .quality_controller import QualityController
             qc = QualityController(self.sample_rate)
             cut_points_times = [p / self.sample_rate for p in cut_points_samples]
-            validated_cut_times = []
-            for t in cut_points_times:
-                # 强制校验每个切点是否足够安静
-                quiet_t = qc.enforce_quiet_cut(
-                    original_audio, self.sample_rate, t,
-                    win_ms=80, guard_db=3.0, floor_pct=5, search_right_ms=250
-                )
-                if quiet_t >= 0: # -1 表示无效切点
-                    if abs(quiet_t - t) > 0.01:
-                        logger.info(f"  切点修正: {t:.3f}s -> {quiet_t:.3f}s")
-                    validated_cut_times.append(quiet_t)
-                else:
-                    logger.warning(f"  切点移除: {t:.3f}s (最终校验未通过)")
-                    
-            # 使用最终校验后的切点
-            final_cut_points_samples = [int(t * self.sample_rate) for t in validated_cut_times]
             
-            # 5. 执行样本级精确分割
-            segments = self._split_at_sample_level(original_audio, cut_points, vocal_pauses)
+            # 使用原始音频（混音）进行最终能量校验
+            validated_cut_times = [qc.enforce_quiet_cut(original_audio, self.sample_rate, t) for t in cut_points_times]
+            validated_cut_times = [t for t in validated_cut_times if t >= 0] # 移除无效切点
+
+            # 纯化过滤
+            final_cut_points_times = qc.pure_filter_cut_points(validated_cut_times, len(original_audio) / self.sample_rate)
+            final_cut_points_samples = [int(t * self.sample_rate) for t in final_cut_points_times]
+
+            # 5. 执行分割
+            segments = self._split_at_sample_level(original_audio, final_cut_points_samples, vocal_pauses)
             
             # 6. 保存分割结果
             saved_files = self._save_seamless_segments(segments, output_dir)
@@ -203,8 +135,7 @@ class SeamlessSplitter:
             # 8. 生成结果报告
             result = self._generate_result_report(
                 input_path, output_dir, segments, saved_files, 
-                vocal_pauses, separation_quality, validation_result,
-                dual_result.processing_stats  # 传递处理统计
+                vocal_pauses, None, validation_result, None
             )
             
             logger.info(f"无缝分割完成: {len(segments)} 个片段")
