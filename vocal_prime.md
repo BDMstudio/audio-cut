@@ -2,6 +2,9 @@
 # -*- coding: utf-8 -*-
 # file: src/vocal_smart_splitter/core/vocal_pause_detector.py
 
+# 总体目标：
+让VAD 的“发动机”就真的跑在人声域
+
 from dataclasses import dataclass
 from typing import List, Tuple, Dict, Optional
 import numpy as np
@@ -350,5 +353,149 @@ class SeamlessSplitter:
 
 ---
 
-# 总体目标：
-让VAD 的“发动机”就真的跑在人声域
+# 实现人声频谱波谷的精准切割
+
+## 为啥会切在高能量区（最可能的 6 个根因）
+
+1. **零交叉优先、没做能量守卫**
+   你的 `zero_cross_align` 在“任意位置附近”找最近零交叉，但**零交叉在强能量段密密麻麻**，于是把切点“对齐”到了**能量峰附近**。如果没有“**切点处必须够安静**”的二次校验，ZC 对齐会把原本还不错的候选点**拉进高能量区**。
+
+2. **BPM 逻辑写成了“吸附/推移”，不是“禁切区”**
+   只要你代码里出现“靠近拍点→往右（或往左）推/吸附”，切点就会被推到**鼓击/新音节的瞬态**上，也就是**能量峰**。BPM 只能做**禁切**（不在拍点±Δms切），**绝不能把切点往峰值推**。
+
+3. **Vocal 域检测→原混音切割的“采样率/延迟映射”错位**
+   你在人声轨（16 kHz）上检测到的静音，切割却在 44.1 kHz 的原混音上执行。
+
+   * 如果**没有按精确倍数换算**（含重采样群延迟/滤波延迟补偿），映射后的 t 会**偏离静音平台中心**；
+   * 偏移再被 ZC 对齐/拍点推移，**很容易落到峰值**。
+     这是我在类似工程里最常见的“看图能量很低，切出来却在高峰”的元凶。
+
+4. **head/tail 偏移的符号/单位错用**
+   `head_offset=-0.5`/`tail_offset=+0.5` 如果写成了“加绝对值”或把“秒”当“样本”用了，**必然切进人声里**（高能区）。
+
+5. **验证器在“校正”而不是“过滤”**
+   你的 `QualityController.validate_split_points` 若包含“靠近零交叉/拍点/整拍对齐”的**重定位**逻辑，而不是“只过滤不合格切点”，就会把切点**改到峰值附近**。
+
+6. **仍在混音上做检测**
+   如果增强分离（MDX/DMX）没有真实启用，或 VAD 仍对“混音”判静音，强鼓/伴奏会制造**假静音**，你看起来“中心对齐”，但其实**中心在鼓击前的谷底**，随后被 ZC/拍点推走，落在峰上。
+
+---
+
+## 别再让它发生：加一条\*\*“切点必须够安静”\*\*的硬护栏
+
+> 原则：**任何重定位（ZC、拍点推移、头尾偏移）之后，都要二次检查**“切点局部能量是否低于动态地板 + margin”。不满足就**只允许向右**搜索最近的静平台谷底；找不到就**弃用该切点**。
+
+### 1) 在 `src/vocal_smart_splitter/core/quality_controller.py` 里新增
+
+```python
+# 仅示例；与项目风格一致化即可
+import numpy as np
+from ..utils.feature_extractor import moving_rms_db, rolling_percentile_db, ema_smooth
+
+class QualityController:
+    # ... 你原有的 __init__ 等
+
+    def enforce_quiet_cut(self, x_mono, sr, t_sec,
+                          win_ms=80, guard_db=3.0, floor_pct=0.05,
+                          search_right_ms=220):
+        """
+        技术：局部RMS + 动态噪声地板。若 t 附近不够安静，只向右搜索第一个“够安静”的谷底。
+        - win_ms: 评估窗口
+        - guard_db: 相对地板的余量（地板+3dB 以内才算安静）
+        - search_right_ms: 最多向右搜的距离（保证不提前）
+        """
+        hop_ms = 10
+        rms_db, t_axis = moving_rms_db(x_mono, sr, frame_ms=win_ms, hop_ms=hop_ms)
+        rms_db = ema_smooth(rms_db, sr, hop_ms=hop_ms, smooth_ms=120)
+        floor_db = rolling_percentile_db(rms_db, sr, hop_ms=hop_ms, win_s=30.0, p=floor_pct)
+
+        def ok(idx):
+            return rms_db[idx] <= floor_db[idx] + guard_db
+
+        # 找到 t 对应的帧
+        idx = int(t_sec / (hop_ms/1000.0))
+        if idx < 0 or idx >= len(rms_db):
+            return t_sec
+
+        if ok(idx):
+            return t_sec  # 已够安静
+
+        # 只向右找“安静谷底”
+        max_step = int(search_right_ms / hop_ms)
+        best = None
+        for k in range(1, max_step+1):
+            j = idx + k
+            if j >= len(rms_db): break
+            if ok(j):
+                best = j
+                break
+        if best is None:
+            return t_sec  # 找不到就维持原切点（也可选择丢弃）
+        return best * (hop_ms/1000.0)
+```
+
+### 2) 在 `SeamlessSplitter.split_audio_seamlessly` 里，**生成切点后立刻加一轮“安静检查”**
+
+```python
+from .quality_controller import QualityController
+qc = QualityController(self.sr)
+
+# cut_points_s 是你前面算出来（静音中心→右偏→ZC→BPM禁切）的结果
+quiet_cuts = []
+for t in cut_points_s:
+    t2 = qc.enforce_quiet_cut(raw_mono, self.sr, t,
+                              win_ms=80, guard_db=3.0, floor_pct=0.05,
+                              search_right_ms=220)
+    quiet_cuts.append(t2)
+
+# 然后再走你原有的 validate_split_points（只过滤，不再重定位到拍点等）
+cut_points_s = qc.validate_split_points(quiet_cuts, raw_mono)
+```
+
+> 这一步是“最后保险丝”：**不管谁把切点推到了峰值上，最终都必须回到“安静谷底”**，且**只往右**微移，绝不提前。
+
+---
+
+## 再补三刀“必修补丁”（否则还是会翻车）
+
+1. **BPM：把“吸附/推移”彻底移除**
+   在你做 BPM 的地方（大概率在 `choose_split_points_from_vocal` 或某个对齐器里）：
+
+   * 保留 `forbid_cut_within_ms_of_beat`；
+   * **禁止**任何“靠近拍点→移动切点”的逻辑；
+   * 如需避让，**只允许向右**偏移到“禁切区外”，并且随后**必须通过 `enforce_quiet_cut`**。
+
+2. **采样率/延迟映射一把梭**
+
+   * **检测域**（vocal stem）和**切割域**（原混音）之间：`t_raw = (t_vocal * sr_vocal + latency_samples) / sr_raw`；
+   * `latency_samples`：若用 `librosa.resample`/soxr/sinc 重采样，**估一个常数**或事先测（把单位脉冲丢进管线量一下），写进配置；
+   * 所有 `head_offset/tail_offset/zero_cross` 的单位统一为**秒**；调用函数时**传入对应音频的 sr**（别拿 16k 的 sr 去对齐 44.1k 的波形）。
+
+3. **验证器“只过滤不改点”**
+
+   * `validate_split_points` 只做“最小间隔、最小停顿、人声能量上限”等**判定**；
+   * 任何“重定位”都前置到 \*\*“静音中心→右偏→ZC→安静校验”\*\*这条链里；
+   * 这样日志才能解释：**每一次改动都可追溯**。
+
+---
+
+## 快速自检（跑一遍就能定位）
+
+* 输出三张图：
+
+  1. **vocal\_stem 的 RMS\_dB 包络** + 候选切点
+  2. **raw\_mono 的 RMS\_dB 包络** + 映射后的切点
+  3. **最终切点的局部窗（±300 ms）能量**，标注是否通过 `enforce_quiet_cut`
+* 在 log 里打印每个切点的：
+  `t0(静音中心) → t1(右偏) → t2(ZC) → t3(安静守卫后)`
+  和 `is_near_beat? moved_right? local_rms_db, floor_db`
+
+---
+
+## 你图上看到的现象对号入座
+
+* 白色竖线落在**强峰**上，基本可以判断：
+  **ZC/拍点的“重定位” > 安静守卫**。
+  一句人话：**你让对齐来“决定切点”，而不是“在安静前提下微调切点”**。把权力夺回来，切点就会老老实实回到谷底。
+
+---

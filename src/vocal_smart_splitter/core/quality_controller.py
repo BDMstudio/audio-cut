@@ -876,3 +876,176 @@ class QualityController:
             'max_quality': np.max(quality_scores),
             'issues': issues if issues else ['无明显问题']
         }
+
+    def enforce_quiet_cut(self, x_mono, sr, t_sec,
+                          win_ms=80, guard_db=3.0, floor_pct=0.05,
+                          search_right_ms=220):
+        """
+        技术：局部RMS + 动态噪声地板。若 t 附近不够安静，只向右搜索第一个"够安静"的谷底。
+        - win_ms: 评估窗口
+        - guard_db: 相对地板的余量（地板+3dB 以内才算安静）
+        - search_right_ms: 最多向右搜的距离（保证不提前）
+        """
+        hop_ms = 10
+        rms_db, t_axis = self._moving_rms_db(x_mono, sr, frame_ms=win_ms, hop_ms=hop_ms)
+        rms_db = self._ema_smooth(rms_db, sr, hop_ms=hop_ms, smooth_ms=120)
+        
+        # 🔴 关键修复：使用全局最小值而非滚动分位数作为噪声地板
+        # 滚动分位数在人声密集区域会产生过高的地板，导致无法正确识别高能量区
+        global_floor = np.percentile(rms_db, floor_pct * 100)  # 全局5%分位数
+        floor_db = np.full_like(rms_db, global_floor)
+
+        def ok(idx):
+            # 额外检查：绝对能量阈值，确保不在高能量区
+            if rms_db[idx] > -20.0:  # 高于-20dB视为明显有声音
+                return False
+            return rms_db[idx] <= floor_db[idx] + guard_db
+
+        # 找到 t 对应的帧
+        idx = int(t_sec / (hop_ms/1000.0))
+        if idx < 0 or idx >= len(rms_db):
+            return t_sec
+
+        if ok(idx):
+            return t_sec  # 已够安静
+
+        # 只向右找"安静谷底"
+        max_step = int(search_right_ms / hop_ms)
+        best = None
+        for k in range(1, max_step+1):
+            j = idx + k
+            if j >= len(rms_db): break
+            if ok(j):
+                best = j
+                break
+        
+        # 🔴 关键修复：如果在搜索范围内找不到安静点，扩大搜索到整个剩余音频
+        if best is None:
+            # 继续向右搜索整个剩余音频
+            for j in range(idx + max_step + 1, len(rms_db)):
+                if ok(j):
+                    best = j
+                    break
+        
+        if best is None:
+            # 还是找不到，返回特殊值表示该切点无效（应被过滤）
+            return -1.0  # 负值表示无效切点
+        return best * (hop_ms/1000.0)
+
+    def _moving_rms_db(self, x: np.ndarray, sr: int, frame_ms: int = 30, hop_ms: int = 10):
+        """RMS 能量包络计算"""
+        frame = int(sr * frame_ms / 1000)
+        hop = int(sr * hop_ms / 1000)
+        if frame <= 2: frame = 3
+        if hop < 1: hop = 1
+        n = (len(x) - frame) // hop + 1
+        rms = np.zeros(n, dtype=np.float32)
+        for i in range(n):
+            seg = x[i*hop : i*hop + frame]
+            if len(seg) == 0: break
+            rms[i] = np.sqrt(np.mean(seg**2) + 1e-12)
+        db = 20.0 * np.log10(rms + 1e-12)
+        t_axis = np.arange(n) * (hop / sr)
+        return db, t_axis
+
+    def _ema_smooth(self, x: np.ndarray, sr: int, hop_ms: int = 10, smooth_ms: int = 120):
+        """指数滑动平均，技术: 概率/能量平滑以抑制抖动"""
+        alpha = np.exp(- (hop_ms / smooth_ms))
+        y = np.zeros_like(x, dtype=np.float32)
+        acc = 0.0
+        for i, v in enumerate(x):
+            acc = alpha * acc + (1 - alpha) * v
+            y[i] = acc
+        return y
+
+    def _rolling_percentile_db(self, x: np.ndarray, sr: int, hop_ms: int = 10, win_s: float = 30.0, p: float = 0.05):
+        """动态噪声地板：滚动分位（默认 5%）"""
+        win = int(win_s * 1000 / hop_ms)
+        if win < 5: win = 5
+        out = np.zeros_like(x, dtype=np.float32)
+        half = win // 2
+        for i in range(len(x)):
+            a = max(0, i - half)
+            b = min(len(x), i + half + 1)
+            seg = np.sort(x[a:b])
+            k = int(len(seg) * p)
+            k = np.clip(k, 0, len(seg)-1)
+            out[i] = seg[k]
+        return out
+
+    def safe_zero_crossing_align(self, x_mono, sr, t_sec, window_ms=10):
+        """
+        安全的零交叉对齐：先对齐到零交叉，再验证能量
+        如果零交叉对齐后能量过高，则回退到原始切点
+        """
+        # 1. 找到最近的零交叉点
+        w = int(sr * window_ms / 1000)
+        c = int(t_sec * sr)
+        a = max(1, c - w)
+        b = min(len(x_mono)-1, c + w)
+        
+        if b <= a:
+            return t_sec
+        
+        seg = x_mono[a:b]
+        
+        # 寻找符号变化的位置（零交叉）
+        zero_crossings = []
+        for i in range(len(seg)-1):
+            if seg[i] * seg[i+1] <= 0:  # 符号变化或有一个为0
+                zero_crossings.append(a + i)
+        
+        if not zero_crossings:
+            return t_sec  # 没有零交叉，保持原切点
+        
+        # 找最接近中心的零交叉
+        best_zc = min(zero_crossings, key=lambda zc: abs(zc - c))
+        t_zc = best_zc / sr
+        
+        # 2. 验证零交叉对齐后的切点是否安静
+        t_validated = self.enforce_quiet_cut(x_mono, sr, t_zc)
+        
+        # 3. 如果验证后偏离太多，说明零交叉对齐把我们拉到了高能量区，回退到原始切点
+        if abs(t_validated - t_zc) > 0.050:  # 50ms tolerance
+            return t_sec  # 回退到原始切点
+        
+        return t_validated
+
+    def pure_filter_cut_points(self, cut_points, audio_duration, min_interval=2.0, min_segment_duration=1.0):
+        """
+        纯粹的切点过滤器：只过滤，不重定位（vocal_prime.md 核心要求）
+        
+        Args:
+            cut_points: 切点列表（秒）
+            audio_duration: 音频总时长
+            min_interval: 最小间隔
+            min_segment_duration: 最小片段时长
+            
+        Returns:
+            过滤后的切点列表（只移除无效点，不做任何重定位）
+        """
+        if not cut_points:
+            return []
+        
+        # 排序并去重
+        sorted_points = sorted(set(cut_points))
+        filtered_points = []
+        
+        # 过滤边界点
+        for point in sorted_points:
+            if point <= min_segment_duration or point >= (audio_duration - min_segment_duration):
+                continue  # 过滤掉过于接近边界的点
+            filtered_points.append(point)
+        
+        if len(filtered_points) <= 1:
+            return filtered_points
+        
+        # 过滤间隔过小的点（保留第一个，丢弃后续的）
+        final_points = [filtered_points[0]]
+        
+        for point in filtered_points[1:]:
+            if point - final_points[-1] >= min_interval:
+                final_points.append(point)
+            # 否则直接丢弃，不做任何重定位
+        
+        return final_points

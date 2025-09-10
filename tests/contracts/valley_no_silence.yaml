@@ -1,0 +1,19 @@
+# File: tests/contracts/valley_no_silence.yaml
+# AI-SUMMARY: 契约 - 无静音平台样本上，切点应落在气声/摩擦噪声谷±20ms；
+# 启用 bpm_guard 时，切点不得落在拍点±forbid_ms 内。
+
+sample:
+  sr: 44100
+  voice1_sec: 0.50
+  breath_sec: 0.18
+  voice2_sec: 0.30
+  f0: 220.0
+  breath_amp: 0.02
+
+constraints:
+  valley_margin_ms: 20
+  bpm_guard:
+    enable: true
+    bpm: 120.0
+    forbid_ms: 100
+

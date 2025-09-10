@@ -17,13 +17,13 @@ vocal_separation:
   # 频谱掩码参数
   mask_threshold: 0.3   # 提高阈值，更保守的分离
   mask_smoothing: 3     # 减少平滑，保持更多细节
-  
+
   # 人声频率范围 (Hz)
   vocal_freq_min: 80
   vocal_freq_max: 4000
   vocal_core_min: 200
   vocal_core_max: 1000
-  
+
   # 质量控制
   min_vocal_ratio: 0.15  # 最小人声占比
   max_noise_ratio: 0.3   # 最大噪声占比
@@ -34,16 +34,16 @@ breath_detection:
   energy_window: 0.05      # 分析窗口 (秒)
   energy_hop: 0.01         # 跳跃步长 (秒)
   energy_threshold: 0.02   # 能量阈值
-  
+
   # 频谱分析
   spectral_window: 0.1     # 频谱分析窗口
   spectral_threshold: 0.3  # 频谱变化阈值
-  
+
   # 停顿检测
   min_pause_duration: 0.15 # 最小停顿时长 (秒)
   max_pause_duration: 2.0  # 最大停顿时长 (秒)
   pause_merge_threshold: 0.1 # 停顿合并阈值
-  
+
   # 换气检测
   breath_energy_drop: 0.7  # 换气时能量下降比例
   breath_duration_min: 0.1 # 最小换气时长
@@ -54,11 +54,11 @@ content_analysis:
   # 人声片段分析
   min_vocal_segment: 1.0   # 最小人声片段长度 (秒)
   max_vocal_segment: 8.0   # 最大人声片段长度 (秒)
-  
+
   # 内容连续性
   continuity_threshold: 0.5 # 内容连续性阈值
   semantic_gap_max: 1.0     # 最大语义间隔 (秒)
-  
+
   # 质量评估
   vocal_clarity_min: 0.6   # 最小人声清晰度
   content_completeness: 0.8 # 内容完整性要求
@@ -73,16 +73,16 @@ smart_splitting:
   min_segment_length: 5    # 最小片段长度 (秒)
   max_segment_length: 15   # 最大片段长度 (秒)
   target_segment_length: 8  # 目标片段长度 (秒)（降低以产出更多片段）
-  
+
   # 分割策略
   prefer_natural_breaks: true    # 优先自然停顿
   allow_content_extension: false # 不允许内容延伸（确保更多分割）
   strict_time_limit: true        # 启用严格时间限制
-  
+
   # 分割点选择
   split_point_buffer: 0.1   # 分割点缓冲区 (秒)
   split_quality_threshold: 0.5  # 分割质量阈值（进一步下调以产出更多片段）
-  
+
   # 内容优先级
   complete_phrase_priority: 0.9  # 完整短语优先级
   natural_pause_priority: 0.8    # 自然停顿优先级
@@ -127,16 +127,16 @@ precise_voice_splitting:
   split_in_silence_center: true   # 在静音中心分割
   avoid_boundary_splits: true     # 避免在边界分割
   boundary_buffer: 2.0            # 边界缓冲区（秒）
-  
+
   # 片段质量
   min_vocal_content_ratio: 0.4  # 最小人声内容比例
   max_silence_ratio: 0.3        # 最大静音比例
-  
+
   # 音频质量
   fade_in_duration: 0.1         # 渐入时长 (秒) - 增加以避免破音
   fade_out_duration: 0.1        # 渐出时长 (秒) - 增加以避免破音
   normalize_audio: false        # 禁用音频标准化以保持动态范围
-  
+
   # 后处理
   remove_click_noise: false     # 禁用咔嗒声移除以避免过度处理
   smooth_transitions: false     # 禁用平滑过渡以保持原始音质
@@ -160,3 +160,36 @@ logging:
   format: '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
   max_file_size: '10MB'
   backup_count: 3
+
+
+# 无静音平台的谷值切割（v2.1 最小可用版）
+# 说明：以下键为算法引擎关键开关，默认保持“零破坏”（不改变既有行为）。
+vocal_pause_splitting:
+  enable_valley_mode: false            # 手动启用谷值切割优先（默认 false）
+  auto_valley_fallback: true           # 无静音平台/守卫失败时自动兜底到谷值
+  local_rms_window_ms: 25              # 局部RMS窗长（建议 10–40ms，默认 25）
+  silence_floor_percentile: 5          # 动态地板分位数（建议 1–10，默认 5）
+  lookahead_guard_ms: 120              # 未来静默守卫（建议 80–200ms，默认 120）
+  min_valley_width_ms: 120             # 谷宽约束（建议 100–160ms，默认 120）
+  bpm_guard:
+    enable: false                      # 拍点±forbid_ms 禁切且仅右推（默认 false）
+    forbid_ms: 100                     # 禁切窗口（建议 60–120ms，默认 100）
+
+  # 连续人声段 valley 扫描（可选，默认关闭；仅 quick_start v2 流水线使用）
+  voiced_valley_fallback:
+    enable: true                # 开启后，对长语音段按网格扫描 valley 并补切点
+    min_gap_s: 5.0               # 网格/最小切点间隔（秒）
+    min_valley_width_ms: 120     # 谷宽要求（建议 100–160ms）
+    window_s: 0.30               # 合成停顿窗口宽度（围绕 valley ±window/2）
+
+
+
+# v2.0 片段时长策略（quick_start 专用，可选）
+# 说明：仅影响 quick_start.py 的 v2.0 输出阶段；不改变检测算法结果。
+# - min_segment_duration：最小保留时长（秒）
+# - target_segment_range：目标时长范围（秒）
+# - max_segment_duration：最长片段时长（秒）；设置数值即启用，null/0 关闭
+bpm_vocal_optimizer:
+  min_segment_duration: 5.0
+  target_segment_range: [8.0, 15.0]
+  max_segment_duration: null

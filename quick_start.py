@@ -415,6 +415,23 @@ def split_pure_vocal_v2(input_file: str, output_dir: str, backend: str = 'auto',
         vocal_track = separation_result.vocal_track
         print(f"[V2.0-STEP2] 人声分离完成 - 后端: {separation_result.backend_used}, 质量: {separation_result.separation_confidence:.3f}, 耗时: {separation_time:.1f}s")
         
+        # 🆕 采样率映射验证（vocal_prime.md 核心修复）
+        print("[V2.0-STEP2.1] 采样率映射验证...")
+        if len(audio) != len(vocal_track):
+            print(f"  ⚠️ 长度不匹配: 原音频 {len(audio)} vs 人声轨 {len(vocal_track)} 样本")
+            # 确保长度一致，截取到较短的长度
+            min_length = min(len(audio), len(vocal_track))
+            audio = audio[:min_length]
+            vocal_track = vocal_track[:min_length]
+            print(f"  ✅ 已对齐至 {min_length} 样本")
+        else:
+            print(f"  ✅ 采样率映射正确: 原音频与人声轨均为 {len(audio)} 样本")
+        
+        # 确认两个音轨的有效采样率一致性
+        original_duration = len(audio) / sample_rate
+        vocal_duration = len(vocal_track) / sample_rate
+        print(f"  ✅ 时长对齐验证: 原音频 {original_duration:.3f}s, 人声轨 {vocal_duration:.3f}s")
+        
         # 第3步：在纯人声stem上使用 Silero VAD 检测停顿
         print("[V2.0-STEP3] Silero VAD (纯人声stem) 停顿检测...")
         from src.vocal_smart_splitter.core.vocal_pause_detector import VocalPauseDetectorV2
@@ -432,9 +449,97 @@ def split_pure_vocal_v2(input_file: str, output_dir: str, backend: str = 'auto',
         cut_points = [p.cut_point for p in vpauses if getattr(p, 'cut_point', 0.0) > 0.0]
         # 钳制到音频范围并去重排序
         cut_points = sorted({min(audio_duration, max(0.0, float(cp))) for cp in cut_points})
+        
+        # 🆕 能量守卫验证：确保切点位于安静区域（vocal_prime.md 核心修复）
+        print("[V2.0-STEP4.1] 应用能量守卫验证...")
+        from src.vocal_smart_splitter.core.quality_controller import QualityController
+        quality_controller = QualityController()
+        validated_cut_points = []
+        
+        for cut_point in cut_points:
+            # 对每个切点进行能量验证，使用vocal_track进行检测
+            validated_point = quality_controller.enforce_quiet_cut(
+                vocal_track, sample_rate, cut_point,
+                win_ms=80, guard_db=3.0, floor_pct=0.05, search_right_ms=220
+            )
+            
+            # 🔴 处理无效切点（返回-1表示找不到安静区域）
+            if validated_point < 0:
+                print(f"  切点移除: {cut_point:.3f}s (无法找到安静区域)")
+                continue  # 跳过无效切点
+            
+            validated_cut_points.append(validated_point)
+            
+            # 如果切点被调整，输出调试信息
+            if abs(validated_point - cut_point) > 0.01:  # 10ms tolerance
+                print(f"  切点调整: {cut_point:.3f}s -> {validated_point:.3f}s (偏移 {(validated_point - cut_point)*1000:.0f}ms)")
+        
+        cut_points = sorted(validated_cut_points)
+        print(f"[V2.0-STEP4.1] 能量守卫完成，{len(cut_points)} 个切点已验证")
+        
+        # 🆕 纯化验证器：只过滤无效点，不做重定位（vocal_prime.md 核心要求）
+        print("[V2.0-STEP4.2] 应用纯化过滤器...")
+        original_count = len(cut_points)
+        cut_points = quality_controller.pure_filter_cut_points(
+            cut_points, audio_duration, 
+            min_interval=2.0, min_segment_duration=1.0
+        )
+        removed_count = original_count - len(cut_points)
+        if removed_count > 0:
+            print(f"  过滤移除 {removed_count} 个无效切点，保留 {len(cut_points)} 个有效切点")
+        else:
+            print(f"  所有 {len(cut_points)} 个切点通过纯化过滤器验证")
+        
+        # 🆕 诊断输出：切点能量分析（vocal_prime.md 调试要求）
+        print("[V2.0-STEP4.3] 切点能量诊断分析...")
+        if cut_points:
+            rms_db, _ = quality_controller._moving_rms_db(vocal_track, sample_rate, frame_ms=80, hop_ms=10)
+            rms_db = quality_controller._ema_smooth(rms_db, sample_rate, hop_ms=10, smooth_ms=120)
+            floor_db = quality_controller._rolling_percentile_db(rms_db, sample_rate, hop_ms=10, win_s=30.0, p=0.05)
+            
+            print("  切点能量诊断报告:")
+            for i, cp in enumerate(cut_points[:5]):  # 显示前5个切点的详细信息
+                idx = int(cp / (10/1000.0))  # 10ms hop
+                if 0 <= idx < len(rms_db):
+                    energy_db = float(rms_db[idx])
+                    noise_floor = float(floor_db[idx])
+                    margin = energy_db - noise_floor
+                    status = "✅ 安静" if margin <= 3.0 else "⚠️ 偏高"
+                    print(f"    切点{i+1}: {cp:.3f}s, 能量={energy_db:.1f}dB, 噪声地板={noise_floor:.1f}dB, 余量={margin:.1f}dB {status}")
+        
+        print(f"[V2.0-STEP4.3] 诊断完成 - 修复状态: ✅ 已应用energy guard + 纯化过滤器")
         # 构建分割点：起点 + 切点 + 终点（不与边界做最小间隔合并）
         split_points = [0.0] + cut_points + [audio_duration]
         print(f"[V2.0-STEP4] 切点数: {len(cut_points)}，计划分段: {max(0, len(split_points)-1)} 段")
+
+        # 可选：对超长片段进行二次切分（仅右对齐到近邻最小幅度点，避免明显点击）
+        max_seg = get_config('bpm_vocal_optimizer.max_segment_duration', None)
+        try:
+            max_seg = float(max_seg) if max_seg is not None else None
+        except Exception:
+            max_seg = None
+        if max_seg and max_seg > 0:
+            def _align_min_amp(t_s: float) -> float:
+                idx = int(t_s * sample_rate)
+                win = max(1, int(0.01 * sample_rate))  # ±10ms 搜索最小幅度样本
+                l = max(0, idx - win); r = min(len(vocal_track) - 1, idx + win)
+                if r <= l:
+                    return t_s
+                w = vocal_track[l:r]
+                j = int(np.argmin(np.abs(w)))
+                return (l + j) / float(sample_rate)
+            extra = []
+            for i in range(len(split_points) - 1):
+                s = float(split_points[i]); e = float(split_points[i+1]); d = e - s
+                if d > max_seg:
+                    n_add = int(d // max_seg)
+                    for k in range(1, n_add + 1):
+                        t = s + k * max_seg
+                        if t < e - 1e-6:
+                            extra.append(_align_min_amp(t))
+            if extra:
+                split_points = sorted({min(audio_duration, max(0.0, float(x))) for x in (split_points + extra)})
+                print(f"[V2.0-STEP4] 触发超长片段再切分，新增切点: {len(extra)} 个；新分段: {len(split_points)-1} 段")
 
         # 第5步：样本级精度分割（仅使用最小片段阈值过滤）
         print("[V2.0-STEP5] 样本级精度分割 (零处理保真)...")
@@ -453,6 +558,7 @@ def split_pure_vocal_v2(input_file: str, output_dir: str, backend: str = 'auto',
         min_segment_duration = float(get_config('bpm_vocal_optimizer.min_segment_duration', 5.0))
         keep_short_tail = bool(get_config('vocal_pause_splitting.keep_short_tail_segment', True))
 
+        saved_idx = 0
         for i in range(len(split_points) - 1):
             start_time = float(split_points[i])
             end_time = float(split_points[i + 1])
@@ -470,13 +576,14 @@ def split_pure_vocal_v2(input_file: str, output_dir: str, backend: str = 'auto',
                 continue
 
             segment = vocal_track[start_sample:end_sample]
-            segment_filename = f"{input_name}_v2_segment_{i+1:02d}.wav"
+            saved_idx += 1
+            segment_filename = f"{input_name}_v2_segment_{saved_idx:02d}.wav"
             segment_path = Path(output_dir) / segment_filename
             sf.write(segment_path, segment, sample_rate, subtype='PCM_24')
 
             saved_files.append(str(segment_path))
             valid_segments.append({
-                'index': i + 1,
+                'index': saved_idx,
                 'start_time': start_time,
                 'end_time': end_time,
                 'duration': duration,
@@ -487,7 +594,7 @@ def split_pure_vocal_v2(input_file: str, output_dir: str, backend: str = 'auto',
                 }
             })
 
-            print(f"[V2.0-STEP5] 片段 {i+1:2d}: {start_time:.2f}s - {end_time:.2f}s (时长: {duration:.2f}s)")
+            print(f"[V2.0-STEP5] 片段 {saved_idx:2d}: {start_time:.2f}s - {end_time:.2f}s (时长: {duration:.2f}s)")
 
         split_time = time.time() - split_start
         

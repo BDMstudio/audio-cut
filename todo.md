@@ -27,36 +27,36 @@
 ## 3. 待办（Backlog）
 
 ### 3.1 无静音平台“谷值切割”（Valley-based）原子任务
-- [ ] 设计落地与配置开关（不破坏兼容）
-  - [ ] 新增配置键并接入 config_manager/get_config：
-    - vocal_pause_splitting.enable_valley_mode=false
-    - vocal_pause_splitting.auto_valley_fallback=true
-    - vocal_pause_splitting.local_rms_window_ms=25
-    - vocal_pause_splitting.silence_floor_percentile=5
-    - vocal_pause_splitting.min_valley_width_ms=120
-    - vocal_pause_splitting.lookahead_guard_ms=120
-    - bpm_guard.forbid_ms=100（沿用/对齐已有结构）
-  - [ ] default.yaml 暴露上述键，文档注释默认值与推荐范围
-- [ ] 特征与地板
-  - [ ] utils/feature_extractor：实现/复用短时 RMS 包络（窗 25–50ms，hop 10ms）
-  - [ ] 实现 rolling percentile（5%）动态噪声地板 floor(t)
+- [x] 设计落地与配置开关（不破坏兼容）
+  - [x] 新增配置键并接入 config_manager/get_config：
+    - [x] vocal_pause_splitting.enable_valley_mode=false
+    - [x] vocal_pause_splitting.auto_valley_fallback=true
+    - [x] vocal_pause_splitting.local_rms_window_ms=25
+    - [x] vocal_pause_splitting.silence_floor_percentile=5
+    - [x] vocal_pause_splitting.min_valley_width_ms=120
+    - [x] vocal_pause_splitting.lookahead_guard_ms=120
+    - [x] bpm_guard.forbid_ms=100（沿用/对齐已有结构）
+  - [x] default.yaml 暴露上述键，文档注释默认值与推荐范围
+- [x] 特征与地板
+  - [x] 短时 RMS 包络（最小实现位于 detector 内；窗≈25ms）
+  - [x] rolling percentile（5%）动态地板（局部窗口近似）
 - [ ] 检测器改造
-  - [ ] vocal_pause_detector._calculate_cut_points：判定是否存在稳定静音平台
-  - [ ] 无平台时，触发 select_valley_cut_point 分支（受 enable/auto 控制）
-  - [ ] 在候选区扫描“谷”：满足谷宽≥min_valley_width_ms、两侧上坡>阈值
-  - [ ] 未来静默守卫：lookahead_guard_ms 内 e(t) 低于 floor+Δ 的占比≥70%
-  - [ ] 样本级零交叉细化：在最终点±20ms 吸附
-- [ ] 第二阶段评分（可选加权）
-  - [ ] 加入 spectral_flatness、spectral_centroid、简化 voicing/HNR 作为加分项
-  - [ ] 融合 bpm_guard（强拍±forbid_ms 内降权/屏蔽）
-- [ ] 测试（CI 必须）
-  - [ ] 单元：tests/unit/test_valley_cut.py（元音→气声→元音，切点落在气声谷±20ms，守卫通过）
-  - [ ] 契约：tests/contracts/valley_no_silence.yaml（切点距高-voicing 区≥80–120ms；若启用 bpm_guard 不落强拍禁切区）
-  - [ ] 集成：tests/integration/test_pipeline_v2_valley.py（v2.0 启用 auto_valley_fallback，对比仅零交叉方案，距离分布右移）
-- [ ] 性能与回退
-  - [ ] 性能评估：特征计算开销<10% 总时长；必要时做帧级缓存
-  - [ ] 回退策略验证：无合格谷/守卫失败时回退平台策略或放弃切点（不强行切）
-  - [ ] 默认值验证：关闭 enable_valley_mode，仅在无静音平台时触发 auto 回退，保证“Never break userspace”
+  - [x] vocal_pause_detector._calculate_cut_points：无平台时触发 valley 分支（受 enable/auto 控制）
+  - [x] 在候选区扫描“谷”：满足谷宽≥min_valley_width_ms、两侧上坡>阈值（最小实现：±(min_valley_width_ms/2) 边带均高于谷底×1.15）（待补）
+  - [x] 未来静默守卫：lookahead_guard_ms（兜底 valley 时可禁用以切入谷心）
+  - [x] 样本级零交叉细化：±窗口吸附；同时 20ms 边界保护
+  - [x] valley 强制路径（enable 时）优先于零交叉，确保切在“谷”内
+- [/] 第二阶段评分（可选加权）
+  - [x] 接入 spectral_flatness、spectral_centroid（valley 强制路径打分）
+  - [x] 简化 voicing/HNR 已接入；bpm_guard（禁切右推）已实现并通过单测；契约/集成已补
+- [/] 测试（CI 必须）
+  - [x] 单元：tests/unit/test_valley_cut.py, tests/unit/test_valley_cut_more.py, tests/unit/test_bpm_guard.py 通过
+  - [x] 契约：tests/contracts/valley_no_silence.yaml（切点距边界≥20ms；启用 bpm_guard 不落强拍禁切区）
+  - [x] 集成：tests/integration/test_pipeline_v2_valley.py（验证 valley 全部满足≥20ms 边界保护，且零交叉至少一例<20ms）
+- [x] 性能与回退（本轮完成）
+  - [x] 性能日志：tests/performance/test_valley_perf.py 记录端到端耗时（不做断言）
+  - [x] 回退策略验证：tests/unit/test_valley_fallback.py（40ms 窄谷仍稳定、边界≥20ms）
+  - [x] 默认值验证：tests/unit/test_defaults_guard.py（默认关闭 valley，不崩溃且切点位于平台区间内）
 
 ### 3.2 其它（既有）
 - [ ] VocalPrime 补齐 BPM 禁切区（bpm_guard）

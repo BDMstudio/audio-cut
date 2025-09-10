@@ -10,17 +10,17 @@
 pure_vocal_detection:
   # 系统开关
   enable: true  # 启用纯人声检测系统v2.0
-  
+
   # 基础检测参数
   min_pause_duration: 0.5         # 最小停顿时长(秒)
   breath_duration_range: [0.1, 0.3]  # 换气时长范围(秒)
-  
+
   # 特征权重配置
   f0_weight: 0.30                 # 基频特征权重
-  formant_weight: 0.25            # 共振峰特征权重  
+  formant_weight: 0.25            # 共振峰特征权重
   spectral_weight: 0.25           # 频谱特征权重
   duration_weight: 0.20           # 时长特征权重
-  
+
   # 检测阈值
   energy_threshold_db: -40        # 能量阈值(dB)
   f0_drop_threshold: 0.7          # F0下降阈值
@@ -33,7 +33,7 @@ spectral_classifier:
   breath_threshold: 0.3           # 换气分类阈值
   pause_threshold: 0.7            # 停顿分类阈值
   uncertain_range: [0.3, 0.7]    # 不确定范围
-  
+
   # 特征权重
   f0_weight: 0.25
   formant_weight: 0.20
@@ -46,10 +46,10 @@ bpm_vocal_optimizer:
   # 节拍对齐
   enable_beat_alignment: true     # 启用节拍对齐
   beat_snap_tolerance: 0.1        # 节拍吸附容差(秒)
-  
+
   # 风格适配
   enable_style_adaptation: true   # 启用风格适配
-  
+
   # 时长控制
   target_segment_range: [8, 15]   # 目标片段时长范围(秒)
   min_segment_duration: 3.0       # 最小片段时长
@@ -64,7 +64,7 @@ validator:
   spectral_consistency_threshold: 0.7  # 频谱一致性阈值
   context_coherence_threshold: 0.6     # 上下文一致性阈值
   music_theory_compliance: 0.7    # 音乐理论符合度阈值
-  
+
   # 验证权重
   duration_weight: 0.15           # 时长验证权重
   energy_weight: 0.20             # 能量验证权重
@@ -82,28 +82,28 @@ bpm_adaptive_core:
     medium:    { min: 70,  max: 100, label: "流行/摇滚" }
     fast:      { min: 100, max: 140, label: "舞曲/电音" }
     very_fast: { min: 140, max: 999, label: "Drum&Bass" }
-  
+
   # 换气停顿(以拍为单位)
   pause_duration_beats:
     slow: 1.5      # 慢歌1.5拍换气时间
     medium: 1.0    # 中速1拍
     fast: 0.75     # 快歌0.75拍
     very_fast: 0.5 # 极快0.5拍
-  
+
   # 边界保护(以拍为单位)
   speech_pad_beats:
     slow: 0.8      # 0.8拍边界保护
     medium: 0.5    # 0.5拍
     fast: 0.3      # 0.3拍
     very_fast: 0.2 # 0.2拍
-  
+
   # 分割间隙(以乐句为单位)
   split_gap_phrases:
     slow: 4        # 慢歌4拍一个乐句
     medium: 4      # 中速4拍
     fast: 8        # 快歌8拍(紧凑)
     very_fast: 8   # 极快8拍
-  
+
   # 复杂度补偿系数
   complexity_compensation:
     base_factor: 1.0           # 基础系数
@@ -114,19 +114,19 @@ bpm_adaptive_core:
   # ============================================================================
   # BPM自适应系统使用说明 (v1.2.0)
   # ============================================================================
-  # 
+  #
   # 本系统将根据音乐的BPM、编曲复杂度和乐器数量，动态计算以下参数：
-  # 
+  #
   # 1. 停顿时长 = pause_duration_beats[category] × beat_interval × compensation
   # 2. 边界保护 = speech_pad_beats[category] × beat_interval
-  # 3. 分割间隙 = split_gap_phrases[category] × beat_interval  
+  # 3. 分割间隙 = split_gap_phrases[category] × beat_interval
   # 4. VAD阈值 = base_threshold + complexity × 0.3
-  # 
+  #
   # 其中：
   # - beat_interval = 60.0 / BPM (节拍间隔秒数)
   # - compensation = complexity_factor × instrument_factor
   # - category ∈ {slow, medium, fast, very_fast}
-  # 
+  #
   # 动态参数将覆盖所有标记为❌的静态配置值，实现真正的音乐感知分割。
   # ============================================================================
 
@@ -145,12 +145,12 @@ audio:
 advanced_vad:
   # ---- 基本门限与时间窗 ----
   silero_target_sample_rate: 16000      # Silero VAD内部重采样目标
-  
+
   # 🔄 以下参数将被BPM自适应系统动态覆盖 (v1.2.0+)
   silero_min_silence_ms: 1300           # ❌ 静态值，将被pause_duration_beats动态计算覆盖
   silero_min_speech_ms: 1000            # ❌ 静态值，将被BPM和复杂度动态调整
   silero_speech_pad_ms: 240             # ❌ 静态值，将被speech_pad_beats动态计算覆盖
-  
+
   # ✅ 以下参数保持静态配置
   silero_window_size_samples: 480       # 16k × 30ms (固定帧长)
 
@@ -170,11 +170,11 @@ advanced_vad:
 # ============================================================================
 quality_control:
   validate_split_points: true
-  
+
   # 🔄 以下参数将被BPM自适应系统动态覆盖 (v1.2.0+)
   min_pause_at_split: 1.0                # ❌ 静态值，将被pause_duration_beats动态计算覆盖
   min_split_gap: 2.5                     # ❌ 静态值，将被split_gap_phrases动态计算覆盖
-  
+
   # ✅ 以下参数保持静态配置 (与音乐特征无关)
   min_vocal_content_ratio: 0.5           # 人声内容比例要求
   max_silence_ratio: 0.55                # 静音比例上限
@@ -203,7 +203,7 @@ vocal_pause_splitting:
   # 🔄 以下参数将被BPM自适应系统动态覆盖 (v1.2.0+)
   min_pause_duration: 1.2               # ❌ 静态值，将被pause_duration_beats动态计算覆盖
   voice_threshold: 0.50                  # ❌ 静态值，将被复杂度自适应阈值覆盖
-  
+
   # ✅ 以下参数保持静态配置 (与BPM无关的切割策略)
   head_offset: -0.5                      # 头部切割：回撤 0.5s（回归产品规范）
   tail_offset: 0.8                       # 尾部切割：延后 0.8s（更抗早切）
@@ -217,10 +217,31 @@ vocal_pause_splitting:
   # ---- 切点精修护栏（以静音中心为锚，右偏微调）----
   enable_zero_crossing_align: true
   max_shift_from_silence_center: 0.08    # ←→ 最大偏移（秒）
-  silence_center_bias_ratio: 0.60        # ★ 在静音平台内，取“平台宽度×0.6”的右偏位置
+  silence_center_bias_ratio: 0.10        # ★ 在静音平台内，取"平台宽度×0.1"的左偏位置（更安全）
   require_silence_plateau_ms: 400        # ↑ 必须处于至少 400ms 的平坦静音平台
   plateau_flatness_db: 6                 # ↑ 平坦度更严格
   boundary_backoff_ms: 180               # ↑ 临近人声边界时向静音中心回退距离
+
+
+  # ---- 无静音平台的谷值切割（最小可用版）----
+  enable_valley_mode: false              # 手动启用谷值切割优先
+  auto_valley_fallback: true             # 当静默守卫/平台不满足时自动兜底到谷值
+  local_rms_window_ms: 25                # 局部RMS窗长
+  silence_floor_percentile: 5            # 动态地板的分位数（百分数）
+  lookahead_guard_ms: 120                # 未来静默守卫（仅fallback路径强制）
+  min_valley_width_ms: 120               # 谷宽约束（候选谷的最小宽度），建议 100–160ms
+  cut_at_speech_end: false               # 人声消失即切割（关闭，避免错切）
+  bpm_guard:
+    enable: false                        # 是否启用拍点禁切；默认关闭，避免破坏兼容
+    forbid_ms: 100                       # 拍点±forbid_ms 禁切窗口
+
+
+  # ---- 连续人声段的 valley 扫描（可选，默认关闭，零破坏）----
+  voiced_valley_fallback:
+    enable: true                    # 对长语音段按网格扫描 valley 并补切点
+    min_gap_s: 6.0                   # 网格间隔（秒），同时作为最小切点间隔
+    min_valley_width_ms: 120         # 谷宽要求（与上方保持一致）
+    window_s: 0.30                   # 合成停顿窗口宽度（围绕 valley ±window/2）
 
   # ==========================================================================
   # BPM 自适应（只在静音平台内微吸附，且禁止提前吸附）
@@ -301,11 +322,11 @@ enhanced_separation:
     overlap: 0.25                          # 重叠率
     split: true                            # 启用分割处理
     jobs: 1                                # 并行任务数
-  
+
   # MDX23专用配置 (v1.2.0 - GPU加速优化版)
   mdx23:
     project_path: "./MVSEP-MDX23-music-separation-model"  # MDX23项目路径（已克隆到本地）
-    model_name: "MDX23C_D1581"             # 默认模型名称  
+    model_name: "MDX23C_D1581"             # 默认模型名称
     model_path: "./models"                 # 模型存储路径(首次运行会自动下载)
     enable_gpu: true                       # ✅ 使用GPU加速
     enable_large_gpu: false                # ⚡ 关闭大型GPU模式以节省显存（RTX 5060 Ti 16GB适配）
@@ -315,7 +336,7 @@ enhanced_separation:
     chunk_size: 100000                     # ⚡ 降低chunk size以适配16GB显存
     overlap_large: 0.25                    # ⚡ 平衡质量和速度的重叠度
     overlap_small: 0.1                     # 轻量模型重叠度
-    
+
   # Demucs v4配置 (GPU加速优化版)
   demucs_v4:
     model: "htdemucs"                      # 模型名称
@@ -324,7 +345,7 @@ enhanced_separation:
     overlap: 0.25                          # 重叠度，平衡质量和速度
     shifts: 1                              # 音频偏移数量，1=最快，10=最准确
     split: true                            # 启用智能分段处理
-    
+
   # 双路检测配置 (v1.2.0 优化版)
   dual_detection:
     enable_cross_validation: true          # 启用交叉验证以获得更好的检测效果
