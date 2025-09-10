@@ -147,20 +147,20 @@ advanced_vad:
   silero_target_sample_rate: 16000      # Silero VAD内部重采样目标
 
   # 🔄 以下参数将被BPM自适应系统动态覆盖 (v1.2.0+)
-  silero_min_silence_ms: 1300           # ❌ 静态值，将被pause_duration_beats动态计算覆盖
-  silero_min_speech_ms: 1000            # ❌ 静态值，将被BPM和复杂度动态调整
-  silero_speech_pad_ms: 240             # ❌ 静态值，将被speech_pad_beats动态计算覆盖
+  silero_min_silence_ms: 700           # ❌ 静态值，将被pause_duration_beats动态计算覆盖
+  silero_min_speech_ms: 250            # ❌ 静态值，将被BPM和复杂度动态调整
+  silero_speech_pad_ms: 150             # ❌ 静态值，将被speech_pad_beats动态计算覆盖
 
   # ✅ 以下参数保持静态配置
-  silero_window_size_samples: 480       # 16k × 30ms (固定帧长)
+  silero_window_size_samples: 512       # 16k × 30ms (固定帧长)
 
   # ---- 概率滞回 + 连续帧（强防抖）----
-  silero_prob_threshold_up: 0.55        # 静音->语音
-  silero_prob_threshold_down: 0.40      # ↓ 语音->静音（降低，延后转静音时刻）
-  silero_min_consecutive_silence_frames: 40  # 40 × 30ms ≈ 1.2s 持续静音
-  silero_min_consecutive_speech_frames: 12   # 12 × 30ms ≈ 0.36s
-  silero_hangover_ms: 300               # ★ 语音挂起延时：检测降为静音后仍保持语音态 300ms
-  silero_prob_smoothing_ms: 120         # ★ 概率平滑（EMA/中值滤波皆可）
+  silero_prob_threshold_up: 0.60        # 静音->语音
+  silero_prob_threshold_down: 0.35      # ↓ 语音->静音（降低，延后转静音时刻）
+  silero_min_consecutive_silence_frames: 20  # 40 × 30ms ≈ 1.2s 持续静音
+  silero_min_consecutive_speech_frames: 5   # 12 × 30ms ≈ 0.36s
+  silero_hangover_ms: 120               # ★ 语音挂起延时：检测降为静音后仍保持语音态 300ms
+  silero_prob_smoothing_ms: 90         # ★ 概率平滑（EMA/中值滤波皆可）
 
   # ---- 备用 WebRTC VAD ----
   webrtc_aggressiveness: 1
@@ -277,10 +277,10 @@ vocal_pause_splitting:
 
     # ---- 停顿时长乘数（带总下限钳制）----
     pause_duration_multipliers:
-      slow_song_multiplier: 1.10         # 慢：1.2×1.1=1.32s（降低乘数避免过度延长）
-      fast_song_multiplier: 0.90         # 快：1.2×0.9=1.08s（更严格的快歌检测）
+      slow_song_multiplier: 1.20         # 慢：1.2×1.1=1.32s（降低乘数避免过度延长）
+      fast_song_multiplier: 0.80         # 快：1.2×0.9=1.08s（更严格的快歌检测）
       medium_song_multiplier: 1.00
-    min_pause_duration_floor: 1.10       # ★ 强钳制：任何自适应后仍不得 < 1.10s
+    min_pause_duration_floor: 0.60       # ★ 强钳制：任何自适应后仍不得 < 1.10s
 
     # ---- 切割偏移乘数（以 ±0.5/0.8 为基准轻微缩放）----
     offset_multipliers:

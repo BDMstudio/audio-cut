@@ -300,59 +300,52 @@ class VocalPauseDetectorV2:
             audio_tensor = torch.from_numpy(audio_resampled).float()
 
             # 使用Silero VAD检测语音时间戳
-            # 从配置读取Silero参数（如无则使用安全默认值）
-            min_speech_ms = int(get_config('advanced_vad.silero_min_speech_ms', 250))
-            pad_ms = int(get_config('advanced_vad.silero_speech_pad_ms', 10))
-            win_size = int(get_config('advanced_vad.silero_window_size_samples', 480))
+            # ✅ --- 核心修复：从config实时读取所有VAD参数 ---
+            logger.debug("实时从config加载VAD参数...")
+            
+            # 从 'advanced_vad' 部分读取，这是我们新的“黄金参数”存放地
+            vad_threshold = get_config('advanced_vad.silero_prob_threshold_down', 0.35)
+            min_speech_ms = get_config('advanced_vad.silero_min_speech_ms', 250)
+            min_silence_ms = get_config('advanced_vad.silero_min_silence_ms', 700)
+            window_size = get_config('advanced_vad.silero_window_size_samples', 512)
+            pad_ms = get_config('advanced_vad.silero_speech_pad_ms', 150)
 
+            logger.info(f"应用VAD参数: threshold={vad_threshold}, min_speech={min_speech_ms}ms, min_silence={min_silence_ms}ms")
+            
+            # 使用Silero VAD检测语音时间戳
             speech_timestamps = self.get_speech_timestamps(
-                audio_tensor,
+                audio_tensor, 
                 self.vad_model,
                 sampling_rate=target_sr,
-                threshold=self.voice_threshold,
-                min_speech_duration_ms=min_speech_ms,
-                min_silence_duration_ms=int(self.min_pause_duration * 1000),
-                window_size_samples=win_size,
-                speech_pad_ms=pad_ms
+                threshold=vad_threshold,           # ✅ 使用实时读取的阈值
+                min_speech_duration_ms=min_speech_ms, # ✅ 使用实时读取的参数
+                min_silence_duration_ms=min_silence_ms, # ✅ 使用实时读取的参数
+                window_size_samples=window_size,     # ✅ 使用实时读取的参数
+                speech_pad_ms=pad_ms                 # ✅ 使用实时读取的参数
             )
 
             # 将时间戳映射回原始采样率（使用正确的跨域映射）
+            # 将时间戳映射回原始采样率
             if self.sample_rate != target_sr:
-                from ..utils.audio_processor import map_time_between_domains
-                # 获取重采样延迟（如果配置中有）
-                latency_samples = int(get_config('time_mapping.latency_samples', 0))
-                
+                scale_factor = self.sample_rate / target_sr
                 for ts in speech_timestamps:
-                    # 转换为秒
-                    start_sec = ts['start'] / target_sr
-                    end_sec = ts['end'] / target_sr
-                    
-                    # 映射到原始采样率域
-                    start_sec_mapped = map_time_between_domains(
-                        start_sec, target_sr, self.sample_rate, latency_samples
-                    )
-                    end_sec_mapped = map_time_between_domains(
-                        end_sec, target_sr, self.sample_rate, latency_samples
-                    )
-                    
-                    # 转换回样本
-                    ts['start'] = int(start_sec_mapped * self.sample_rate)
-                    ts['end'] = int(end_sec_mapped * self.sample_rate)
-
+                    ts['start'] = int(ts['start'] * scale_factor)
+                    ts['end'] = int(ts['end'] * scale_factor)
+            
             logger.info(f"Silero VAD检测结果: {len(speech_timestamps)} 个语音片段")
-
+            
             # 详细调试信息
             for i, ts in enumerate(speech_timestamps[:10]):  # 只显示前10个
                 start_sec = ts['start'] / self.sample_rate
                 end_sec = ts['end'] / self.sample_rate
                 duration = end_sec - start_sec
                 logger.info(f"  语音片段{i+1}: {start_sec:.2f}s - {end_sec:.2f}s (时长: {duration:.2f}s)")
-
+            
             if len(speech_timestamps) > 10:
                 logger.info(f"  ... 还有 {len(speech_timestamps)-10} 个语音片段")
-
+            
             return speech_timestamps
-
+            
         except Exception as e:
             logger.error(f"Silero VAD检测失败: {e}")
             return []
@@ -722,194 +715,65 @@ class VocalPauseDetectorV2:
         return None
 
     def _calculate_cut_points(self, vocal_pauses: List[VocalPause], bpm_features: Optional['BPMFeatures'] = None, waveform: Optional[np.ndarray] = None) -> List[VocalPause]:
-        """
-        计算精确的切割点位置（静音平台中心+右偏+零交叉吸附；带无静音平台的谷值兜底；保留BPM自适应能力）
+            """
+            计算精确的切割点位置（强制能量谷检测）
+            """
+            # 读取切点精修配置
+            max_shift_s = float(get_config('vocal_pause_splitting.max_shift_from_silence_center', 0.08))
+            backoff_ms = int(get_config('vocal_pause_splitting.boundary_backoff_ms', 180))
+            backoff_s = backoff_ms / 1000.0
+            local_rms_ms = int(get_config('vocal_pause_splitting.local_rms_window_ms', 25))
+            floor_pct = float(get_config('vocal_pause_splitting.silence_floor_percentile', 5))
+            guard_ms = int(get_config('vocal_pause_splitting.lookahead_guard_ms', 120))
 
-        Args:
-            vocal_pauses: 人声停顿列表
-            bpm_features: BPM分析特征（用于偏移/对齐）
-            waveform: 原始波形（纯人声stem），用于零交叉吸附
+            logger.info(f"计算 {len(vocal_pauses)} 个停顿的切割点 (强制能量谷检测模式)...")
 
-        Returns:
-            包含切割点的停顿列表
-        """
-        # 读取切点精修配置
-        enable_zero_x = get_config('vocal_pause_splitting.enable_zero_crossing_align', True)
-        max_shift_s = float(get_config('vocal_pause_splitting.max_shift_from_silence_center', 0.08))
-        bias_ratio = float(get_config('vocal_pause_splitting.silence_center_bias_ratio', 0.60))
-        backoff_ms = int(get_config('vocal_pause_splitting.boundary_backoff_ms', 180))
-        backoff_s = backoff_ms / 1000.0
-        # Valley相关配置（最小可用版）
-        enable_valley_mode = bool(get_config('vocal_pause_splitting.enable_valley_mode', False))
-        auto_valley_fallback = bool(get_config('vocal_pause_splitting.auto_valley_fallback', True))
-        local_rms_ms = int(get_config('vocal_pause_splitting.local_rms_window_ms', 25))
-        floor_pct = float(get_config('vocal_pause_splitting.silence_floor_percentile', 5))
-        guard_ms = int(get_config('vocal_pause_splitting.lookahead_guard_ms', 120))
+            for i, pause in enumerate(vocal_pauses):
+                # ✅ --- 关键修复：恢复 left 和 right 变量的定义 ---
+                # 默认搜索范围是整个停顿区域，并向内收缩一个边界缓冲
+                left = pause.start_time + backoff_s
+                right = pause.end_time - backoff_s
+                # 如果收缩后范围无效，则使用原始停顿范围
+                if right <= left:
+                    left, right = pause.start_time, pause.end_time
+                # ✅ --- 修复结束 ---
 
-        # BPM自适应偏移（备用方案）
-        if self.enable_bpm_adaptation and bpm_features:
-            adaptive_head_offset, adaptive_tail_offset = self._get_adaptive_offsets(bpm_features)
-        else:
-            adaptive_head_offset, adaptive_tail_offset = self.head_offset, self.tail_offset
+                selected_idx: Optional[int] = None
 
-        logger.info(f"计算 {len(vocal_pauses)} 个停顿的切割点（零交叉={enable_zero_x}，valley_fallback={auto_valley_fallback or enable_valley_mode}）...")
+                # 全面采用能量谷检测逻辑
+                if waveform is not None and len(waveform) > 0:
+                    l_idx = max(0, int(left * self.sample_rate))
+                    r_idx = min(len(waveform), int(right * self.sample_rate))
 
-        # 支持“人声消失即切割”模式（不破坏默认行为）
-        cut_on_speech_end = bool(get_config('vocal_pause_splitting.cut_at_speech_end', False))
+                    if r_idx > l_idx:
+                        # 强制使用能量谷检测
+                        valley_idx = self._select_valley_cut_point(
+                            waveform, l_idx, r_idx, self.sample_rate,
+                            local_rms_ms, guard_ms, floor_pct
+                        )
 
-        for i, pause in enumerate(vocal_pauses):
-            width = max(0.0, pause.end_time - pause.start_time)
-
-            # 🔴 关键修复：对于超长停顿（>10秒），切点设在开始处而非中间
-            # if width > 10.0:
-            #     # 超长停顿（可能是误判的前奏），切点设在开始+2秒处
-            #     candidate = pause.start_time + 2.0
-            #     left = pause.start_time + 1.0
-            #     right = pause.start_time + 3.0
-            #     logger.warning(f"检测到超长停顿 {width:.1f}s，可能是误判，切点设在开始处")
-            # elif cut_on_speech_end and pause.position_type in ('middle', 'tail'):
-            #     # 人声消失即切割：选择停顿起点作为基准
-            #     candidate = pause.start_time
-            #     # 只向右搜索对齐，避免提前
-            #     left = pause.start_time
-            #     right = min(pause.end_time, pause.start_time + max_shift_s)
-            # else:
-            #     # 🔴 临时修复：直接使用停顿中心，不做偏移
-            #     # candidate = pause.start_time + width * bias_ratio  # 原代码
-            #     candidate = pause.start_time + width * 0.5  # 修复：使用中心点
-            #     # 边界回退，避免切在语音边缘抖动
-            #     left = pause.start_time + backoff_s
-            #     right = pause.end_time - backoff_s
-            #     if right <= left:
-            #         left, right = pause.start_time, pause.end_time
-
-            # # 将候选点限制在区间内
-            # candidate = min(max(candidate, left), right)
-
-            # ✅ 全面采用能量谷检测逻辑
-            if waveform is not None and len(waveform) > 0:
-                l_idx = max(0, int(left * self.sample_rate))
-                r_idx = min(len(waveform), int(right * self.sample_rate))
-                
-                if r_idx > l_idx:
-                    # 强制使用能量谷检测，并启用未来静默守卫
-                    valley_idx = self._select_valley_cut_point(
-                        waveform, l_idx, r_idx, self.sample_rate, 
-                        local_rms_ms, guard_ms, floor_pct
-                    )
-                    
-                    if valley_idx is not None:
-                        selected_idx = valley_idx
-                        logger.debug(f"停顿 {i+1}: 强制使用 valley 切点 idx={selected_idx}")
+                        if valley_idx is not None:
+                            selected_idx = valley_idx
+                            logger.debug(f"停顿 {i+1}: 强制使用 valley 切点 idx={selected_idx}")
+                        else:
+                            # 如果找不到能量谷（极少见），回退到停顿中心
+                            selected_idx = int((pause.start_time + pause.end_time) / 2 * self.sample_rate)
+                            logger.warning(f"停顿 {i+1}: 未找到能量谷，回退到中心点")
                     else:
-                        # 如果找不到能量谷（极少见），回退到停顿中心
+                        # 如果搜索范围无效，也回退到中心点
                         selected_idx = int((pause.start_time + pause.end_time) / 2 * self.sample_rate)
-                        logger.warning(f"停顿 {i+1}: 未找到能量谷，回退到中心点")
                 else:
-                    selected_idx = int(candidate * self.sample_rate)
-            else:
-                selected_idx = int(candidate * self.sample_rate)
+                    # 如果没有波形数据，同样回退到中心点
+                    selected_idx = int((pause.start_time + pause.end_time) / 2 * self.sample_rate)
 
-            # 零交叉吸附（在指定窗口内寻找最小幅度点）
-            # 🔴 临时禁用零交叉对齐，避免把切点拉到高能量区
-            # if False and enable_zero_x and waveform is not None and len(waveform) > 0:
-            #     center_idx = int(candidate * self.sample_rate)
-            #     # 对“消失即切割”只向右吸附；否则双向
-            #     radius = int(max_shift_s * self.sample_rate)
-            #     start_idx = int(left * self.sample_rate) if cut_on_speech_end else max(int(pause.start_time * self.sample_rate), center_idx - radius)
-            #     end_idx = int(right * self.sample_rate) if cut_on_speech_end else min(int(pause.end_time * self.sample_rate), center_idx + radius)
-            #     if end_idx > start_idx:
-            #         window = waveform[start_idx:end_idx]
-            #         local = int(np.argmin(np.abs(window)))
-            #         selected_idx = start_idx + local
-            #     else:
-            #         selected_idx = int(candidate * self.sample_rate)
-            # else:
-            #     # 未启用零交叉吸附
-            #     if cut_on_speech_end and pause.position_type in ('middle', 'tail'):
-            #         selected_idx = int(candidate * self.sample_rate)
-            #     else:
-            #         # 退化为BPM偏移或候选点
-            #         if pause.position_type == 'head':
-            #             selected_idx = int((pause.end_time + adaptive_head_offset) * self.sample_rate)
-            #         elif pause.position_type == 'tail':
-            #             selected_idx = int((pause.start_time + adaptive_tail_offset) * self.sample_rate)
-            #         else:
-            #             selected_idx = int(candidate * self.sample_rate)
+                # 将最终选择的样本索引转换为时间
+                pause.cut_point = selected_idx / self.sample_rate
+                logger.info(f"停顿 {i+1} ({pause.position_type}): {pause.start_time:.2f}s-{pause.end_time:.2f}s → 切点: {pause.cut_point:.2f}s")
 
-            # 未来静默守卫检查；根据开关决定是否直接使用 valley 或兜底使用
-            if waveform is not None and len(waveform) > 0 and (enable_valley_mode or auto_valley_fallback):
-                l_idx = max(0, int(left * self.sample_rate)); r_idx = min(len(waveform), int(right * self.sample_rate))
-                if r_idx > l_idx:
-                    win_samples = max(1, int(local_rms_ms / 1000.0 * self.sample_rate))
-                    rms_full = self._compute_rms_envelope(waveform, win_samples)
-                    # 修正：以RMS包络的分位数作为地板，避免被原始幅值的零交叉稀疏误导
-                    floor_val = float(np.percentile(rms_full[l_idx:r_idx], floor_pct)) if (r_idx > l_idx) else 0.0
-                    # 限界：守卫窗口不越过当前停顿右边界
-                    _sel = int(selected_idx)
-                    _guard_len = int(guard_ms / 1000.0 * self.sample_rate)
-                    _guard_right = int(min(pause.end_time * self.sample_rate, _sel + _guard_len))
-                    _guard_len_clamped = max(0, _guard_right - _sel)
-                    guard_ok = self._future_silence_guard(rms_full, _sel, _guard_len_clamped, floor_val)
-
-                    if enable_valley_mode:
-                        # 直接采用 valley 方案（优先级更高），保证切点处于谷内部
-                        valley_idx = self._select_valley_cut_point(waveform, l_idx, r_idx, self.sample_rate, local_rms_ms, -1, floor_pct)
-                        if valley_idx is not None:
-                            selected_idx = valley_idx
-            # 强制 valley（来自合成停顿）：覆盖宽半径零交叉的漂移，并在±5ms内做微吸附
-            if getattr(pause, 'force_valley', False) and waveform is not None and len(waveform) > 0:
-                l_idx = max(0, int(left * self.sample_rate)); r_idx = min(len(waveform), int(right * self.sample_rate))
-                if r_idx > l_idx:
-                    valley_idx = self._select_valley_cut_point(waveform, l_idx, r_idx, self.sample_rate, local_rms_ms, 0, floor_pct)
-                    if valley_idx is not None:
-                        selected_idx = valley_idx
-                        if enable_zero_x:
-                            zwin = max(1, int(0.005 * self.sample_rate))  # ±5ms 微吸附，避免点击
-                            zls = max(l_idx, valley_idx - zwin)
-                            zre = min(r_idx, valley_idx + zwin)
-                            if zre > zls:
-                                window = waveform[zls:zre]
-                                local = int(np.argmin(np.abs(window)))
-                                selected_idx = zls + local
-
-                            logger.debug(f"停顿 {i+1}: enable_valley_mode=True，采用 valley 切点 idx={selected_idx}")
-                    elif not guard_ok and auto_valley_fallback:
-                        # 兜底：仅在守卫不通过时使用 valley
-                        valley_idx = self._select_valley_cut_point(waveform, l_idx, r_idx, self.sample_rate, local_rms_ms, -1, floor_pct)
-                        if valley_idx is not None:
-                            selected_idx = valley_idx
-                            logger.debug(f"停顿 {i+1}: 守卫未通过，使用 valley 兜底 idx={selected_idx}")
-
-            # 约束范围并写入cut_point（含BPM禁切区右推）
-            if selected_idx is None:
-                cp_time = max(0.0, min(candidate, pause.end_time))
-            else:
-                cp_time = max(0.0, min(selected_idx / self.sample_rate, pause.end_time))
-
-            # BPM禁切区（可选）：若切点落在拍点±forbid_ms内，则推到右边界（不左移）
-            try:
-                bpm_guard_enable = bool(get_config('vocal_pause_splitting.bpm_guard.enable', False))
-                forbid_ms = int(get_config('vocal_pause_splitting.bpm_guard.forbid_ms', 0))
-            except Exception:
-                bpm_guard_enable = False
-                forbid_ms = 0
-            if bpm_guard_enable and bpm_features and getattr(bpm_features, 'main_bpm', 0) > 0 and forbid_ms > 0:
-                beat_duration = 60.0 / float(max(1e-6, bpm_features.main_bpm))
-                forbid_s = float(forbid_ms) / 1000.0
-                nearest = round(cp_time / beat_duration) * beat_duration
-                if abs(cp_time - nearest) <= forbid_s:
-                    t_new = nearest + forbid_s
-                    t_new = max(cp_time, t_new)
-                    t_new = min(pause.end_time, max(pause.start_time, t_new))
-                    cp_time = t_new
-
-            pause.cut_point = cp_time
-
-            logger.info(f"停顿 {i+1} ({pause.position_type}): {pause.start_time:.2f}s-{pause.end_time:.2f}s → 切点: {pause.cut_point:.2f}s")
-
-        return vocal_pauses
-
+            return vocal_pauses
+    
+    # Removed dead code that was unreachable after return statement
+    
     def _filter_adaptive_pauses(self, pause_segments: List[Dict],
                               complexity_segments: List,
                               bpm_features: 'BPMFeatures') -> List[Dict]:
