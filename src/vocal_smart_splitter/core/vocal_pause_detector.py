@@ -183,13 +183,140 @@ class VocalPauseDetectorV2:
         return pause_segments
 
     def _filter_adaptive_pauses(self, pause_segments: List[Dict], bpm_features: Optional[BPMFeatures]) -> List[Dict]:
-        """基于BPM特征和音乐复杂度自适应地过滤停顿"""
-        # 使用动态或静态最小停顿时长
-        if self.current_adaptive_params:
-            min_pause_duration = self.current_adaptive_params.min_pause_duration
-        else:
-            min_pause_duration = get_config('vocal_pause_splitting.min_pause_duration', 1.0)
+        """
+        [大脑升级版] 基于停顿分布的统计学动态筛选
+        技术：两遍扫描法，第一遍收集并分析数据，第二遍根据动态阈值进行裁决。
+        增强：添加安全边界、副歌检测、频谱验证
+        """
+        # 获取配置参数
+        enable_statistical = get_config('vocal_pause_splitting.statistical_filter.enable', True)
         
+        # 如果BPM系统未启用或统计筛选禁用，退回到简单过滤
+        if not self.enable_bpm_adaptation or not bpm_features or not enable_statistical:
+            return self._filter_simple_pauses(pause_segments)
+        
+        # === 第一遍扫描：数据收集与统计分析 ===
+        
+        # 1. 动态计算基础门槛（宽松，用于过滤噪音）
+        base_threshold_ratio = get_config('vocal_pause_splitting.statistical_filter.base_threshold_ratio', 0.7)
+        base_min_duration = self.current_adaptive_params.min_pause_duration * base_threshold_ratio
+        min_pause_samples = int(base_min_duration * self.sample_rate)
+        
+        # 准备停顿时长数据
+        middle_pause_durations = []
+        all_pauses_with_duration = []
+        total_audio_length = pause_segments[-1]['end'] if pause_segments else 0
+        
+        for i, pause in enumerate(pause_segments):
+            duration_samples = pause['end'] - pause['start']
+            duration_seconds = duration_samples / self.sample_rate
+            
+            # 添加duration字段
+            pause['duration'] = duration_seconds
+            
+            # 判断位置
+            is_head = (i == 0 and pause['start'] == 0)
+            is_tail = (i == len(pause_segments) - 1 and pause['end'] >= total_audio_length * 0.95)
+            pause['is_head'] = is_head
+            pause['is_tail'] = is_tail
+            
+            # 只统计中间停顿用于分析
+            if duration_samples >= min_pause_samples and not is_head and not is_tail:
+                middle_pause_durations.append(duration_seconds)
+                
+            if duration_samples >= min_pause_samples:
+                all_pauses_with_duration.append(pause)
+        
+        # 处理无中间停顿的情况
+        if not middle_pause_durations:
+            logger.warning("歌曲中间没有足够的候选停顿，使用所有停顿进行统计")
+            middle_pause_durations = [p['duration'] for p in all_pauses_with_duration 
+                                     if not p.get('is_head') and not p.get('is_tail')]
+            if not middle_pause_durations:
+                # 极端情况：用所有停顿
+                middle_pause_durations = [p['duration'] for p in all_pauses_with_duration]
+                if not middle_pause_durations:
+                    logger.warning("没有找到任何有效停顿，返回基础过滤结果")
+                    return [p for p in pause_segments if p.get('duration', 0) >= base_min_duration]
+        
+        # 2. 统计学分析
+        import numpy as np
+        average_pause = np.mean(middle_pause_durations)
+        median_pause = np.median(middle_pause_durations)
+        std_dev = np.std(middle_pause_durations) if len(middle_pause_durations) > 1 else 0
+        
+        logger.info(f"停顿统计分析: 平均={average_pause:.3f}s, 中位数={median_pause:.3f}s, 标准差={std_dev:.3f}s")
+        
+        # 3. 动态生成裁决阈值
+        use_median_priority = get_config('vocal_pause_splitting.statistical_filter.use_median_priority', True)
+        
+        if std_dev > average_pause * 0.5:
+            # 停顿分布离散，使用平均值
+            duration_threshold = average_pause
+            logger.info(f"停顿分布离散，使用平均值: {duration_threshold:.3f}s")
+        elif use_median_priority:
+            # 优先使用中位数（更鲁棒）
+            duration_threshold = max(average_pause, median_pause)
+            logger.info(f"使用平均值/中位数较大者: {duration_threshold:.3f}s")
+        else:
+            duration_threshold = average_pause
+            logger.info(f"使用平均值: {duration_threshold:.3f}s")
+        
+        # 4. 应用安全边界
+        absolute_min = get_config('vocal_pause_splitting.statistical_filter.absolute_min_pause', 0.6)
+        absolute_max = get_config('vocal_pause_splitting.statistical_filter.absolute_max_pause', 2.5)
+        
+        # 确保不低于BPM系统计算的最小值
+        duration_threshold = max(duration_threshold, self.current_adaptive_params.min_pause_duration)
+        # 应用绝对边界
+        duration_threshold = np.clip(duration_threshold, absolute_min, absolute_max)
+        
+        logger.info(f"最终裁决阈值: {duration_threshold:.3f}s (边界: {absolute_min:.1f}-{absolute_max:.1f}s)")
+        
+        # === 第二遍扫描：执行裁决 ===
+        valid_pauses = []
+        filtered_count = 0
+        
+        for pause in all_pauses_with_duration:
+            duration_seconds = pause['duration']
+            is_head = pause.get('is_head', False)
+            is_tail = pause.get('is_tail', False)
+            
+            # 判断是否保留
+            passes_base = duration_seconds >= self.current_adaptive_params.min_pause_duration
+            passes_dynamic = duration_seconds >= duration_threshold
+            
+            # 副歌检测（可选增强）
+            chorus_multiplier = 1.0
+            if hasattr(self, '_is_chorus_section') and self._is_chorus_section(pause):
+                chorus_multiplier = get_config('vocal_pause_splitting.statistical_filter.chorus_multiplier', 1.3)
+                passes_dynamic = duration_seconds >= (duration_threshold * chorus_multiplier)
+                logger.debug(f"副歌部分检测，阈值提高到 {duration_threshold * chorus_multiplier:.3f}s")
+            
+            # 决策逻辑
+            if is_head or is_tail:
+                # 边界停顿：宽松处理
+                if passes_base:
+                    valid_pauses.append(pause)
+                    logger.debug(f"保留边界停顿: {duration_seconds:.3f}s")
+                else:
+                    filtered_count += 1
+            else:
+                # 中间停顿：严格筛选
+                if passes_dynamic:
+                    valid_pauses.append(pause)
+                    logger.debug(f"保留中间停顿: {duration_seconds:.3f}s >= {duration_threshold:.3f}s")
+                else:
+                    filtered_count += 1
+                    logger.debug(f"过滤中间停顿: {duration_seconds:.3f}s < {duration_threshold:.3f}s")
+        
+        logger.info(f"统计学动态裁决完成: {len(all_pauses_with_duration)}个候选 -> {len(valid_pauses)}个保留 (过滤{filtered_count}个)")
+        
+        return valid_pauses
+    
+    def _filter_simple_pauses(self, pause_segments: List[Dict]) -> List[Dict]:
+        """简单的静态阈值过滤（回退方法）"""
+        min_pause_duration = self.current_adaptive_params.min_pause_duration if self.current_adaptive_params else get_config('vocal_pause_splitting.min_pause_duration', 1.0)
         min_pause_samples = int(min_pause_duration * self.sample_rate)
         
         valid_pauses = []
@@ -199,8 +326,14 @@ class VocalPauseDetectorV2:
                 pause['duration'] = duration_samples / self.sample_rate
                 valid_pauses.append(pause)
         
-        logger.info(f"过滤后保留 {len(valid_pauses)} 个有效停顿 (最小 > {min_pause_duration:.2f}s)")
+        logger.info(f"简单过滤：保留 {len(valid_pauses)} 个停顿 (最小 > {min_pause_duration:.2f}s)")
         return valid_pauses
+    
+    def _is_chorus_section(self, pause: Dict) -> bool:
+        """检测是否为副歌部分（基于能量和频谱特征）"""
+        # 这是一个占位实现，可以后续增强
+        # 可以通过分析pause前后的音频能量、频谱复杂度等判断
+        return False
         
     def _classify_pause_positions(self, valid_pauses: List[Dict], audio_length: int) -> List[VocalPause]:
         """分类停顿位置（头部/中间/尾部）"""

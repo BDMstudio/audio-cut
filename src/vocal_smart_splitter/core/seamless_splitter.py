@@ -41,6 +41,12 @@ class SeamlessSplitter:
         """
         self.sample_rate = sample_rate
         
+        # 从配置中读取参数
+        from ..utils.config_manager import get_config
+        self.min_pause_duration = get_config('vocal_pause_splitting.min_pause_duration', 1.2)
+        self.zero_processing = get_config('vocal_pause_splitting.zero_processing', True)
+        self.preserve_original = get_config('vocal_pause_splitting.preserve_original', True)
+        
         # 初始化核心模块
         self.audio_processor = AudioProcessor(sample_rate)
         
@@ -122,9 +128,18 @@ class SeamlessSplitter:
             # 纯化过滤
             final_cut_points_times = qc.pure_filter_cut_points(validated_cut_times, len(original_audio) / self.sample_rate)
             final_cut_points_samples = [int(t * self.sample_rate) for t in final_cut_points_times]
+            
+            # CRITICAL FIX: 添加起始点和结束点，确保完整音频覆盖
+            audio_length = len(original_audio)
+            complete_cut_points = [0] + final_cut_points_samples + [audio_length]
+            # 去重并排序
+            complete_cut_points = sorted(list(set(complete_cut_points)))
+            
+            logger.info(f"完整切点列表: {[p/self.sample_rate for p in complete_cut_points]}")
+            logger.info(f"音频总长度: {audio_length/self.sample_rate:.2f}s, 将生成 {len(complete_cut_points)-1} 个片段")
 
             # 5. 执行分割
-            segments = self._split_at_sample_level(original_audio, final_cut_points_samples, vocal_pauses)
+            segments = self._split_at_sample_level(original_audio, complete_cut_points, vocal_pauses)
             
             # 6. 保存分割结果
             saved_files = self._save_seamless_segments(segments, output_dir)
@@ -143,10 +158,15 @@ class SeamlessSplitter:
             
         except Exception as e:
             logger.error(f"无缝分割失败: {e}")
+            import traceback
+            traceback.print_exc()
             return {
                 'success': False,
                 'error': str(e),
-                'input_file': input_path
+                'input_file': input_path,
+                'num_segments': 0,
+                'segments': [],
+                'saved_files': []
             }
     
     def _load_original_audio(self, input_path: str) -> Tuple[np.ndarray, int]:

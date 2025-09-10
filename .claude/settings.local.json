@@ -2,12 +2,10 @@
   "permissions": {
     "allow": [
       "Bash(python:*)",
-      "Read(//e/BDM_STATION/Desktop/BDM_projects/**)",
-      "Bash(set FORCE_SEPARATION_BACKEND=mdx23)",
-      "Bash(tree:*)",
-      "Bash(dir:*)",
-      "Bash(findstr:*)",
-      "Bash(find:*)"
+      "Bash(find:*)",
+      "Bash(for file in src/vocal_smart_splitter/core/*.py)",
+      "Bash(do wc:*)",
+      "Bash(done)"
     ],
     "deny": [],
     "ask": []
