@@ -229,7 +229,7 @@ vocal_pause_splitting:
   local_rms_window_ms: 25                # 局部RMS窗长
   silence_floor_percentile: 5            # 动态地板的分位数（百分数）
   lookahead_guard_ms: 120                # 未来静默守卫（仅fallback路径强制）
-  min_valley_width_ms: 120               # 谷宽约束（候选谷的最小宽度），建议 100–160ms
+  min_valley_width_ms: 100               # 谷宽约束（候选谷的最小宽度），建议 100–160ms
   cut_at_speech_end: false               # 人声消失即切割（关闭，避免错切）
   bpm_guard:
     enable: false                        # 是否启用拍点禁切；默认关闭，避免破坏兼容
@@ -457,3 +457,9 @@ precise_voice_splitting:
   normalize_audio: false
   remove_click_noise: false
   smooth_transitions: false
+
+# Time mapping configuration for cross-domain audio processing
+time_mapping:
+  sr_vocal: 16000      # VAD processing sample rate
+  sr_raw: 44100        # Original audio sample rate
+  latency_samples: 0   # Resampling latency compensation (to be measured)

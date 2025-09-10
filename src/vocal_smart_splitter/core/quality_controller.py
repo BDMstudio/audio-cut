@@ -896,10 +896,17 @@ class QualityController:
         floor_db = np.full_like(rms_db, global_floor)
 
         def ok(idx):
-            # 额外检查：绝对能量阈值，确保不在高能量区
-            if rms_db[idx] > -20.0:  # 高于-20dB视为明显有声音
-                return False
-            return rms_db[idx] <= floor_db[idx] + guard_db
+            # 主要判断：相对于噪声地板的能量
+            # 动态阈值：基于地板自适应
+            # 如果地板很低（<-40dB），使用较严格的guard
+            # 如果地板较高（>-30dB），使用较宽松的guard
+            adaptive_guard = guard_db
+            if global_floor < -40:
+                adaptive_guard = guard_db  # 保持原值
+            elif global_floor > -30:
+                adaptive_guard = guard_db * 1.5  # 放宽1.5倍
+            
+            return rms_db[idx] <= floor_db[idx] + adaptive_guard
 
         # 找到 t 对应的帧
         idx = int(t_sec / (hop_ms/1000.0))

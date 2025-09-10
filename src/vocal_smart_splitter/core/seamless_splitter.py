@@ -169,6 +169,28 @@ class SeamlessSplitter:
             # 4. 生成精确分割点
             cut_points = self._generate_precise_cut_points(vocal_pauses, len(original_audio))
             
+            # ✅ 新增：最终能量校验安全卫士
+            logger.info("[FINAL CHECK] 应用最终能量守卫...")
+            from .quality_controller import QualityController
+            qc = QualityController(self.sample_rate)
+            cut_points_times = [p / self.sample_rate for p in cut_points_samples]
+            validated_cut_times = []
+            for t in cut_points_times:
+                # 强制校验每个切点是否足够安静
+                quiet_t = qc.enforce_quiet_cut(
+                    original_audio, self.sample_rate, t,
+                    win_ms=80, guard_db=3.0, floor_pct=5, search_right_ms=250
+                )
+                if quiet_t >= 0: # -1 表示无效切点
+                    if abs(quiet_t - t) > 0.01:
+                        logger.info(f"  切点修正: {t:.3f}s -> {quiet_t:.3f}s")
+                    validated_cut_times.append(quiet_t)
+                else:
+                    logger.warning(f"  切点移除: {t:.3f}s (最终校验未通过)")
+                    
+            # 使用最终校验后的切点
+            final_cut_points_samples = [int(t * self.sample_rate) for t in validated_cut_times]
+            
             # 5. 执行样本级精确分割
             segments = self._split_at_sample_level(original_audio, cut_points, vocal_pauses)
             

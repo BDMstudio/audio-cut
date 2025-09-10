@@ -29,337 +29,296 @@ class AudioProcessor:
         
         logger.debug(f"音频处理器初始化: sr={sample_rate}, channels={channels}")
     
-    def load_audio(self, file_path: Union[str, Path], 
-                   normalize: bool = True) -> Tuple[np.ndarray, int]:
+    def load_audio(self, file_path: str, normalize: bool = True) -> Tuple[np.ndarray, int]:
         """加载音频文件
         
         Args:
             file_path: 音频文件路径
-            normalize: 是否标准化音频
+            normalize: 是否归一化
             
         Returns:
             (音频数据, 采样率)
         """
-        file_path = Path(file_path)
+        logger.debug(f"加载音频: {file_path}")
         
-        if not file_path.exists():
-            raise FileNotFoundError(f"音频文件不存在: {file_path}")
+        # 使用librosa加载，强制单声道和目标采样率
+        audio, sr = librosa.load(
+            file_path, 
+            sr=self.sample_rate, 
+            mono=(self.channels == 1)
+        )
         
-        try:
-            # 使用librosa加载音频
-            audio, sr = librosa.load(
-                str(file_path),
-                sr=self.sample_rate,
-                mono=(self.channels == 1),
-                dtype=np.float32
-            )
-            
-            # 标准化
-            if normalize and len(audio) > 0:
-                audio = self._normalize_audio(audio)
-            
-            duration = len(audio) / sr
-            logger.info(f"音频加载成功: {file_path.name}, 时长: {duration:.2f}秒, 采样率: {sr}")
-            
-            return audio, sr
-            
-        except Exception as e:
-            logger.error(f"音频加载失败: {file_path}, 错误: {e}")
-            raise
+        # 确保音频是float32类型
+        audio = audio.astype(np.float32)
+        
+        # 归一化处理
+        if normalize and np.max(np.abs(audio)) > 0:
+            audio = audio / np.max(np.abs(audio))
+        
+        logger.info(f"音频加载完成: 时长={len(audio)/sr:.2f}s, 采样率={sr}Hz")
+        
+        return audio, sr
     
-    def save_audio(self, audio: np.ndarray, sample_rate: int, 
-                   output_path: Union[str, Path], 
-                   quality: int = 192,
-                   fade_in: float = 0.0,
-                   fade_out: float = 0.0,
-                   zero_processing: bool = False) -> bool:
+    def save_audio(self, 
+                   audio: np.ndarray, 
+                   file_path: str,
+                   sample_rate: Optional[int] = None,
+                   subtype: str = 'PCM_24') -> None:
         """保存音频文件
         
         Args:
             audio: 音频数据
-            sample_rate: 采样率
-            output_path: 输出路径
-            quality: 音频质量 (kbps)
-            fade_in: 渐入时长 (秒)
-            fade_out: 渐出时长 (秒)
-            zero_processing: 是否零处理模式（无缝分割用）
-            
-        Returns:
-            是否保存成功
+            file_path: 保存路径
+            sample_rate: 采样率（默认使用实例采样率）
+            subtype: 音频子类型
         """
-        try:
-            output_path = Path(output_path)
-            output_path.parent.mkdir(parents=True, exist_ok=True)
+        if sample_rate is None:
+            sample_rate = self.sample_rate
             
-            # 零处理模式：完全跳过音频处理
-            if not zero_processing:
-                # 应用渐入渐出
-                if fade_in > 0 or fade_out > 0:
-                    audio = self._apply_fades(audio, sample_rate, fade_in, fade_out)
-                
-                # 确保音频在合理范围内
-                audio = np.clip(audio, -1.0, 1.0)
-            
-            # 根据文件扩展名选择保存方式
-            ext = output_path.suffix.lower()
-            
-            if ext == '.mp3':
-                self._save_as_mp3(audio, sample_rate, output_path, quality)
-            elif ext in ['.wav', '.flac']:
-                sf.write(str(output_path), audio, sample_rate)
-            else:
-                # 默认保存为wav
-                output_path = output_path.with_suffix('.wav')
-                sf.write(str(output_path), audio, sample_rate)
-            
-            duration = len(audio) / sample_rate
-            logger.debug(f"音频保存成功: {output_path.name}, 时长: {duration:.2f}秒")
-            
-            return True
-            
-        except Exception as e:
-            logger.error(f"音频保存失败: {output_path}, 错误: {e}")
-            return False
+        # 确保输出目录存在
+        output_dir = os.path.dirname(file_path)
+        if output_dir:
+            os.makedirs(output_dir, exist_ok=True)
+        
+        # 保存音频
+        sf.write(file_path, audio, sample_rate, subtype=subtype)
+        logger.debug(f"音频已保存: {file_path}")
     
-    def _save_as_mp3(self, audio: np.ndarray, sample_rate: int,
-                     output_path: Path, quality: int):
-        """高质量MP3保存"""
-        # 确保音频在合理范围内，使用软限制
-        audio = np.clip(audio, -0.95, 0.95)
-
-        # 转换为16位整数，使用更精确的缩放
-        audio_int16 = (audio * 32767.0).astype(np.int16)
-
-        # 使用pydub保存
-        audio_segment = AudioSegment(
-            audio_int16.tobytes(),
-            frame_rate=sample_rate,
-            sample_width=2,
-            channels=1
-        )
-
-        # 高质量MP3编码参数
-        audio_segment.export(
-            str(output_path),
-            format="mp3",
-            bitrate=f"{quality}k",
-            parameters=[
-                "-q:a", "0",  # 最高质量
-                "-compression_level", "0"  # 最低压缩
-            ]
-        )
-    
-    def _normalize_audio(self, audio: np.ndarray,
-                        target_level: float = -6.0) -> np.ndarray:
-        """温和的音频标准化
-
-        Args:
-            audio: 音频数据
-            target_level: 目标电平 (dB) - 更保守的目标
-
-        Returns:
-            标准化后的音频
-        """
-        if len(audio) == 0:
-            return audio
-
-        # 计算峰值而不是RMS，更保守
-        peak = np.max(np.abs(audio))
-
-        if peak > 0:
-            # 计算目标增益，基于峰值
-            target_peak = 10 ** (target_level / 20)
-            gain = target_peak / peak
-
-            # 更严格的增益限制，避免过度放大
-            gain = np.clip(gain, 0.3, 3.0)
-
-            audio = audio * gain
-
-        # 软限制，避免硬切割
-        audio = np.tanh(audio * 0.9) * 0.95
-
-        return audio
-    
-    def _apply_fades(self, audio: np.ndarray, sample_rate: int,
-                     fade_in: float, fade_out: float) -> np.ndarray:
-        """应用渐入渐出效果
+    def apply_fade(self, 
+                   audio: np.ndarray,
+                   fade_in_duration: float = 0.01,
+                   fade_out_duration: float = 0.01) -> np.ndarray:
+        """应用淡入淡出效果
         
         Args:
             audio: 音频数据
-            sample_rate: 采样率
-            fade_in: 渐入时长 (秒)
-            fade_out: 渐出时长 (秒)
+            fade_in_duration: 淡入时长（秒）
+            fade_out_duration: 淡出时长（秒）
             
         Returns:
             处理后的音频
         """
-        audio = audio.copy()
+        audio_copy = audio.copy()
         
-        # 渐入
-        if fade_in > 0:
-            fade_in_samples = int(fade_in * sample_rate)
-            fade_in_samples = min(fade_in_samples, len(audio) // 4)
-            
-            if fade_in_samples > 0:
-                fade_curve = np.linspace(0, 1, fade_in_samples)
-                audio[:fade_in_samples] *= fade_curve
+        # 计算样本数
+        fade_in_samples = int(fade_in_duration * self.sample_rate)
+        fade_out_samples = int(fade_out_duration * self.sample_rate)
         
-        # 渐出
-        if fade_out > 0:
-            fade_out_samples = int(fade_out * sample_rate)
-            fade_out_samples = min(fade_out_samples, len(audio) // 4)
+        # 应用淡入
+        if fade_in_samples > 0 and len(audio_copy) > fade_in_samples:
+            fade_in_curve = np.linspace(0, 1, fade_in_samples)
+            audio_copy[:fade_in_samples] *= fade_in_curve
+        
+        # 应用淡出
+        if fade_out_samples > 0 and len(audio_copy) > fade_out_samples:
+            fade_out_curve = np.linspace(1, 0, fade_out_samples)
+            audio_copy[-fade_out_samples:] *= fade_out_curve
+        
+        return audio_copy
+    
+    def normalize_audio(self, audio: np.ndarray, target_db: float = -20.0) -> np.ndarray:
+        """归一化音频到目标音量
+        
+        Args:
+            audio: 音频数据
+            target_db: 目标音量（dB）
             
-            if fade_out_samples > 0:
-                fade_curve = np.linspace(1, 0, fade_out_samples)
-                audio[-fade_out_samples:] *= fade_curve
+        Returns:
+            归一化后的音频
+        """
+        # 计算当前RMS
+        rms = np.sqrt(np.mean(audio ** 2))
+        
+        if rms > 0:
+            # 计算目标RMS
+            target_rms = 10 ** (target_db / 20)
+            
+            # 计算缩放因子
+            scale_factor = target_rms / rms
+            
+            # 应用缩放，但限制最大增益
+            scale_factor = min(scale_factor, 10.0)  # 最大增益20dB
+            
+            return audio * scale_factor
         
         return audio
     
-    def trim_silence(self, audio: np.ndarray, 
-                     threshold: float = 0.01,
-                     frame_length: int = 2048,
-                     hop_length: int = 512) -> np.ndarray:
-        """去除音频首尾的静音
+    def split_audio(self, 
+                    audio: np.ndarray,
+                    split_points: list,
+                    apply_fade: bool = True) -> list:
+        """根据分割点切分音频
         
         Args:
             audio: 音频数据
-            threshold: 静音阈值
-            frame_length: 帧长度
-            hop_length: 跳跃长度
+            split_points: 分割点列表（秒）
+            apply_fade: 是否应用淡入淡出
             
         Returns:
-            去除静音后的音频
+            音频片段列表
         """
-        try:
-            # 使用librosa的trim功能
-            trimmed_audio, _ = librosa.effects.trim(
-                audio,
-                top_db=20,  # 相对于峰值的dB阈值
-                frame_length=frame_length,
-                hop_length=hop_length
-            )
+        segments = []
+        split_points = [0] + sorted(split_points) + [len(audio) / self.sample_rate]
+        
+        for i in range(len(split_points) - 1):
+            start_time = split_points[i]
+            end_time = split_points[i + 1]
             
-            return trimmed_audio
+            start_sample = int(start_time * self.sample_rate)
+            end_sample = int(end_time * self.sample_rate)
             
-        except Exception as e:
-            logger.warning(f"静音去除失败: {e}")
-            return audio
+            segment = audio[start_sample:end_sample]
+            
+            if apply_fade and len(segment) > 0:
+                segment = self.apply_fade(segment)
+            
+            segments.append(segment)
+        
+        return segments
     
-    def resample_audio(self, audio: np.ndarray, 
-                      original_sr: int, 
-                      target_sr: int) -> np.ndarray:
-        """重采样音频
+    def export_segments(self,
+                       segments: list,
+                       output_dir: str,
+                       filename_prefix: str = "segment",
+                       normalize: bool = False) -> list:
+        """导出音频片段
         
         Args:
-            audio: 音频数据
-            original_sr: 原始采样率
-            target_sr: 目标采样率
+            segments: 音频片段列表
+            output_dir: 输出目录
+            filename_prefix: 文件名前缀
+            normalize: 是否归一化
             
         Returns:
-            重采样后的音频
+            保存的文件路径列表
         """
-        if original_sr == target_sr:
-            return audio
+        os.makedirs(output_dir, exist_ok=True)
+        saved_files = []
         
-        try:
-            resampled_audio = librosa.resample(
-                audio, 
-                orig_sr=original_sr, 
-                target_sr=target_sr,
-                res_type='kaiser_best'
-            )
+        for i, segment in enumerate(segments):
+            if normalize:
+                segment = self.normalize_audio(segment)
             
-            logger.debug(f"音频重采样: {original_sr} -> {target_sr} Hz")
-            return resampled_audio
+            filename = f"{filename_prefix}_{i+1:03d}.wav"
+            filepath = os.path.join(output_dir, filename)
             
-        except Exception as e:
-            logger.error(f"音频重采样失败: {e}")
-            return audio
+            self.save_audio(segment, filepath)
+            saved_files.append(filepath)
+        
+        logger.info(f"已导出 {len(segments)} 个音频片段到 {output_dir}")
+        
+        return saved_files
+
+
+def time_to_sample(time_sec: float, sample_rate: int) -> int:
+    """时间转换为样本索引
     
-    def convert_to_mono(self, audio: np.ndarray) -> np.ndarray:
-        """转换为单声道
+    Args:
+        time_sec: 时间（秒）
+        sample_rate: 采样率
         
-        Args:
-            audio: 音频数据 (可能是多声道)
-            
-        Returns:
-            单声道音频
-        """
-        if audio.ndim == 1:
-            return audio
-        elif audio.ndim == 2:
-            # 如果是立体声，取平均值
-            return np.mean(audio, axis=0)
-        else:
-            logger.warning(f"不支持的音频维度: {audio.ndim}")
-            return audio
+    Returns:
+        样本索引
+    """
+    return int(time_sec * sample_rate)
+
+
+def sample_to_time(sample_idx: int, sample_rate: int) -> float:
+    """样本索引转换为时间
     
-    def preprocess_audio(self, audio: np.ndarray, 
-                        sample_rate: int,
-                        normalize: bool = True,
-                        trim_silence: bool = True,
-                        target_sr: Optional[int] = None) -> Tuple[np.ndarray, int]:
-        """预处理音频
+    Args:
+        sample_idx: 样本索引
+        sample_rate: 采样率
         
-        Args:
-            audio: 音频数据
-            sample_rate: 采样率
-            normalize: 是否标准化
-            trim_silence: 是否去除静音
-            target_sr: 目标采样率
-            
-        Returns:
-            (处理后的音频, 采样率)
-        """
-        processed_audio = audio.copy()
-        current_sr = sample_rate
-        
-        # 转换为单声道
-        processed_audio = self.convert_to_mono(processed_audio)
-        
-        # 重采样
-        if target_sr and target_sr != current_sr:
-            processed_audio = self.resample_audio(processed_audio, current_sr, target_sr)
-            current_sr = target_sr
-        
-        # 去除静音
-        if trim_silence:
-            processed_audio = self.trim_silence(processed_audio)
-        
-        # 标准化
-        if normalize:
-            processed_audio = self._normalize_audio(processed_audio)
-        
-        logger.debug(f"音频预处理完成: 长度={len(processed_audio)}, 采样率={current_sr}")
-        
-        return processed_audio, current_sr
+    Returns:
+        时间（秒）
+    """
+    return sample_idx / sample_rate
+
+
+def map_time_between_domains(t_src_sec: float, sr_src: int, sr_dst: int,
+                             latency_samples: int = 0) -> float:
+    """
+    跨采样率时间映射（vocal_prime.md核心方案）
+    把 vocal 域时间映射回原混音域
     
-    def get_audio_info(self, file_path: Union[str, Path]) -> dict:
-        """获取音频文件信息
+    Args:
+        t_src_sec: 源域时间（秒）
+        sr_src: 源采样率
+        sr_dst: 目标采样率
+        latency_samples: 重采样延迟（样本数）
+    
+    Returns:
+        目标域时间（秒）
+    """
+    # 先转换为源域样本索引
+    src_samples = t_src_sec * sr_src
+    
+    # 映射到目标域（考虑延迟）
+    dst_samples = (src_samples * sr_dst / sr_src) + latency_samples
+    
+    # 转换回秒
+    return dst_samples / sr_dst
+
+
+def find_zero_crossing(audio: np.ndarray, 
+                       sample_rate: int,
+                       time_sec: float,
+                       window_ms: float = 10.0,
+                       search_right_only: bool = True) -> float:
+    """寻找最近的零交叉点
+    
+    Args:
+        audio: 音频数据
+        sample_rate: 采样率
+        time_sec: 中心时间（秒）
+        window_ms: 搜索窗口（毫秒）
+        search_right_only: 是否只向右搜索
         
-        Args:
-            file_path: 音频文件路径
-            
-        Returns:
-            音频信息字典
-        """
-        try:
-            file_path = Path(file_path)
-            
-            # 使用soundfile获取基本信息
-            info = sf.info(str(file_path))
-            
-            return {
-                'duration': info.duration,
-                'sample_rate': info.samplerate,
-                'channels': info.channels,
-                'format': info.format,
-                'subtype': info.subtype,
-                'frames': info.frames,
-                'file_size': file_path.stat().st_size
-            }
-            
-        except Exception as e:
-            logger.error(f"获取音频信息失败: {file_path}, 错误: {e}")
-            return {}
+    Returns:
+        零交叉点时间（秒）
+    """
+    center_sample = int(time_sec * sample_rate)
+    window_samples = int(window_ms * 0.001 * sample_rate)
+    
+    # 确定搜索范围
+    if search_right_only:
+        start_sample = center_sample
+        end_sample = min(center_sample + window_samples, len(audio) - 1)
+    else:
+        start_sample = max(0, center_sample - window_samples)
+        end_sample = min(center_sample + window_samples, len(audio) - 1)
+    
+    # 在窗口内寻找零交叉
+    min_abs = float('inf')
+    best_sample = center_sample
+    
+    for i in range(start_sample, end_sample):
+        if i > 0 and i < len(audio):
+            # 检查符号变化
+            if audio[i-1] * audio[i] <= 0:
+                # 找到零交叉
+                abs_val = abs(audio[i])
+                if abs_val < min_abs:
+                    min_abs = abs_val
+                    best_sample = i
+    
+    return best_sample / sample_rate
+
+
+def compute_rms(audio: np.ndarray, 
+                frame_length: int = 2048,
+                hop_length: int = 512) -> np.ndarray:
+    """计算RMS能量
+    
+    Args:
+        audio: 音频数据
+        frame_length: 帧长度
+        hop_length: 跳跃长度
+        
+    Returns:
+        RMS能量数组
+    """
+    return librosa.feature.rms(y=audio, 
+                               frame_length=frame_length,
+                               hop_length=hop_length)[0]

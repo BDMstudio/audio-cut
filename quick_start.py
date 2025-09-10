@@ -423,14 +423,14 @@ def split_pure_vocal_v2(input_file: str, output_dir: str, backend: str = 'auto',
             min_length = min(len(audio), len(vocal_track))
             audio = audio[:min_length]
             vocal_track = vocal_track[:min_length]
-            print(f"  ✅ 已对齐至 {min_length} 样本")
+            print(f"  [OK] 已对齐至 {min_length} 样本")
         else:
-            print(f"  ✅ 采样率映射正确: 原音频与人声轨均为 {len(audio)} 样本")
+            print(f"  [OK] 采样率映射正确: 原音频与人声轨均为 {len(audio)} 样本")
         
         # 确认两个音轨的有效采样率一致性
         original_duration = len(audio) / sample_rate
         vocal_duration = len(vocal_track) / sample_rate
-        print(f"  ✅ 时长对齐验证: 原音频 {original_duration:.3f}s, 人声轨 {vocal_duration:.3f}s")
+        print(f"  [OK] 时长对齐验证: 原音频 {original_duration:.3f}s, 人声轨 {vocal_duration:.3f}s")
         
         # 第3步：在纯人声stem上使用 Silero VAD 检测停顿
         print("[V2.0-STEP3] Silero VAD (纯人声stem) 停顿检测...")
@@ -457,9 +457,11 @@ def split_pure_vocal_v2(input_file: str, output_dir: str, backend: str = 'auto',
         validated_cut_points = []
         
         for cut_point in cut_points:
-            # 对每个切点进行能量验证，使用vocal_track进行检测
+            # 对每个切点进行能量验证
+            # 关键修复：使用原始音频（混音）进行能量验证，而不是纯人声轨
+            # 因为纯人声轨的"静音"可能仍有残留能量
             validated_point = quality_controller.enforce_quiet_cut(
-                vocal_track, sample_rate, cut_point,
+                audio, sample_rate, cut_point,
                 win_ms=80, guard_db=3.0, floor_pct=0.05, search_right_ms=220
             )
             
@@ -504,10 +506,10 @@ def split_pure_vocal_v2(input_file: str, output_dir: str, backend: str = 'auto',
                     energy_db = float(rms_db[idx])
                     noise_floor = float(floor_db[idx])
                     margin = energy_db - noise_floor
-                    status = "✅ 安静" if margin <= 3.0 else "⚠️ 偏高"
+                    status = "[OK] 安静" if margin <= 3.0 else "[WARN] 偏高"
                     print(f"    切点{i+1}: {cp:.3f}s, 能量={energy_db:.1f}dB, 噪声地板={noise_floor:.1f}dB, 余量={margin:.1f}dB {status}")
         
-        print(f"[V2.0-STEP4.3] 诊断完成 - 修复状态: ✅ 已应用energy guard + 纯化过滤器")
+        print(f"[V2.0-STEP4.3] 诊断完成 - 修复状态: [OK] 已应用energy guard + 纯化过滤器")
         # 构建分割点：起点 + 切点 + 终点（不与边界做最小间隔合并）
         split_points = [0.0] + cut_points + [audio_duration]
         print(f"[V2.0-STEP4] 切点数: {len(cut_points)}，计划分段: {max(0, len(split_points)-1)} 段")

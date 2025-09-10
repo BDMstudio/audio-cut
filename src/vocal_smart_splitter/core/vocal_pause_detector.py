@@ -316,12 +316,28 @@ class VocalPauseDetectorV2:
                 speech_pad_ms=pad_ms
             )
 
-            # 将时间戳映射回原始采样率
+            # 将时间戳映射回原始采样率（使用正确的跨域映射）
             if self.sample_rate != target_sr:
-                scale_factor = self.sample_rate / target_sr
+                from ..utils.audio_processor import map_time_between_domains
+                # 获取重采样延迟（如果配置中有）
+                latency_samples = int(get_config('time_mapping.latency_samples', 0))
+                
                 for ts in speech_timestamps:
-                    ts['start'] = int(ts['start'] * scale_factor)
-                    ts['end'] = int(ts['end'] * scale_factor)
+                    # 转换为秒
+                    start_sec = ts['start'] / target_sr
+                    end_sec = ts['end'] / target_sr
+                    
+                    # 映射到原始采样率域
+                    start_sec_mapped = map_time_between_domains(
+                        start_sec, target_sr, self.sample_rate, latency_samples
+                    )
+                    end_sec_mapped = map_time_between_domains(
+                        end_sec, target_sr, self.sample_rate, latency_samples
+                    )
+                    
+                    # 转换回样本
+                    ts['start'] = int(start_sec_mapped * self.sample_rate)
+                    ts['end'] = int(end_sec_mapped * self.sample_rate)
 
             logger.info(f"Silero VAD检测结果: {len(speech_timestamps)} 个语音片段")
 
@@ -413,12 +429,28 @@ class VocalPauseDetectorV2:
             # 合并重叠的时间戳
             all_speech_timestamps = self._merge_overlapping_timestamps(all_speech_timestamps)
 
-            # 映射回原始采样率
+            # 映射回原始采样率（使用正确的跨域映射）
             if self.sample_rate != target_sr:
-                scale_factor = self.sample_rate / target_sr
+                from ..utils.audio_processor import map_time_between_domains
+                # 获取重采样延迟（如果配置中有）
+                latency_samples = int(get_config('time_mapping.latency_samples', 0))
+                
                 for ts in all_speech_timestamps:
-                    ts['start'] = int(ts['start'] * scale_factor)
-                    ts['end'] = int(ts['end'] * scale_factor)
+                    # 转换为秒
+                    start_sec = ts['start'] / target_sr
+                    end_sec = ts['end'] / target_sr
+                    
+                    # 映射到原始采样率域
+                    start_sec_mapped = map_time_between_domains(
+                        start_sec, target_sr, self.sample_rate, latency_samples
+                    )
+                    end_sec_mapped = map_time_between_domains(
+                        end_sec, target_sr, self.sample_rate, latency_samples
+                    )
+                    
+                    # 转换回样本
+                    ts['start'] = int(start_sec_mapped * self.sample_rate)
+                    ts['end'] = int(end_sec_mapped * self.sample_rate)
 
             logger.info(f"🎵 自适应VAD检测完成: {len(all_speech_timestamps)} 个语音片段")
             return all_speech_timestamps
@@ -729,59 +761,81 @@ class VocalPauseDetectorV2:
             width = max(0.0, pause.end_time - pause.start_time)
 
             # 🔴 关键修复：对于超长停顿（>10秒），切点设在开始处而非中间
-            if width > 10.0:
-                # 超长停顿（可能是误判的前奏），切点设在开始+2秒处
-                candidate = pause.start_time + 2.0
-                left = pause.start_time + 1.0
-                right = pause.start_time + 3.0
-                logger.warning(f"检测到超长停顿 {width:.1f}s，可能是误判，切点设在开始处")
-            elif cut_on_speech_end and pause.position_type in ('middle', 'tail'):
-                # 人声消失即切割：选择停顿起点作为基准
-                candidate = pause.start_time
-                # 只向右搜索对齐，避免提前
-                left = pause.start_time
-                right = min(pause.end_time, pause.start_time + max_shift_s)
+            # if width > 10.0:
+            #     # 超长停顿（可能是误判的前奏），切点设在开始+2秒处
+            #     candidate = pause.start_time + 2.0
+            #     left = pause.start_time + 1.0
+            #     right = pause.start_time + 3.0
+            #     logger.warning(f"检测到超长停顿 {width:.1f}s，可能是误判，切点设在开始处")
+            # elif cut_on_speech_end and pause.position_type in ('middle', 'tail'):
+            #     # 人声消失即切割：选择停顿起点作为基准
+            #     candidate = pause.start_time
+            #     # 只向右搜索对齐，避免提前
+            #     left = pause.start_time
+            #     right = min(pause.end_time, pause.start_time + max_shift_s)
+            # else:
+            #     # 🔴 临时修复：直接使用停顿中心，不做偏移
+            #     # candidate = pause.start_time + width * bias_ratio  # 原代码
+            #     candidate = pause.start_time + width * 0.5  # 修复：使用中心点
+            #     # 边界回退，避免切在语音边缘抖动
+            #     left = pause.start_time + backoff_s
+            #     right = pause.end_time - backoff_s
+            #     if right <= left:
+            #         left, right = pause.start_time, pause.end_time
+
+            # # 将候选点限制在区间内
+            # candidate = min(max(candidate, left), right)
+
+            # ✅ 全面采用能量谷检测逻辑
+            if waveform is not None and len(waveform) > 0:
+                l_idx = max(0, int(left * self.sample_rate))
+                r_idx = min(len(waveform), int(right * self.sample_rate))
+                
+                if r_idx > l_idx:
+                    # 强制使用能量谷检测，并启用未来静默守卫
+                    valley_idx = self._select_valley_cut_point(
+                        waveform, l_idx, r_idx, self.sample_rate, 
+                        local_rms_ms, guard_ms, floor_pct
+                    )
+                    
+                    if valley_idx is not None:
+                        selected_idx = valley_idx
+                        logger.debug(f"停顿 {i+1}: 强制使用 valley 切点 idx={selected_idx}")
+                    else:
+                        # 如果找不到能量谷（极少见），回退到停顿中心
+                        selected_idx = int((pause.start_time + pause.end_time) / 2 * self.sample_rate)
+                        logger.warning(f"停顿 {i+1}: 未找到能量谷，回退到中心点")
+                else:
+                    selected_idx = int(candidate * self.sample_rate)
             else:
-                # 🔴 临时修复：直接使用停顿中心，不做偏移
-                # candidate = pause.start_time + width * bias_ratio  # 原代码
-                candidate = pause.start_time + width * 0.5  # 修复：使用中心点
-                # 边界回退，避免切在语音边缘抖动
-                left = pause.start_time + backoff_s
-                right = pause.end_time - backoff_s
-                if right <= left:
-                    left, right = pause.start_time, pause.end_time
-
-            # 将候选点限制在区间内
-            candidate = min(max(candidate, left), right)
-
-            selected_idx: Optional[int] = None
+                selected_idx = int(candidate * self.sample_rate)
 
             # 零交叉吸附（在指定窗口内寻找最小幅度点）
             # 🔴 临时禁用零交叉对齐，避免把切点拉到高能量区
-            if False and enable_zero_x and waveform is not None and len(waveform) > 0:
-                center_idx = int(candidate * self.sample_rate)
-                # 对“消失即切割”只向右吸附；否则双向
-                radius = int(max_shift_s * self.sample_rate)
-                start_idx = int(left * self.sample_rate) if cut_on_speech_end else max(int(pause.start_time * self.sample_rate), center_idx - radius)
-                end_idx = int(right * self.sample_rate) if cut_on_speech_end else min(int(pause.end_time * self.sample_rate), center_idx + radius)
-                if end_idx > start_idx:
-                    window = waveform[start_idx:end_idx]
-                    local = int(np.argmin(np.abs(window)))
-                    selected_idx = start_idx + local
-                else:
-                    selected_idx = int(candidate * self.sample_rate)
-            else:
-                # 未启用零交叉吸附
-                if cut_on_speech_end and pause.position_type in ('middle', 'tail'):
-                    selected_idx = int(candidate * self.sample_rate)
-                else:
-                    # 退化为BPM偏移或候选点
-                    if pause.position_type == 'head':
-                        selected_idx = int((pause.end_time + adaptive_head_offset) * self.sample_rate)
-                    elif pause.position_type == 'tail':
-                        selected_idx = int((pause.start_time + adaptive_tail_offset) * self.sample_rate)
-                    else:
-                        selected_idx = int(candidate * self.sample_rate)
+            # if False and enable_zero_x and waveform is not None and len(waveform) > 0:
+            #     center_idx = int(candidate * self.sample_rate)
+            #     # 对“消失即切割”只向右吸附；否则双向
+            #     radius = int(max_shift_s * self.sample_rate)
+            #     start_idx = int(left * self.sample_rate) if cut_on_speech_end else max(int(pause.start_time * self.sample_rate), center_idx - radius)
+            #     end_idx = int(right * self.sample_rate) if cut_on_speech_end else min(int(pause.end_time * self.sample_rate), center_idx + radius)
+            #     if end_idx > start_idx:
+            #         window = waveform[start_idx:end_idx]
+            #         local = int(np.argmin(np.abs(window)))
+            #         selected_idx = start_idx + local
+            #     else:
+            #         selected_idx = int(candidate * self.sample_rate)
+            # else:
+            #     # 未启用零交叉吸附
+            #     if cut_on_speech_end and pause.position_type in ('middle', 'tail'):
+            #         selected_idx = int(candidate * self.sample_rate)
+            #     else:
+            #         # 退化为BPM偏移或候选点
+            #         if pause.position_type == 'head':
+            #             selected_idx = int((pause.end_time + adaptive_head_offset) * self.sample_rate)
+            #         elif pause.position_type == 'tail':
+            #             selected_idx = int((pause.start_time + adaptive_tail_offset) * self.sample_rate)
+            #         else:
+            #             selected_idx = int(candidate * self.sample_rate)
 
             # 未来静默守卫检查；根据开关决定是否直接使用 valley 或兜底使用
             if waveform is not None and len(waveform) > 0 and (enable_valley_mode or auto_valley_fallback):
