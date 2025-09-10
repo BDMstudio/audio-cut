@@ -15,12 +15,13 @@ logger = logging.getLogger(__name__)
 
 # 尝试导入自适应增强器
 try:
-    from .adaptive_vad_enhancer import AdaptiveVADEnhancer
+    from .adaptive_vad_enhancer import AdaptiveVADEnhancer, BPMFeatures
     ADAPTIVE_VAD_AVAILABLE = True
     logger.info("自适应VAD增强器可用")
 except ImportError as e:
     logger.warning(f"自适应VAD增强器不可用: {e}")
     ADAPTIVE_VAD_AVAILABLE = False
+    BPMFeatures = None
 
 @dataclass
 class VocalPause:
@@ -715,103 +716,146 @@ class VocalPauseDetectorV2:
         return None
 
     def _calculate_cut_points(self, vocal_pauses: List[VocalPause], bpm_features: Optional['BPMFeatures'] = None, waveform: Optional[np.ndarray] = None) -> List[VocalPause]:
-            """
-            计算精确的切割点位置 - (v2.1 最终修复版)
-            统一所有停顿类型，强制执行能量谷搜索，并应用偏移量作为谷搜索的边界。
-            """
-            # 读取切点精修配置
-            max_shift_s = float(get_config('vocal_pause_splitting.max_shift_from_silence_center', 0.08))
-            backoff_ms = int(get_config('vocal_pause_splitting.boundary_backoff_ms', 180))
-            local_rms_ms = int(get_config('vocal_pause_splitting.local_rms_window_ms', 25))
-            floor_pct = float(get_config('vocal_pause_splitting.silence_floor_percentile', 5))
-            guard_ms = int(get_config('vocal_pause_splitting.lookahead_guard_ms', 120))
+        """
+        计算精确的切割点位置 - (v2.3 能量谷最优修复版)
+        严格遵循"能量谷最优原则"：先找物理最安静点，再智能融合BMP
+        """
+        logger.info(f"计算 {len(vocal_pauses)} 个停顿的切割点 (能量谷最优 + BPM智能融合模式)...")
+
+        for i, pause in enumerate(vocal_pauses):
+            # 1. 为能量谷搜索定义一个安全的范围
+            search_start, search_end = self._define_search_range(pause)
             
-            # 读取头尾偏移量配置
-            head_offset = float(get_config('vocal_pause_splitting.cut_offset_before_vocal_start', -0.5))
-            tail_offset = float(get_config('vocal_pause_splitting.cut_offset_after_vocal_end', 0.5))
+            logger.debug(f"停顿 {i+1} ({pause.position_type}): 原始范围 [{pause.start_time:.3f}s, {pause.end_time:.3f}s], "
+                        f"能量谷搜索范围 [{search_start:.3f}s, {search_end:.3f}s]")
 
-            logger.info(f"计算 {len(vocal_pauses)} 个停顿的切割点 (能量谷优先模式)...")
-            logger.debug(f"偏移配置: head_offset={head_offset}s, tail_offset={tail_offset}s")
+            # 2. 强制寻找物理上的能量最低点作为基准
+            valley_point_s = self._find_energy_valley(waveform, search_start, search_end)
+            if valley_point_s is None:
+                # 如果找不到能量谷，使用停顿中心作为兜底
+                valley_point_s = (pause.start_time + pause.end_time) / 2
+                logger.warning(f"  -> 未找到能量谷，回退到中心点: {valley_point_s:.3f}s")
 
-            for i, pause in enumerate(vocal_pauses):
-                # ✅ --- 核心修复：统一所有停顿类型的处理逻辑 ---
-                
-                # 1. 首先确定能量谷搜索的安全范围 (Search Range)
-                search_start = pause.start_time
-                search_end = pause.end_time
-                
-                # 2. 应用偏移量来调整搜索范围，而不是直接计算切点
-                if pause.position_type == 'head':
-                    # 对于头部停顿，能量谷应该在人声开始前，所以搜索范围向右移动
-                    # head_offset通常是负值（如-0.5），表示在人声开始前0.5秒
-                    search_start = max(search_start, pause.end_time + head_offset - 0.5)  # 在偏移点附近1秒内搜索
-                    search_end = min(search_end, pause.end_time + head_offset + 0.5)
-                elif pause.position_type == 'tail':
-                    # 对于尾部停顿，能量谷应该在人声结束后，所以搜索范围向左移动
-                    # tail_offset通常是正值（如0.5），表示在人声结束后0.5秒
-                    search_start = max(search_start, pause.start_time + tail_offset - 0.5)
-                    search_end = min(search_end, pause.start_time + tail_offset + 0.5)
-                else:
-                    # 中间停顿：在停顿区域内搜索，稍微收缩边界避免太靠近人声
-                    backoff_s = backoff_ms / 1000.0
-                    search_start = pause.start_time + backoff_s
-                    search_end = pause.end_time - backoff_s
-                
-                # 确保搜索范围有效
-                if search_end <= search_start:
-                    search_start, search_end = pause.start_time, pause.end_time
-                
-                logger.debug(f"停顿 {i+1} ({pause.position_type}): 原始范围 [{pause.start_time:.2f}s, {pause.end_time:.2f}s], "
-                           f"能量谷搜索范围 [{search_start:.2f}s, {search_end:.2f}s]")
+            # 3. 如果BPM信息可用，进行智能对齐（以能量谷为基础）
+            final_cut_point_s = valley_point_s
+            if bpm_features and self.current_adaptive_params:
+                final_cut_point_s = self._smart_beat_align(
+                    waveform, valley_point_s, bpm_features, search_start, search_end
+                )
 
-                # 3. 在确定的安全范围内，强制执行能量谷检测
-                selected_idx: Optional[int] = None
-                if waveform is not None and len(waveform) > 0:
-                    l_idx = max(0, int(search_start * self.sample_rate))
-                    r_idx = min(len(waveform), int(search_end * self.sample_rate))
+            # 4. 更新最终切点
+            pause.cut_point = final_cut_point_s
+            logger.info(f"停顿 {i+1} ({pause.position_type}): 最终切点 @ {pause.cut_point:.3f}s")
 
-                    if r_idx > l_idx:
-                        valley_idx = self._select_valley_cut_point(
-                            waveform, l_idx, r_idx, self.sample_rate,
-                            local_rms_ms, guard_ms, floor_pct
-                        )
+        return vocal_pauses
 
-                        if valley_idx is not None:
-                            selected_idx = valley_idx
-                            logger.debug(f"  -> 能量谷切点找到 @ idx={selected_idx}")
-                        else:
-                            # 如果在精确范围内找不到谷，则根据停顿类型选择合适的备选点
-                            if pause.position_type == 'head':
-                                # 头部：选择停顿结束位置附近
-                                selected_idx = int((pause.end_time + head_offset) * self.sample_rate)
-                            elif pause.position_type == 'tail':
-                                # 尾部：选择停顿开始位置附近
-                                selected_idx = int((pause.start_time + tail_offset) * self.sample_rate)
-                            else:
-                                # 中间：选择停顿中心
-                                selected_idx = int((pause.start_time + pause.end_time) / 2 * self.sample_rate)
-                            logger.warning(f"  -> 未在搜索区找到能量谷，使用备选点")
-                    else:
-                        # 搜索范围无效，使用备选策略
-                        selected_idx = int((pause.start_time + pause.end_time) / 2 * self.sample_rate)
-                else:
-                    # 没有波形数据，使用备选策略
-                    selected_idx = int((pause.start_time + pause.end_time) / 2 * self.sample_rate)
+    def _define_search_range(self, pause: VocalPause) -> Tuple[float, float]:
+        """为能量谷搜索定义一个安全的范围，巧妙利用offset参数"""
+        search_start = pause.start_time
+        search_end = pause.end_time
+        
+        # 应用偏移量来指导搜索范围，而不是直接决定切点
+        if pause.position_type == 'head':
+            search_start = max(search_start, pause.end_time + self.head_offset - 0.5)
+            search_end = min(search_end, pause.end_time + self.head_offset + 0.5)
+        elif pause.position_type == 'tail':
+            search_start = max(search_start, pause.start_time + self.tail_offset - 0.5)
+            search_end = min(search_end, pause.start_time + self.tail_offset + 0.5)
+        
+        return (search_start, search_end) if search_end > search_start else (pause.start_time, pause.end_time)
 
-                # 4. 确保切点在有效范围内
-                if selected_idx is not None:
-                    selected_idx = max(0, min(selected_idx, len(waveform)-1 if waveform is not None else selected_idx))
-                
-                # 5. 更新切点
-                pause.cut_point = selected_idx / self.sample_rate
-                logger.info(f"停顿 {i+1} ({pause.position_type}): 最终切点 @ {pause.cut_point:.3f}s")
-                
-                # ✅ --- 修复结束 ---
+    def _find_energy_valley(self, waveform: Optional[np.ndarray], start_s: float, end_s: float) -> Optional[float]:
+        """在指定时间范围内寻找能量最低点，并应用安全守卫"""
+        if waveform is None or len(waveform) == 0:
+            return None
 
-            return vocal_pauses
+        # 从配置中获取能量谷检测的精细参数
+        local_rms_ms = int(get_config('vocal_pause_splitting.local_rms_window_ms', 25))
+        guard_ms = int(get_config('vocal_pause_splitting.lookahead_guard_ms', 120))
+        floor_pct = float(get_config('vocal_pause_splitting.silence_floor_percentile', 5))
+
+        l_idx = max(0, int(start_s * self.sample_rate))
+        r_idx = min(len(waveform), int(end_s * self.sample_rate))
+
+        if r_idx > l_idx:
+            # 调用底层的能量谷搜索函数
+            valley_idx = self._select_valley_cut_point(
+                waveform, l_idx, r_idx, self.sample_rate,
+                local_rms_ms, guard_ms, floor_pct
+            )
+            return valley_idx / self.sample_rate if valley_idx is not None else None
+        return None
+
+    def _smart_beat_align(self, waveform: np.ndarray, valley_point_s: float, bpm_features: 'BPMFeatures', search_start_s: float, search_end_s: float) -> float:
+        """智能节拍对齐：在能量谷划定的安静区内寻找节拍点
+        
+        🔥 核心原则：能量谷最优，BMP仅为辅助，绝不允许切在人声上
+        """
+        beat_interval = 60.0 / bpm_features.main_bpm
+        nearest_beat_s = round(valley_point_s / beat_interval) * beat_interval
+
+        # 🔒 安全检查1：节拍点必须在搜索范围内
+        if not (search_start_s <= nearest_beat_s <= search_end_s):
+            logger.debug(f"  节拍点 {nearest_beat_s:.3f}s 超出搜索范围，坚守能量谷点 {valley_point_s:.3f}s")
+            return valley_point_s
+
+        # 🔒 安全检查2：严格能量校验，绝不允许切在人声上
+        valley_idx = int(valley_point_s * self.sample_rate)
+        beat_idx = int(nearest_beat_s * self.sample_rate)
+        
+        win_size = int(0.05 * self.sample_rate) # 50ms能量比较窗口
+        
+        valley_energy = np.mean(waveform[max(0, valley_idx - win_size//2) : valley_idx + win_size//2]**2)
+        beat_energy = np.mean(waveform[max(0, beat_idx - win_size//2) : beat_idx + win_size//2]**2)
+
+        # 🎯 关键修复：严格的能量容忍度，优先物理静音
+        energy_tolerance_ratio = 1.3  # 降低容忍度，更严格
+
+        if beat_energy <= valley_energy * energy_tolerance_ratio:
+            logger.debug(f"  智能对齐：节拍点 {nearest_beat_s:.3f}s 能量验证通过 (Beat={beat_energy:.2e} ≤ Valley*{energy_tolerance_ratio}={valley_energy*energy_tolerance_ratio:.2e})")
+            return nearest_beat_s
+        else:
+            logger.debug(f"  智能对齐拒绝：节拍点能量过高 (Beat={beat_energy:.2e} > Valley*{energy_tolerance_ratio}={valley_energy*energy_tolerance_ratio:.2e})，坚守能量谷")
+            return valley_point_s
     
-    # Removed dead code that was unreachable after return statement
-    
+    def _apply_zero_crossing_alignment(self, waveform: np.ndarray, cut_point_s: float, window_ms: int = 10) -> float:
+        """在切点附近寻找零交叉点，避免爆音"""
+        if waveform is None or len(waveform) == 0:
+            return cut_point_s
+            
+        win_samples = int(window_ms * self.sample_rate / 1000)
+        center_idx = int(cut_point_s * self.sample_rate)
+        
+        start_idx = max(0, center_idx - win_samples)
+        end_idx = min(len(waveform), center_idx + win_samples)
+        
+        if end_idx <= start_idx:
+            return cut_point_s
+            
+        segment = waveform[start_idx:end_idx]
+        
+        # 寻找零交叉点
+        zero_crossings = np.where(np.diff(np.sign(segment)))[0]
+        
+        if len(zero_crossings) == 0:
+            return cut_point_s
+            
+        # 选择最接近中心的零交叉点
+        center_offset = center_idx - start_idx
+        distances = np.abs(zero_crossings - center_offset)
+        nearest_zc = zero_crossings[np.argmin(distances)]
+        
+        aligned_point_s = (start_idx + nearest_zc) / self.sample_rate
+        
+        # 限制零交叉对齐的偏移量，避免偏离太远
+        max_zc_drift = 0.02  # 20ms
+        if abs(aligned_point_s - cut_point_s) <= max_zc_drift:
+            logger.debug(f"  零交叉对齐: {cut_point_s:.3f}s -> {aligned_point_s:.3f}s")
+            return aligned_point_s
+        else:
+            logger.debug(f"  零交叉偏移过大，保持原切点: {cut_point_s:.3f}s")
+            return cut_point_s
+
     def _filter_adaptive_pauses(self, pause_segments: List[Dict],
                               complexity_segments: List,
                               bpm_features: 'BPMFeatures') -> List[Dict]:

@@ -5,7 +5,8 @@
       "Read(//e/BDM_STATION/Desktop/BDM_projects/**)",
       "Bash(set FORCE_SEPARATION_BACKEND=mdx23)",
       "Bash(tree:*)",
-      "Bash(dir:*)"
+      "Bash(dir:*)",
+      "Bash(findstr:*)"
     ],
     "deny": [],
     "ask": []

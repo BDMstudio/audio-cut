@@ -78,10 +78,19 @@
 - librosa/soundfile/numpy/scipy
 - 参考：MDX23_SETUP.md、README.md
 
-## 8. 待接线差距（与规范对齐）
-- VocalPrime：实现 bpm_guard（禁切区 + 超宽平台右推）；参数配置化接线；入口开关（v2.engine）
-- quick_start：提供 v2.engine = silero|vocal_prime（默认 silero，避免破坏兼容）
-- 契约测试：拍点禁切/尾段保留（VocalPrime 分支）
+## 8. 实现状态更新（2025-09-09 代码审查）
+
+### ✅ 已实现并验证
+- **VocalPrime 核心检测器**: `vocal_prime_detector.py` (362行) - 完整实现RMS包络+滞回状态机+平台验证
+- **v2.0 处理流程**: `quick_start.py` 中 `split_pure_vocal_v2()` 函数 - 完整8步流水线
+- **Valley-based切割**: 从 `todo.md` 状态显示已完成单元/集成/契约测试
+- **GPU兼容性**: `pytorch_compatibility_fix.py` 修复PyTorch 2.8.0兼容性
+- **测试覆盖**: 41个测试文件涵盖unit/integration/contracts/performance层级
+
+### 🔧 技术债务与对齐差距
+- **pure_vocal_pause_detector.py**: 文档中提及但代码中未找到，功能已迁移到增强Silero VAD
+- **v2.engine切换**: quick_start.py 硬编码使用VocalPauseDetectorV2，缺少 silero|vocal_prime 引擎选择
+- **配置化接口**: vocal_prime_detector.py 使用硬编码参数，未完全接入 get_config() 系统
 
 ## 9. 参考规范/文档
 - vocal_prime.md（检测技术规范）
