@@ -71,10 +71,12 @@ class SeamlessSplitter:
             original_audio = librosa.resample(original_audio, orig_sr=sr, target_sr=self.sample_rate)
         return original_audio
 
+# In src/vocal_smart_splitter/core/seamless_splitter.py
+
     def _process_pure_vocal_split(self, input_path: str, output_dir: str, mode: str) -> Dict:
         """
-        [v2.8 终极修正版] 处理v2.1和v2.2 MDD模式的核心逻辑
-        关键修复: 确保最终的质量验证和过滤 (_finalize_and_filter_cuts) 是在 vocal_track 上执行，而不是 original_audio。
+        [v2.9 终极修正版] 处理v2.1和v2.2 MDD模式的核心逻辑
+        关键修复: 调用新的双音频输入接口，确保音乐分析在 original_audio 上，而VAD检测在 vocal_track 上。
         """
         logger.info(f"[{mode.upper()}] 执行纯人声分割流程...")
         overall_start_time = time.time()
@@ -94,19 +96,21 @@ class SeamlessSplitter:
         vocal_track = separation_result.vocal_track
         logger.info(f"[{mode.upper()}-STEP1] 人声分离完成 - 后端: {separation_result.backend_used}, 质量: {separation_result.separation_confidence:.3f}, 耗时: {separation_time:.1f}s")
         
-        # 3. 在纯人声轨道上执行停顿检测
-        logger.info(f"[{mode.upper()}-STEP2] 在纯人声轨道上执行停顿检测...")
-        vocal_pauses = self.pause_detector.detect_vocal_pauses(vocal_track)
+        # 3. 关键修复：调用新的双输入接口进行停顿检测
+        logger.info(f"[{mode.upper()}-STEP2] 在[纯人声轨道]上检测，使用[原始轨道]作为音乐背景分析...")
+        vocal_pauses = self.pause_detector.detect_vocal_pauses(
+            detection_target_audio=vocal_track,
+            context_audio=original_audio
+        )
 
         if not vocal_pauses:
             return self._create_single_segment_result(original_audio, input_path, output_dir, "未在纯人声中找到停顿")
 
-        # 4. 生成、过滤并分割
+        # 4. 生成、过滤并分割 (在 vocal_track 上进行最终验证)
         cut_points_samples = [int(p.cut_point * self.sample_rate) for p in vocal_pauses]
-        
-        # 关键修复：将 original_audio 改为 vocal_track，确保质量验证在正确的轨道上进行！
         final_cut_points = self._finalize_and_filter_cuts(cut_points_samples, vocal_track)
         
+        # 使用最终确定的分割点来切割原始音频
         segments = self._split_at_sample_level(original_audio, final_cut_points)
         saved_files = self._save_segments(segments, output_dir)
         
