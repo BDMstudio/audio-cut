@@ -233,52 +233,73 @@ class PureVocalPauseDetector:
         ratio[non_zero] = harmonic_rms[non_zero] / original_rms[non_zero]
         
         return ratio
-    
+
     def _detect_candidate_pauses(self, features: VocalFeatures) -> List[Tuple[int, int]]:
-        """检测候选停顿区域
-        
-        Args:
-            features: 提取的特征
-            
-        Returns:
-            候选停顿的帧索引区间列表
         """
-        # 能量阈值检测
-        energy_db = librosa.amplitude_to_db(features.rms_energy, ref=np.max)
-        low_energy = energy_db < self.energy_threshold_db
-        
+        [v2.7 关键修复版] 检测候选停顿区域
+        关键修复: 将能量和F0的判断逻辑从“或”改为“与”，确保相对能量阈值配置生效。
+        """
+        enable_relative_mode = get_config('pure_vocal_detection.enable_relative_energy_mode', False)
+
+        if enable_relative_mode:
+            # --- 相对能量模式 ---
+            logger.info("启用相对能量谷检测模式...")
+            peak_energy = np.max(features.rms_energy)
+            avg_energy = np.mean(features.rms_energy)
+            
+            peak_ratio = get_config('pure_vocal_detection.peak_relative_threshold_ratio', 0.1)
+            rms_ratio = get_config('pure_vocal_detection.rms_relative_threshold_ratio', 0.2)
+
+            threshold_from_peak = peak_energy * peak_ratio
+            threshold_from_rms = avg_energy * rms_ratio
+            energy_threshold = min(threshold_from_peak, threshold_from_rms)
+
+            logger.info(f"全局能量分析: 峰值={peak_energy:.4f}, 平均值={avg_energy:.4f}")
+            logger.info(f"动态能量阈值: 基于峰值({peak_ratio*100}%) -> {threshold_from_peak:.4f}, "
+                       f"基于RMS({rms_ratio*100}%) -> {threshold_from_rms:.4f}")
+            logger.info(f"最终能量裁决阈值: {energy_threshold:.4f}")
+            
+            low_energy = features.rms_energy < energy_threshold
+        else:
+            # --- 传统绝对dB模式 ---
+            logger.info("使用绝对dB能量谷检测模式...")
+            energy_threshold_db = get_config('pure_vocal_detection.energy_threshold_db', -40)
+            energy_db = librosa.amplitude_to_db(features.rms_energy, ref=np.max)
+            low_energy = energy_db < energy_threshold_db
+
         # F0不连续检测
-        f0_missing = features.f0_confidence < self.f0_drop_threshold
+        f0_drop_threshold = get_config('pure_vocal_detection.f0_drop_threshold', 0.7)
+        f0_missing = features.f0_confidence < f0_drop_threshold
         
-        # 组合条件
-        pause_frames = low_energy | f0_missing
+        # 关键修复：使用“与”逻辑 (&)，必须同时满足两个条件
+        pause_frames = low_energy & f0_missing
         
         # 平滑处理
         pause_frames = gaussian_filter1d(pause_frames.astype(float), sigma=3) > 0.5
         
-        # 查找连续区间
+        # 查找连续区间 (保持不变)
         candidates = []
         in_pause = False
         start_idx = 0
         
+        min_duration_s = get_config('pure_vocal_detection.breath_duration_range', [0.1, 0.3])[0]
+
         for i, is_pause in enumerate(pause_frames):
             if is_pause and not in_pause:
                 start_idx = i
                 in_pause = True
             elif not is_pause and in_pause:
-                # 转换为时间并检查最小时长
                 duration = (i - start_idx) * self.hop_length / self.sample_rate
-                if duration >= self.breath_duration_range[0]:  # 至少达到换气最小时长
+                if duration >= min_duration_s:
                     candidates.append((start_idx, i))
                 in_pause = False
         
-        # 处理末尾
         if in_pause:
             duration = (len(pause_frames) - start_idx) * self.hop_length / self.sample_rate
-            if duration >= self.breath_duration_range[0]:
+            if duration >= min_duration_s:
                 candidates.append((start_idx, len(pause_frames)))
-        
-        logger.debug(f"检测到{len(candidates)}个候选停顿区域")
+
+        logger.info(f"找到 {len(candidates)} 个候选停顿区域 (基于'与'逻辑)")
         return candidates
     
     def _analyze_pause_features(self, candidates: List[Tuple[int, int]], 

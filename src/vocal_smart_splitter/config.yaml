@@ -23,11 +23,11 @@ pure_vocal_detection:
 
   # [v2.6 新增] 相对能量谷检测
   enable_relative_energy_mode: true   # 启用相对能量模式
-  peak_relative_threshold_ratio: 0.1  # 能量谷阈值 = 峰值能量 * 0.1 (即10%)
-  rms_relative_threshold_ratio: 0.2   # 能量谷阈值 = 平均能量 * 0.2 (作为辅助)
+  peak_relative_threshold_ratio: 0.05  # 能量谷阈值 = 峰值能量 * 0.1 (即10%)
+  rms_relative_threshold_ratio: 0.1   # 能量谷阈值 = 平均能量 * 0.2 (作为辅助)
 
   # 检测阈值
-  energy_threshold_db: -40        # 能量阈值(dB)
+  # energy_threshold_db: -40        # 能量阈值(dB)
   f0_drop_threshold: 0.7          # F0下降阈值
   breath_filter_threshold: 0.3    # 换气过滤阈值
   pause_confidence_threshold: 0.7  # 停顿置信度阈值
