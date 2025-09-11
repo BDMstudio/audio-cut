@@ -21,6 +21,11 @@ pure_vocal_detection:
   spectral_weight: 0.25           # 频谱特征权重
   duration_weight: 0.20           # 时长特征权重
 
+  # [v2.6 新增] 相对能量谷检测
+  enable_relative_energy_mode: true   # 启用相对能量模式
+  peak_relative_threshold_ratio: 0.1  # 能量谷阈值 = 峰值能量 * 0.1 (即10%)
+  rms_relative_threshold_ratio: 0.2   # 能量谷阈值 = 平均能量 * 0.2 (作为辅助)
+
   # 检测阈值
   energy_threshold_db: -40        # 能量阈值(dB)
   f0_drop_threshold: 0.7          # F0下降阈值
@@ -268,7 +273,7 @@ vocal_pause_splitting:
 
 
   # ---- 无静音平台的谷值切割（最小可用版）----
-  enable_valley_mode: false              # 手动启用谷值切割优先
+  enable_valley_mode: true              # 手动启用谷值切割优先
   auto_valley_fallback: true             # 当静默守卫/平台不满足时自动兜底到谷值
   local_rms_window_ms: 25                # 局部RMS窗长
   silence_floor_percentile: 5            # 动态地板的分位数（百分数）
