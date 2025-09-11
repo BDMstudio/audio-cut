@@ -273,7 +273,7 @@ class VocalPauseDetectorV2:
         
         logger.info(f"最终裁决阈值: {duration_threshold:.3f}s (边界: {absolute_min:.1f}-{absolute_max:.1f}s)")
         
-        # === 第二遍扫描：执行裁决 ===
+        # === 第二遍扫描：执行裁决 + MDD增强 ===
         valid_pauses = []
         filtered_count = 0
         
@@ -282,37 +282,79 @@ class VocalPauseDetectorV2:
             is_head = pause.get('is_head', False)
             is_tail = pause.get('is_tail', False)
             
+            # 获取当前停顿点的MDD评分
+            current_mdd = self._get_mdd_score_for_pause(pause)
+            
             # 判断是否保留
             passes_base = duration_seconds >= self.current_adaptive_params.min_pause_duration
-            passes_dynamic = duration_seconds >= duration_threshold
+            
+            # MDD增强的动态阈值调整
+            # MDD越高（副歌部分），对停顿时长的要求就越高（越不倾向于切割）
+            mdd_multiplier = 1.0 + (current_mdd * get_config('vocal_pause_splitting.mdd_threshold_multiplier', 0.5))
+            mdd_adjusted_threshold = duration_threshold * mdd_multiplier
+            passes_dynamic = duration_seconds >= mdd_adjusted_threshold
             
             # 副歌检测（可选增强）
             chorus_multiplier = 1.0
             if hasattr(self, '_is_chorus_section') and self._is_chorus_section(pause):
                 chorus_multiplier = get_config('vocal_pause_splitting.statistical_filter.chorus_multiplier', 1.3)
-                passes_dynamic = duration_seconds >= (duration_threshold * chorus_multiplier)
-                logger.debug(f"副歌部分检测，阈值提高到 {duration_threshold * chorus_multiplier:.3f}s")
+                mdd_adjusted_threshold *= chorus_multiplier
+                passes_dynamic = duration_seconds >= mdd_adjusted_threshold
+                logger.debug(f"副歌部分检测，阈值提高到 {mdd_adjusted_threshold:.3f}s")
             
             # 决策逻辑
             if is_head or is_tail:
-                # 边界停顿：宽松处理
+                # 边界停顿：宽松处理，不应用MDD调整
                 if passes_base:
                     valid_pauses.append(pause)
                     logger.debug(f"保留边界停顿: {duration_seconds:.3f}s")
                 else:
                     filtered_count += 1
             else:
-                # 中间停顿：严格筛选
+                # 中间停顿：严格筛选，应用MDD调整
                 if passes_dynamic:
                     valid_pauses.append(pause)
-                    logger.debug(f"保留中间停顿: {duration_seconds:.3f}s >= {duration_threshold:.3f}s")
+                    logger.debug(f"保留中间停顿: {duration_seconds:.3f}s >= MDD调整阈值 {mdd_adjusted_threshold:.3f}s (MDD={current_mdd:.2f})")
                 else:
                     filtered_count += 1
-                    logger.debug(f"过滤中间停顿: {duration_seconds:.3f}s < {duration_threshold:.3f}s")
+                    logger.debug(f"过滤中间停顿: {duration_seconds:.3f}s < MDD调整阈值 {mdd_adjusted_threshold:.3f}s (MDD={current_mdd:.2f})")
         
-        logger.info(f"统计学动态裁决完成: {len(all_pauses_with_duration)}个候选 -> {len(valid_pauses)}个保留 (过滤{filtered_count}个)")
+        logger.info(f"MDD增强统计学动态裁决完成: {len(all_pauses_with_duration)}个候选 -> {len(valid_pauses)}个保留 (过滤{filtered_count}个)")
         
         return valid_pauses
+    
+    def _get_mdd_score_for_pause(self, pause: Dict) -> float:
+        """为停顿点获取MDD（音乐动态密度）评分
+        
+        Args:
+            pause: 停顿信息字典
+            
+        Returns:
+            MDD评分 (0-1, 越高表示音乐越激烈，越不应该切割)
+        """
+        if not self.adaptive_enhancer or not hasattr(self.adaptive_enhancer, 'last_analyzed_segments'):
+            return 0.5  # 默认中等密度
+        
+        # 计算停顿的中心时间点
+        pause_center_time = ((pause['start'] + pause['end']) / 2.0) / self.sample_rate
+        
+        # 在分析的片段中找到对应的MDD评分
+        for segment in self.adaptive_enhancer.last_analyzed_segments:
+            if segment.start_time <= pause_center_time < segment.end_time:
+                return segment.dynamic_density_score
+        
+        # 如果没找到对应片段，使用相邻片段的平均值
+        segments = self.adaptive_enhancer.last_analyzed_segments
+        if not segments:
+            return 0.5
+        
+        # 找到最近的片段
+        closest_segment = min(segments, key=lambda s: min(
+            abs(s.start_time - pause_center_time),
+            abs(s.end_time - pause_center_time)
+        ))
+        
+        return closest_segment.dynamic_density_score
     
     def _filter_simple_pauses(self, pause_segments: List[Dict]) -> List[Dict]:
         """简单的静态阈值过滤（回退方法）"""

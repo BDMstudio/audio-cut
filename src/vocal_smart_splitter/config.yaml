@@ -73,6 +73,37 @@ validator:
   music_theory_weight: 0.25       # 音乐理论验证权重
 
 # ============================================================================
+# MDD (音乐动态密度) 增强配置 (v2.2.0 NEW)
+# 实现主副歌智能识别和动态切割策略
+# ============================================================================
+musical_dynamic_density:
+  # 系统开关
+  enable: true                    # 启用MDD增强功能
+  
+  # MDD指标权重
+  energy_weight: 0.5              # RMS能量权重（最重要）
+  spectral_weight: 0.3            # 频谱平坦度权重
+  onset_weight: 0.2               # 音符起始率权重
+  
+  # 切割策略调整
+  threshold_multiplier: 0.5       # MDD阈值调整倍数 (MDD越高，阈值越高)
+  max_multiplier: 1.8             # 最大阈值倍数（防止过度严格）
+  min_multiplier: 0.8             # 最小阈值倍数（防止过度宽松）
+  
+  # 主副歌检测
+  chorus_detection:
+    enable: true                  # 启用副歌检测
+    energy_threshold: 0.7         # 副歌能量阈值
+    density_threshold: 0.8        # 副歌密度阈值
+    multiplier: 1.3               # 副歌部分阈值额外倍数
+  
+  # 段落分析
+  segment_analysis:
+    window_overlap: 0.5           # 分析窗口重叠率
+    smoothing_factor: 0.3         # MDD评分平滑因子
+    min_segment_duration: 8.0     # 最小分析段长度
+
+# ============================================================================
 # BPM驱动的自适应核心配置 (v1.2.0)
 # ============================================================================
 bpm_adaptive_core:
@@ -229,7 +260,11 @@ vocal_pause_splitting:
     use_median_priority: true             # 优先使用中位数（更鲁棒）
     absolute_min_pause: 0.6               # 绝对最小停顿时长(秒)
     absolute_max_pause: 2.5               # 绝对最大停顿时长(秒)
-    chorus_multiplier: 1.3                # 副歌部分阈值乘数
+    chorus_multiplier: 1.3                # 副歌部分阈值倍数
+  
+  # ---- MDD增强配置 (v2.2.0新增) ----
+  mdd_threshold_multiplier: 0.5           # MDD阈值调整倍数（见musical_dynamic_density配置）
+  enable_chorus_detection: true           # 启用副歌检测（基于MDD）
 
 
   # ---- 无静音平台的谷值切割（最小可用版）----

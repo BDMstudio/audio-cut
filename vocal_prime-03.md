@@ -2,13 +2,21 @@
 
 **只有横向的BPM（时间节奏）是不够的，必须引入纵向的动态（响度、能量、情绪）指标，才能让切割真正拥有"音乐感"**。
 
-### 当前实现状态
+### 实现状态 (已完成 v2.2.0)
 
-本文档描述的"音乐动态密度(MDD)"指标已部分实现：
-- ✅ ArrangementComplexitySegment数据结构已存在于adaptive_vad_enhancer.py
+本文档描述的"音乐动态密度(MDD)"指标现已完全实现：
+- ✅ ArrangementComplexitySegment数据结构完整，包含MDD字段
 - ✅ BPM自适应系统已完整实现并稳定运行
-- ⚠️ MDD纵向指标计算尚未完全集成到生产代码
-- 📝 建议作为v2.2版本的增强特性
+- ✅ MDD纵向指标计算已完全集成到生产代码
+- ✅ VocalPauseDetectorV2集成MDD动态切割策略
+- ✅ 配置文件添加musical_dynamic_density完整配置
+- ✅ 测试覆盖：test_mdd_functionality.py全部通过
+
+### v2.2.0 新功能
+- **主副歌智能识别**: 通过RMS能量+频谱平坦度+音符起始率综合评分
+- **动态切割策略**: MDD越高(副歌)，切割要求越严格，保护音乐完整性
+- **两遍扫描算法**: 第一遍收集全局MDD分布，第二遍基于相对位置动态调整
+- **完整配置支持**: musical_dynamic_density配置段，支持权重和阈值调整
 
 ### 设计纵向判断指标：“音乐动态密度 (Musical Dynamic Density)”
 

@@ -312,6 +312,11 @@ class ArrangementComplexitySegment:
     recommended_min_pause: float # 推荐最小停顿时长
     instrument_count: int = 0    # 检测到的乐器数量
     arrangement_density: float = 0.0  # 编曲密度评分
+    # MDD (Musical Dynamic Density) 指标
+    rms_energy: float = 0.0           # 能量维度：均方根能量
+    spectral_flatness: float = 0.0    # 频谱维度：频谱平坦度
+    onset_rate: float = 0.0           # 节奏维度：音符起始率
+    dynamic_density_score: float = 0.0 # 音乐动态密度综合评分 (0-1)
 
 class InstrumentComplexityAnalyzer:
     """乐器复杂度分析器 - 检测编曲中的乐器数量和复杂度"""
@@ -595,6 +600,9 @@ class AdaptiveVADEnhancer:
         
         # 编曲复杂度分析参数（将根据BPM动态调整）
         self.default_analysis_window = 10.0  # 默认窗口大小
+        
+        # 保存最后分析的片段（供VocalPauseDetectorV2使用MDD）
+        self.last_analyzed_segments = []
         self.complexity_threshold = 0.6      # 复杂度阈值
         
         # VAD自适应阈值范围（扩展以适应多乐器环境）
@@ -701,6 +709,10 @@ class AdaptiveVADEnhancer:
                 len(beat_positions) > 0
             )
             
+            # MDD两遍扫描法：第一遍收集所有片段的原始指标
+            all_mdd_metrics = []
+            raw_segments_info = []
+            
             for i in range(0, len(audio) - window_samples, hop_samples):
                 start_sample = i
                 end_sample = min(i + window_samples, len(audio))
@@ -708,6 +720,31 @@ class AdaptiveVADEnhancer:
                 
                 start_time = start_sample / self.sample_rate
                 end_time = end_sample / self.sample_rate
+                
+                # 计算MDD原始指标
+                mdd_metrics = self._calculate_dynamic_density_metrics(segment_audio)
+                all_mdd_metrics.append(mdd_metrics)
+                
+                # 保存原始信息供第二遍使用
+                raw_segments_info.append({
+                    'start_sample': start_sample,
+                    'end_sample': end_sample,
+                    'start_time': start_time,
+                    'end_time': end_time,
+                    'segment_audio': segment_audio,
+                    'mdd_metrics': mdd_metrics
+                })
+            
+            # 第二遍：计算每个片段的最终MDD评分并构建结果
+            for info in raw_segments_info:
+                segment_audio = info['segment_audio']
+                start_time = info['start_time']
+                end_time = info['end_time']
+                
+                # 计算MDD综合评分
+                mdd_score = self._calculate_overall_dynamic_density(
+                    info['mdd_metrics'], all_mdd_metrics
+                )
                 
                 # 6. 计算传统复杂度指标
                 complexity_metrics = self._calculate_complexity_metrics(segment_audio)
@@ -717,13 +754,16 @@ class AdaptiveVADEnhancer:
                     bpm_features, start_time, end_time, total_duration
                 )
                 beat_alignment = self._calculate_beat_alignment(
-                    beat_positions, start_sample, end_sample
+                    beat_positions, info['start_sample'], info['end_sample']
                 ) if use_beat_alignment else 0.5
                 
-                # 8. 综合复杂度评分（集成BPM）
+                # 8. 综合复杂度评分（集成BPM和MDD）
+                # MDD评分会增强复杂度判断
                 complexity_score = self._calculate_enhanced_complexity(
                     complexity_metrics, bpm_features, bpm_influence, beat_alignment
                 )
+                # 融合MDD评分到复杂度
+                complexity_score = complexity_score * 0.7 + mdd_score * 0.3
                 
                 # 9. 多维自适应阈值和停顿时长
                 adaptive_params = self._calculate_multi_dimensional_adaptive_params(
@@ -739,7 +779,12 @@ class AdaptiveVADEnhancer:
                     bpm_influence=bpm_influence,
                     beat_alignment=beat_alignment,
                     recommended_threshold=adaptive_params['voice_threshold'],
-                    recommended_min_pause=adaptive_params['min_pause_duration']
+                    recommended_min_pause=adaptive_params['min_pause_duration'],
+                    # MDD字段
+                    rms_energy=info['mdd_metrics']['rms_energy'],
+                    spectral_flatness=info['mdd_metrics']['spectral_flatness'],
+                    onset_rate=info['mdd_metrics']['onset_rate'],
+                    dynamic_density_score=mdd_score
                 )
                 
                 segments.append(segment)
@@ -747,7 +792,11 @@ class AdaptiveVADEnhancer:
             # 10. 平滑复杂度变化（避免阈值突变）
             segments = self._smooth_complexity_transitions(segments)
             
+            # 11. 保存分析结果供VocalPauseDetectorV2使用MDD
+            self.last_analyzed_segments = segments
+            
             logger.info(f"BPM感知复杂度分析完成，共分析 {len(segments)} 个片段")
+            logger.info(f"MDD分析结果: 平均动态密度 {np.mean([s.dynamic_density_score for s in segments]):.3f}")
             self._log_enhanced_complexity_summary(segments, bpm_features)
             
             return segments, bpm_features
@@ -755,6 +804,88 @@ class AdaptiveVADEnhancer:
         except Exception as e:
             logger.error(f"BPM感知复杂度分析失败: {e}")
             return [], self.bpm_analyzer._get_default_bpm_features()
+    
+    def _calculate_dynamic_density_metrics(self, audio_segment: np.ndarray) -> Dict[str, float]:
+        """计算音乐动态密度（MDD）相关指标
+        
+        Args:
+            audio_segment: 音频片段
+            
+        Returns:
+            MDD指标字典
+        """
+        metrics = {}
+        sr = self.sample_rate
+        
+        try:
+            # 1. 能量维度: RMS Energy
+            rms = librosa.feature.rms(y=audio_segment, hop_length=512)[0]
+            metrics['rms_energy'] = float(np.mean(rms))
+            
+            # 2. 频谱维度: Spectral Flatness
+            # 频谱平坦度衡量声音的"类噪音"程度。副歌部分频谱饱满，平坦度会更高
+            flatness = librosa.feature.spectral_flatness(y=audio_segment)
+            metrics['spectral_flatness'] = float(np.mean(flatness))
+            
+            # 3. 节奏维度: Onset Rate
+            # 计算每秒的音符起始数量，反映节奏的密集程度
+            onset_env = librosa.onset.onset_strength(y=audio_segment, sr=sr, hop_length=512)
+            onsets = librosa.onset.onset_detect(onset_envelope=onset_env, sr=sr, hop_length=512)
+            duration_seconds = len(audio_segment) / sr
+            metrics['onset_rate'] = len(onsets) / max(duration_seconds, 0.1)  # 避免除零
+            
+        except Exception as e:
+            logger.warning(f"MDD指标计算失败: {e}，使用默认值")
+            metrics = {
+                'rms_energy': 0.1,
+                'spectral_flatness': 0.5,
+                'onset_rate': 2.0
+            }
+        
+        return metrics
+    
+    def _calculate_overall_dynamic_density(self, metrics: Dict[str, float], 
+                                          all_segments_metrics: List[Dict]) -> float:
+        """根据全局分布计算当前片段的MDD综合评分
+        
+        Args:
+            metrics: 当前片段的MDD指标
+            all_segments_metrics: 所有片段的MDD指标列表
+            
+        Returns:
+            MDD综合评分 (0-1)
+        """
+        if not all_segments_metrics:
+            return 0.5  # 默认中等密度
+        
+        try:
+            # 提取所有片段的指标用于归一化
+            all_rms = [m['rms_energy'] for m in all_segments_metrics]
+            all_flatness = [m['spectral_flatness'] for m in all_segments_metrics]
+            all_onset_rate = [m['onset_rate'] for m in all_segments_metrics]
+            
+            # 计算归一化得分 (将每个指标映射到0-1范围)
+            rms_range = max(all_rms) - min(all_rms) + 1e-6
+            flatness_range = max(all_flatness) - min(all_flatness) + 1e-6
+            onset_range = max(all_onset_rate) - min(all_onset_rate) + 1e-6
+            
+            rms_score = (metrics['rms_energy'] - min(all_rms)) / rms_range
+            flatness_score = (metrics['spectral_flatness'] - min(all_flatness)) / flatness_range
+            onset_score = (metrics['onset_rate'] - min(all_onset_rate)) / onset_range
+            
+            # 加权平均得到最终MDD评分 (能量权重最高)
+            weights = {'rms': 0.5, 'flatness': 0.3, 'onset': 0.2}
+            mdd_score = (
+                rms_score * weights['rms'] + 
+                flatness_score * weights['flatness'] + 
+                onset_score * weights['onset']
+            )
+            
+            return float(np.clip(mdd_score, 0, 1))
+            
+        except Exception as e:
+            logger.warning(f"MDD评分计算失败: {e}，使用默认值")
+            return 0.5
     
     def _calculate_complexity_metrics(self, audio_segment: np.ndarray) -> Dict[str, float]:
         """计算编曲复杂度指标
