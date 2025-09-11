@@ -225,7 +225,14 @@ class VocalPauseDetectorV2:
         percentile_75 = np.percentile(all_candidate_durations, 75)
         percentile_90 = np.percentile(all_candidate_durations, 90)
 
+        # 【关键修复】从config.yaml读取统计学过滤配置
+        base_threshold_ratio = get_config('vocal_pause_splitting.statistical_filter.base_threshold_ratio', 0.7)
+        use_median_priority = get_config('vocal_pause_splitting.statistical_filter.use_median_priority', True)
+        chorus_multiplier = get_config('vocal_pause_splitting.statistical_filter.chorus_multiplier', 0.9)
+        mdd_threshold_multiplier = get_config('musical_dynamic_density.threshold_multiplier', 0.1)
+
         logger.info(f"停顿时长统计模型: 平均值={average_pause:.3f}s, 中位数={median_pause:.3f}s, 75分位={percentile_75:.3f}s, 90分位={percentile_90:.3f}s")
+        logger.info(f"[CONFIG] 应用配置: base_ratio={base_threshold_ratio}, chorus_mult={chorus_multiplier}, mdd_mult={mdd_threshold_multiplier}")
         logger.info(f"[DEBUG] 初筛候选数量: {len(all_candidate_durations)}, BPM类别: {getattr(self.current_adaptive_params, 'category', 'unknown')}")
 
         # === 步骤 3: "双模式"智能裁决 ===
@@ -254,28 +261,33 @@ class VocalPauseDetectorV2:
             is_head = (pause.get('start', 0) == 0)
             is_tail = (pause.get('end', 0) >= total_audio_length * 0.95)
             
+            # 【配置驱动的阈值计算】基于config.yaml参数
+            base_statistical_threshold = median_pause if use_median_priority else average_pause
+            
             # 模式一：快歌裁决 (BPM > 120) - 寻找统计上的"异常长停顿"
             if self.current_adaptive_params.category in ['fast', 'very_fast']:
-                # 核心修复：对于快歌，我们的标准是"比大部分呼吸都长"
-                # 我们使用75分位数作为基础阈值，因为它能代表这首歌里"比较长"的停顿是多长
-                dynamic_threshold = percentile_75 
+                # 使用配置的base_threshold_ratio来调整基础阈值
+                dynamic_threshold = percentile_75 * base_threshold_ratio
                 mode_type = "快歌模式"
-                # 对于非常激烈的副歌部分（高MDD），我们甚至可能需要放宽到中位数，只求有得切
+                # 对于非常激烈的副歌部分（高MDD），应用MDD阈值调整和副歌乘数
                 if current_mdd > 0.7:
-                    dynamic_threshold = median_pause
+                    mdd_adjustment = 1.0 - (current_mdd * mdd_threshold_multiplier)  # MDD越高，阈值越低（更激进）
+                    dynamic_threshold = median_pause * base_threshold_ratio * chorus_multiplier * mdd_adjustment
                     mode_type = "快歌+高密度模式"
                 
             # 模式二：慢歌/中速歌裁决 (BPM <= 120) - 寻找"足够长且结构合理"的停顿
             else:
-                # 对于慢歌，我们使用更严格的标准，要求停顿必须显著长于平均呼吸
-                dynamic_threshold = max(average_pause, median_pause)
+                # 使用配置的base_threshold_ratio调整基础阈值
+                dynamic_threshold = base_statistical_threshold * base_threshold_ratio
                 mode_type = "慢歌模式"
-                # 在激烈的副歌部分（高MDD），我们提高标准，避免乱切
+                # 在激烈的副歌部分（高MDD），应用配置的调整策略
                 if current_mdd > 0.6:
                     old_threshold = dynamic_threshold
-                    dynamic_threshold *= (1 + (current_mdd - 0.6) * 0.5) # MDD越高，阈值越高
+                    # 使用配置的mdd_threshold_multiplier和chorus_multiplier
+                    mdd_factor = 1.0 + (current_mdd - 0.6) * mdd_threshold_multiplier
+                    dynamic_threshold = dynamic_threshold * mdd_factor * chorus_multiplier
                     mode_type = "慢歌+高密度模式"
-                    logger.debug(f"[DEBUG] 慢歌MDD调整: {old_threshold:.3f}s -> {dynamic_threshold:.3f}s (MDD={current_mdd:.2f})")
+                    logger.debug(f"[DEBUG] 慢歌MDD调整: {old_threshold:.3f}s -> {dynamic_threshold:.3f}s (MDD={current_mdd:.2f}, factors={mdd_factor:.2f}×{chorus_multiplier})")
 
             # 最终裁决
             final_threshold = max(dynamic_threshold, ABSOLUTE_MIN_PAUSE_S) # 保证不低于绝对下限

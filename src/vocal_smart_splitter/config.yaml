@@ -86,14 +86,14 @@ musical_dynamic_density:
   onset_weight: 0.2               # 音符起始率权重
   
   # 切割策略调整
-  threshold_multiplier: 0.1       # MDD阈值调整倍数 (MDD越高，阈值越高)
-  max_multiplier: 1.8             # 最大阈值倍数（防止过度严格）
-  min_multiplier: 0.8             # 最小阈值倍数（防止过度宽松）
+  threshold_multiplier: 0.05      # MDD阈值调整倍数 (MDD越高，阈值越高)数值越低分割越激进
+  max_multiplier: 1.4             # 最大阈值倍数（防止过度严格）
+  min_multiplier: 0.6             # 最小阈值倍数（防止过度宽松）
   
   # 主副歌检测
   chorus_detection:
     enable: true                  # 启用副歌检测
-    energy_threshold: 0.65         # 副歌能量阈值
+    energy_threshold: 0.55         # 副歌能量阈值
     density_threshold: 0.75        # 副歌密度阈值
     multiplier: 1.1               # 副歌部分阈值额外倍数
   
@@ -232,8 +232,8 @@ quality_control:
 vocal_pause_splitting:
   # ---- 核心分割参数 ----
   # 🔄 以下参数将被BPM自适应系统动态覆盖 (v1.2.0+)
-  min_pause_duration: 1.2               # ❌ 静态值，将被pause_duration_beats动态计算覆盖
-  voice_threshold: 0.50                  # ❌ 静态值，将被复杂度自适应阈值覆盖
+  min_pause_duration: 0.8               # ❌ 静态值，将被pause_duration_beats动态计算覆盖
+  voice_threshold: 0.4                  # ❌ 静态值，将被复杂度自适应阈值覆盖
 
   # ✅ 以下参数保持静态配置 (与BPM无关的切割策略)
   # head_offset: -0.5                      # 头部切割：回撤 0.5s（回归产品规范）
@@ -256,11 +256,11 @@ vocal_pause_splitting:
   # ---- 统计学动态裁决配置 (v2.1.1新增) ----
   statistical_filter:
     enable: true                          # 启用统计学动态筛选
-    base_threshold_ratio: 0.7             # 基础门槛 = 动态参数 * 0.7
+    base_threshold_ratio: 0.5             # 基础门槛 = 动态参数 * 0.5 (更激进)
     use_median_priority: true             # 优先使用中位数（更鲁棒）
-    absolute_min_pause: 0.4               # 绝对最小停顿时长(秒)
+    absolute_min_pause: 0.3               # 绝对最小停顿时长(秒)
     absolute_max_pause: 2.5               # 绝对最大停顿时长(秒)
-    chorus_multiplier: 0.9                # 副歌部分阈值倍数
+    chorus_multiplier: 0.7                # 副歌部分阈值倍数 (更激进)
   
   # ---- MDD增强配置 (v2.2.0新增) ----
   mdd_threshold_multiplier: 0.5           # MDD阈值调整倍数（见musical_dynamic_density配置）
