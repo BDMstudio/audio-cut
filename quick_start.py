@@ -693,7 +693,7 @@ def split_pure_vocal_mdd(input_file: str, output_dir: str, backend: str = 'auto'
 
             # 从SeamlessSplitter结果中获取分析信息
             vocal_pause_analysis = result.get('vocal_pause_analysis', {})
-            bpm_features = vocal_pause_analysis.get('bmp_features', {})
+            bpm_features = vocal_pause_analysis.get('bpm_features', {})
             
             # 构建v2.2 MDD格式返回结果
             mdd_result = {
@@ -723,8 +723,8 @@ def split_pure_vocal_mdd(input_file: str, output_dir: str, backend: str = 'auto'
                     'mdd_enhanced_pauses': len(segment_files) - 1,
                     'chorus_sections_detected': vocal_pause_analysis.get('chorus_sections', 0),
                     'verse_sections_detected': vocal_pause_analysis.get('verse_sections', 0),
-                    'bpm_detected': bmp_features.get('main_bpm', None),
-                    'music_category': bmp_features.get('bpm_category', 'unknown'),
+                    'bpm_detected': bpm_features.get('main_bpm', None),
+                    'music_category': bpm_features.get('bpm_category', 'unknown'),
                     'avg_mdd_score': vocal_pause_analysis.get('avg_mdd_score', 0.5),
                     'avg_pause_confidence': vocal_pause_analysis.get('avg_confidence', 0.8),
                 },
