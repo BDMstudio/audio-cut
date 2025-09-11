@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-# quick_start.py - 快速启动脚本 (重构版)
+# quick_start.py - 快速启动脚本 (v2.3 统一指挥中心版)
 # AI-SUMMARY: 精简的传令兵模式快速启动脚本，统一调用SeamlessSplitter
 
 import sys
@@ -14,7 +14,7 @@ sys.path.insert(0, str(project_root))
 from src.vocal_smart_splitter.core.seamless_splitter import SeamlessSplitter
 from src.vocal_smart_splitter.utils.config_manager import get_config
 
-# --- (保留 find_audio_files, check_system_status, select_backend, apply_backend_config, select_processing_mode 等所有用户交互函数，无需改动) ---
+# --- (保留 find_audio_files, check_system_status, select_backend 等所有用户交互函数，无需改动) ---
 
 def find_audio_files():
     """查找输入目录中的音频文件"""
@@ -30,7 +30,7 @@ def find_audio_files():
 
 def check_system_status():
     """检查系统状态"""
-    print("\\n" + "=" * 60)
+    print("\n" + "=" * 60)
     print("系统状态检查")
     print("=" * 60)
     try:
@@ -47,7 +47,7 @@ def check_system_status():
 
 def select_processing_mode():
     """让用户选择处理模式"""
-    print("\\n" + "=" * 60)
+    print("\n" + "=" * 60)
     print("选择处理模式")
     print("=" * 60)
     print("  1. 智能分割 (Smart Split)")
@@ -62,13 +62,13 @@ def select_processing_mode():
     
     try:
         choice = int(input("请选择 (1-4): ").strip())
-        modes = {1: 'smart_split', 2: 'vocal_separation', 3: 'vocal_split_v2', 4: 'vocal_split_mdd'}
-        mode = modes.get(choice, 'vocal_split_mdd')
+        modes = {1: 'smart_split', 2: 'vocal_separation', 3: 'v2.1', 4: 'v2.2_mdd'}
+        mode = modes.get(choice, 'v2.2_mdd')
         print(f"[SELECT] 已选择模式: {mode}")
         return mode
     except ValueError:
         print("[ERROR] 输入无效，使用默认MDD v2.2模式")
-        return 'vocal_split_mdd'
+        return 'v2.2_mdd'
 
 def main():
     """主函数 - 重构为纯传令兵模式"""
@@ -84,7 +84,7 @@ def main():
     for i, file_path in enumerate(audio_files, 1): print(f"  {i}. {file_path.name}")
     
     try:
-        choice = 1 if len(audio_files) == 1 else int(input(f"\\n请选择要分割的文件 (1-{len(audio_files)}): ").strip())
+        choice = 1 if len(audio_files) == 1 else int(input(f"\n请选择要分割的文件 (1-{len(audio_files)}): ").strip())
         selected_file = audio_files[choice - 1]
     except (ValueError, IndexError):
         print("[ERROR] 选择无效")
@@ -103,7 +103,7 @@ def main():
         sample_rate = get_config('audio.sample_rate', 44100)
         splitter = SeamlessSplitter(sample_rate=sample_rate)
         
-        print(f"\\n[START] 正在启动统一分割引擎，模式: {processing_mode}...")
+        print(f"\n[START] 正在启动统一分割引擎，模式: {processing_mode}...")
         result = splitter.split_audio_seamlessly(
             str(selected_file), 
             str(output_dir), 
@@ -111,7 +111,7 @@ def main():
         )
         
         if result.get('success'):
-            print("\\n" + "=" * 50)
+            print("\n" + "=" * 50)
             print("[SUCCESS] 处理成功完成!")
             print("=" * 50)
             print(f"  处理方法: {result.get('method', 'N/A')}")
@@ -120,7 +120,7 @@ def main():
             if 'backend_used' in result: print(f"  使用后端: {result['backend_used']}")
             if 'processing_time' in result: print(f"  总耗时: {result['processing_time']:.1f}秒")
         else:
-            print(f"\\n[ERROR] 处理失败: {result.get('error', '未知错误')}")
+            print(f"\n[ERROR] 处理失败: {result.get('error', '未知错误')}")
 
     except Exception as e:
         print(f"[FATAL] 脚本顶层出现未捕获异常: {e}")
