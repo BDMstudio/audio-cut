@@ -1,21 +1,22 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-# quick_start.py - 快速启动脚本
-# AI-SUMMARY: 一键式音频分割快速启动脚本，无需复杂参数
+# quick_start.py - 快速启动脚本 (重构版)
+# AI-SUMMARY: 精简的传令兵模式快速启动脚本，统一调用SeamlessSplitter
 
 """
-智能人声分割器 - 快速启动脚本
+智能人声分割器 - 快速启动脚本 (重构版)
 
-最简单的使用方式：
+重构优势：
+- 移除了200多行的"影子大脑"逻辑
+- 统一调用SeamlessSplitter作为唯一指挥中心  
+- 清晰的职责划分：快速启动脚本只负责用户交互
+- 所有模式的核心逻辑集中在seamless_splitter.py
+
+使用方式：
 1. 将音频文件放入 input/ 目录
 2. 运行 python quick_start.py
-3. 在 output/ 目录查看结果
-
-特点：
-- 自动检测input/目录中的音频文件
-- 使用最优的BPM自适应无缝分割
-- 自动创建时间戳输出目录
-- 零配置，开箱即用
+3. 选择处理模式和后端
+4. 在 output/ 目录查看结果
 """
 
 # PyTorch 2.8.0兼容性修复 - 必须在导入torch相关模块之前执行
@@ -74,7 +75,7 @@ def check_backend_availability():
         else:
             gpu_info = "不可用"
     except ImportError:
-        return {}
+        return {}, "PyTorch未安装"
     
     # 检查MDX23
     mdx23_path = Path(project_root) / "MVSEP-MDX23-music-separation-model"
@@ -223,13 +224,8 @@ def select_processing_mode():
     print("     适合：专业级音频处理、自动主副歌差异化切割")
     print()
     
-    print("  5. 传统纯人声分割 (兼容模式)")
-    print("     基础VAD+能量检测分割片段")
-    print("     适合：简单场景、快速处理")
-    print()
-    
     try:
-        choice = int(input("请选择 (1-5): ").strip())
+        choice = int(input("请选择 (1-4): ").strip())
         if choice == 1:
             print("[SELECT] 已选择: 智能分割")
             return 'smart_split'
@@ -242,9 +238,6 @@ def select_processing_mode():
         elif choice == 4:
             print("[SELECT] 已选择: [LATEST] MDD增强纯人声检测v2.2")
             return 'vocal_split_mdd'
-        elif choice == 5:
-            print("[SELECT] 已选择: 传统纯人声分割")
-            return 'vocal_split'
         else:
             print("[ERROR] 选择无效，使用默认MDD v2.2模式")
             return 'vocal_split_mdd'
@@ -252,569 +245,10 @@ def select_processing_mode():
         print("[ERROR] 输入无效，使用默认MDD v2.2模式")
         return 'vocal_split_mdd'
 
-def separate_vocals_only(input_file: str, output_dir: str, backend: str = 'auto', 
-                        sample_rate: int = 44100) -> dict:
-    """纯人声分离，不进行分割"""
-    print(f"[SEPARATION] 开始人声分离: {Path(input_file).name}")
-    print(f"[SEPARATION] 使用后端: {backend}")
-    
-    try:
-        # 导入所需模块
-        from src.vocal_smart_splitter.core.enhanced_vocal_separator import EnhancedVocalSeparator
-        from src.vocal_smart_splitter.utils.audio_processor import AudioProcessor
-        import librosa
-        import soundfile as sf
-        
-        # 创建输出目录
-        Path(output_dir).mkdir(parents=True, exist_ok=True)
-        
-        # 1. 加载音频
-        print("[SEPARATION] 加载音频文件...")
-        audio_processor = AudioProcessor(sample_rate)
-        audio, sr = librosa.load(input_file, sr=sample_rate, mono=True)
-        
-        print(f"[SEPARATION] 音频信息: 时长 {len(audio)/sr:.2f}秒, 采样率 {sr}Hz")
-        
-        # 2. 初始化分离器
-        print("[SEPARATION] 初始化人声分离器...")
-        separator = EnhancedVocalSeparator(sample_rate)
-        
-        # 3. 执行分离
-        print("[SEPARATION] 开始人声分离...")
-        import time
-        start_time = time.time()
-        
-        separation_result = separator.separate_for_detection(audio)
-        
-        processing_time = time.time() - start_time
-        
-        # 4. 保存结果
-        input_name = Path(input_file).stem
-        
-        if separation_result.vocal_track is not None:
-            # 保存人声
-            vocal_file = Path(output_dir) / f"{input_name}_vocal.wav"
-            sf.write(vocal_file, separation_result.vocal_track, sample_rate)
-            print(f"[SEPARATION] 人声已保存: {vocal_file.name}")
-            
-            # 保存伴奏（如果有）
-            instrumental_file = None
-            if separation_result.instrumental_track is not None:
-                instrumental_file = Path(output_dir) / f"{input_name}_instrumental.wav"
-                sf.write(instrumental_file, separation_result.instrumental_track, sample_rate)
-                print(f"[SEPARATION] 伴奏已保存: {instrumental_file.name}")
-            
-            # 生成分离报告
-            result = {
-                'success': True,
-                'input_file': input_file,
-                'output_dir': output_dir,
-                'vocal_file': str(vocal_file),
-                'instrumental_file': str(instrumental_file) if instrumental_file else None,
-                'backend_used': separation_result.backend_used,
-                'separation_confidence': separation_result.separation_confidence,
-                'processing_time': processing_time,
-                'audio_duration': len(audio) / sr,
-                'quality_metrics': separation_result.quality_metrics or {}
-            }
-            
-            print(f"[SEPARATION] 分离完成!")
-            print(f"  使用后端: {separation_result.backend_used}")
-            print(f"  分离质量: {separation_result.separation_confidence:.3f}")
-            print(f"  处理时间: {processing_time:.1f}秒")
-            
-            return result
-            
-        else:
-            print("[ERROR] 人声分离失败")
-            return {
-                'success': False,
-                'error': '人声分离返回空结果',
-                'input_file': input_file
-            }
-            
-    except Exception as e:
-        print(f"[ERROR] 人声分离失败: {e}")
-        return {
-            'success': False,
-            'error': str(e),
-            'input_file': input_file
-        }
-
-def split_pure_vocal_v2(input_file: str, output_dir: str, backend: str = 'auto', 
-                       sample_rate: int = 44100) -> dict:
-    """纯人声停顿分割v2.1：使用统计学动态裁决的智能分割系统"""
-    print(f"[VOCAL_SPLIT_V2.1] 启动统计学动态裁决系统: {Path(input_file).name}")
-    print(f"[VOCAL_SPLIT_V2.1] 分离后端: {backend}")
-    
-    try:
-        # 导入SeamlessSplitter（包含统计学动态裁决）
-        from src.vocal_smart_splitter.core.seamless_splitter import SeamlessSplitter
-        from src.vocal_smart_splitter.utils.config_manager import get_config
-        import os
-        
-        # 创建输出目录
-        Path(output_dir).mkdir(parents=True, exist_ok=True)
-        
-        import time
-        overall_start_time = time.time()
-        
-        # === v2.1纯人声检测流水线：分离 → 检测 → 分割 ===
-        
-        # 第1步：MDX23/Demucs高质量人声分离
-        print("[V2.1-STEP1] MDX23/Demucs高质量人声分离...")
-        from src.vocal_smart_splitter.core.enhanced_vocal_separator import EnhancedVocalSeparator
-        import librosa
-        import soundfile as sf
-        
-        # 设置分离后端
-        if backend != 'auto':
-            os.environ['FORCE_SEPARATION_BACKEND'] = backend
-            print(f"[V2.1-STEP1.1] 强制设置分离后端: {backend}")
-        
-        # 加载原始音频
-        print("[V2.1-STEP1.2] 加载原始音频...")
-        audio, sr = librosa.load(input_file, sr=sample_rate, mono=True)
-        print(f"[V2.1-STEP1.2] 音频信息: 时长 {len(audio)/sr:.2f}秒, 采样率 {sr}Hz")
-        
-        # 执行人声分离
-        print("[V2.1-STEP1.3] 执行人声分离...")
-        separator = EnhancedVocalSeparator(sample_rate)
-        separation_start = time.time()
-        
-        separation_result = separator.separate_for_detection(audio)
-        separation_time = time.time() - separation_start
-        
-        if separation_result.vocal_track is None:
-            return {
-                'success': False,
-                'error': '人声分离失败，无法执行纯人声检测',
-                'input_file': input_file
-            }
-        
-        vocal_track = separation_result.vocal_track
-        print(f"[V2.1-STEP1.3] 人声分离完成 - 后端: {separation_result.backend_used}, 质量: {separation_result.separation_confidence:.3f}, 耗时: {separation_time:.1f}s")
-        
-        # 第2步：在纯人声轨上执行SeamlessSplitter统计学动态裁决
-        print("[V2.1-STEP2] 在纯人声轨上执行统计学动态裁决...")
-        
-        # 保存临时纯人声文件供SeamlessSplitter处理
-        import tempfile
-        with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as temp_vocal:
-            sf.write(temp_vocal.name, vocal_track, sample_rate)
-            temp_vocal_path = temp_vocal.name
-        
-        try:
-            # 创建SeamlessSplitter实例，在纯人声轨上执行检测
-            splitter = SeamlessSplitter(sample_rate=sample_rate)
-            
-            # 在纯人声轨上执行统计学动态裁决分割
-            print("[V2.1-STEP2.1] 执行纯人声轨统计学动态裁决...")
-            result = splitter.split_audio_seamlessly(temp_vocal_path, str(output_dir))
-            
-        finally:
-            # 清理临时文件
-            import os
-            try:
-                os.unlink(temp_vocal_path)
-            except:
-                pass
-        
-        if not result.get('success', False):
-            return {
-                'success': False,
-                'error': f"SeamlessSplitter失败: {result.get('error', '未知错误')}",
-                'input_file': input_file
-            }
-        
-        # 获取处理统计信息
-        processing_stats = result.get('processing_stats', {})
-        total_time = time.time() - overall_start_time
-        
-        # 第3步：保存完整的人声和伴奏文件
-        print("[V2.1-STEP3] 保存完整的分离文件...")
-        input_name = Path(input_file).stem
-        
-        # 保存完整的人声文件
-        full_vocal_file = Path(output_dir) / f"{input_name}_v2_vocal_full.wav"
-        sf.write(full_vocal_file, vocal_track, sample_rate, subtype='PCM_24')
-        
-        # 保存完整的伴奏文件（如果有）
-        full_instrumental_file = None
-        if separation_result.instrumental_track is not None:
-            full_instrumental_file = Path(output_dir) / f"{input_name}_v2_instrumental.wav"
-            sf.write(full_instrumental_file, separation_result.instrumental_track, sample_rate, subtype='PCM_24')
-        
-        # 转换为v2.1格式返回（保持兼容性）
-        # 从SeamlessSplitter结果中提取信息
-        num_segments = result.get('num_segments', 0)
-        saved_files = result.get('saved_files', [])
-        
-        # 将完整的分离文件加入保存列表
-        saved_files.append(str(full_vocal_file))
-        if full_instrumental_file:
-            saved_files.append(str(full_instrumental_file))
-        
-        # 构建v2.1兼容的段信息（只包含分割片段，不包含完整文件）
-        segments = []
-        segment_files = [f for f in saved_files if '_segment_' in f]  # 过滤出分割片段
-        
-        for i, file_path in enumerate(segment_files, 1):
-            file_name = Path(file_path).name
-            # 简单估算时长（实际应该从文件读取）
-            estimated_duration = 8.0  # 默认估算
-            segments.append({
-                'index': i,
-                'start_time': (i-1) * estimated_duration,
-                'end_time': i * estimated_duration, 
-                'duration': estimated_duration,
-                'filename': file_name,
-                'v2_features': {
-                    'source_pause_confidence': separation_result.separation_confidence,
-                    'quality_grade': 'A' if separation_result.separation_confidence > 0.7 else 'B'
-                }
-            })
-
-        # 从SeamlessSplitter结果中获取暂停分析信息
-        vocal_pause_analysis = result.get('vocal_pause_analysis', {})
-        bpm_features = vocal_pause_analysis.get('bpm_features', {})
-        
-        # 构建v2.1格式返回结果
-        v2_result = {
-            'success': True,
-            'version': '2.1.0',
-            'method': 'SeamlessSplitter统计学动态裁决 + BPM自适应 + 边界保护',
-            'input_file': input_file,
-            'output_dir': output_dir,
-
-            # 分离信息（从separation_result获取）
-            'backend_used': separation_result.backend_used,
-            'separation_confidence': separation_result.separation_confidence,
-            'separation_time': separation_time,
-
-            # v2.1处理统计
-            'v2_processing_stats': {
-                'feature_extraction_time': processing_stats.get('processing_time', total_time) * 0.3,
-                'spectral_classification_time': processing_stats.get('processing_time', total_time) * 0.1,
-                'bpm_optimization_time': processing_stats.get('processing_time', total_time) * 0.1,
-                'validation_time': processing_stats.get('processing_time', total_time) * 0.1,
-                'splitting_time': processing_stats.get('processing_time', total_time) * 0.4,
-                'total_v2_time': total_time
-            },
-
-            # 检测结果统计（从vocal_pause_analysis获取）
-            'v2_detection_stats': {
-                'candidate_pauses_detected': vocal_pause_analysis.get('total_pauses', 0),
-                'true_pauses_classified': vocal_pause_analysis.get('total_pauses', 0),
-                'high_quality_pauses_validated': len(segment_files) - 1,  # 切点数
-                'breath_filtered_count': max(0, vocal_pause_analysis.get('total_pauses', 0) - (len(segment_files) - 1)),
-                'bpm_detected': bpm_features.get('main_bpm', None),
-                'music_category': bpm_features.get('bpm_category', 'unknown'),
-                'avg_pause_confidence': vocal_pause_analysis.get('avg_confidence', 0.8),
-                'quality_distribution': {'A': len(segment_files)//2, 'B': len(segment_files)//2, 'C': 0, 'D': 0, 'N/A': 0}
-            },
-
-            # 输出结果
-            'num_segments': len(segment_files),
-            'saved_files': saved_files,
-            'segments': segments,
-            'full_vocal_file': str(full_vocal_file),  # v2.1提供完整人声文件
-            'instrumental_file': str(full_instrumental_file) if full_instrumental_file else None,  # v2.1提供完整伴奏文件
-            'audio_duration': processing_stats.get('audio_duration', 60.0),
-            'total_processing_time': total_time
-        }
-
-        print(f"[V2.1-SUCCESS] 纯人声检测系统v2.1分割完成!")
-        print(f"  生成片段: {len(segment_files)} 个片段") 
-        print(f"  分离后端: {separation_result.backend_used}")
-        print(f"  分离质量: {separation_result.separation_confidence:.3f}")
-        print(f"  平均置信度: {vocal_pause_analysis.get('avg_confidence', 0.8):.3f}")
-        print(f"  分离时间: {separation_time:.1f}秒")
-        print(f"  总处理时间: {total_time:.1f}秒")
-        print(f"  BPM检测: {bpm_features.get('main_bpm', 'N/A')} BPM ({bpm_features.get('bpm_category', 'unknown')})")
-        print(f"  完整人声文件: {full_vocal_file.name}")
-        if full_instrumental_file:
-            print(f"  完整伴奏文件: {full_instrumental_file.name}")
-        print(f"  [技术栈] MDX23/Demucs分离 → SeamlessSplitter纯人声统计学动态裁决 → 样本级精度分割")
-
-        return v2_result
-        
-    except Exception as e:
-        print(f"[V2.1-ERROR] 统计学动态裁决系统v2.1失败: {e}")
-        import traceback
-        print(f"[V2.1-DEBUG] 详细错误:")
-        print(traceback.format_exc())
-        return {
-            'success': False,
-            'version': '2.1.0',
-            'error': str(e),
-            'input_file': input_file,
-            'error_stage': 'SeamlessSplitter处理流水线'
-        }
-
-def split_pure_vocal_mdd(input_file: str, output_dir: str, backend: str = 'auto', 
-                        sample_rate: int = 44100) -> dict:
-    """MDD增强纯人声分割v2.2：集成音乐动态密度的智能主副歌识别分割系统"""
-    print(f"[MDD_V2.2] 启动MDD增强分割系统: {Path(input_file).name}")
-    print(f"[MDD_V2.2] 分离后端: {backend}")
-    print(f"[MDD_V2.2] 核心技术: 音乐动态密度(MDD) + 主副歌智能识别")
-    
-    try:
-        # 导入SeamlessSplitter（包含MDD增强功能）
-        from src.vocal_smart_splitter.core.seamless_splitter import SeamlessSplitter
-        from src.vocal_smart_splitter.utils.config_manager import get_config, set_config
-        import os
-        
-        # 创建输出目录
-        Path(output_dir).mkdir(parents=True, exist_ok=True)
-        
-        import time
-        overall_start_time = time.time()
-        
-        # === v2.2 MDD增强流水线：分离 → MDD分析 → 主副歌识别 → 差异化分割 ===
-        
-        # 临时启用MDD增强功能
-        original_mdd_enable = get_config('musical_dynamic_density.enable', True)
-        set_config('musical_dynamic_density.enable', True)
-        set_config('vocal_pause_splitting.enable_chorus_detection', True)
-        
-        try:
-            # 第1步：MDX23/Demucs高质量人声分离
-            print("[MDD-STEP1] MDX23/Demucs高质量人声分离...")
-            from src.vocal_smart_splitter.core.enhanced_vocal_separator import EnhancedVocalSeparator
-            import librosa
-            import soundfile as sf
-            
-            # 设置分离后端
-            if backend != 'auto':
-                os.environ['FORCE_SEPARATION_BACKEND'] = backend
-                print(f"[MDD-STEP1.1] 强制设置分离后端: {backend}")
-            
-            # 加载原始音频
-            print("[MDD-STEP1.2] 加载原始音频...")
-            audio, sr = librosa.load(input_file, sr=sample_rate, mono=True)
-            print(f"[MDD-STEP1.2] 音频信息: 时长 {len(audio)/sr:.2f}秒, 采样率 {sr}Hz")
-            
-            # 执行人声分离
-            print("[MDD-STEP1.3] 执行人声分离...")
-            separator = EnhancedVocalSeparator(sample_rate)
-            separation_start = time.time()
-            
-            separation_result = separator.separate_for_detection(audio)
-            separation_time = time.time() - separation_start
-            
-            if separation_result.vocal_track is None:
-                return {
-                    'success': False,
-                    'error': '人声分离失败，无法执行MDD增强检测',
-                    'input_file': input_file
-                }
-            
-            vocal_track = separation_result.vocal_track
-            print(f"[MDD-STEP1.3] 人声分离完成 - 后端: {separation_result.backend_used}, 质量: {separation_result.separation_confidence:.3f}, 耗时: {separation_time:.1f}s")
-            
-            # 第2步：在纯人声轨上执行MDD增强分析和分割
-            print("[MDD-STEP2] 执行MDD增强分析和主副歌识别...")
-            print(f"[MDD-DEBUG] 人声轨道信息: 时长 {len(vocal_track)/sr:.2f}秒, 样本数 {len(vocal_track)}")
-            print(f"[MDD-DEBUG] MDD配置状态: enable={get_config('musical_dynamic_density.enable', False)}")
-            print(f"[MDD-DEBUG] 副歌检测状态: enable={get_config('vocal_pause_splitting.enable_chorus_detection', False)}")
-            
-            # 保存临时纯人声文件供SeamlessSplitter处理
-            import tempfile
-            with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as temp_vocal:
-                sf.write(temp_vocal.name, vocal_track, sample_rate)
-                temp_vocal_path = temp_vocal.name
-                print(f"[MDD-DEBUG] 临时人声文件已保存: {temp_vocal_path}")
-            
-            try:
-                # 创建SeamlessSplitter实例，启用MDD增强功能
-                print("[MDD-STEP2.1] 初始化SeamlessSplitter...")
-                splitter = SeamlessSplitter(sample_rate=sample_rate)
-                
-                # 在纯人声轨上执行MDD增强分割
-                print("[MDD-STEP2.2] 执行MDD增强主副歌识别分割...")
-                print(f"[MDD-DEBUG] 输入文件: {temp_vocal_path}")
-                print(f"[MDD-DEBUG] 输出目录: {output_dir}")
-                
-                result = splitter.split_audio_seamlessly(temp_vocal_path, str(output_dir))
-                
-                print(f"[MDD-DEBUG] SeamlessSplitter返回结果: success={result.get('success', False)}")
-                if result.get('success', False):
-                    print(f"[MDD-DEBUG] 生成段数: {result.get('num_segments', 0)}")
-                    print(f"[MDD-DEBUG] 保存文件数: {len(result.get('saved_files', []))}")
-                    
-                    # 详细日志处理统计
-                    processing_stats = result.get('processing_stats', {})
-                    vocal_pause_analysis = result.get('vocal_pause_analysis', {})
-                    
-                    print(f"[MDD-DEBUG] 处理统计:")
-                    print(f"  - 音频时长: {processing_stats.get('audio_duration', 0):.2f}秒")
-                    print(f"  - 处理时间: {processing_stats.get('processing_time', 0):.2f}秒")
-                    
-                    print(f"[MDD-DEBUG] 停顿分析:")
-                    print(f"  - 总停顿数: {vocal_pause_analysis.get('total_pauses', 0)}")
-                    print(f"  - 有效停顿数: {vocal_pause_analysis.get('valid_pauses', 0)}")
-                    print(f"  - 平均置信度: {vocal_pause_analysis.get('avg_confidence', 0):.3f}")
-                    
-                    # BPM特征
-                    bpm_features = vocal_pause_analysis.get('bpm_features', {})
-                    if bpm_features:
-                        print(f"[MDD-DEBUG] BPM特征:")
-                        print(f"  - 主BPM: {bpm_features.get('main_bpm', 'N/A')}")
-                        print(f"  - BPM分类: {bpm_features.get('bpm_category', 'unknown')}")
-                
-                else:
-                    print(f"[MDD-ERROR] SeamlessSplitter失败: {result.get('error', '未知错误')}")
-                    # 输出更多调试信息
-                    print(f"[MDD-DEBUG] 完整返回结果: {result}")
-                
-            finally:
-                # 清理临时文件
-                import os
-                try:
-                    os.unlink(temp_vocal_path)
-                except:
-                    pass
-            
-            if not result.get('success', False):
-                return {
-                    'success': False,
-                    'error': f"MDD增强分割失败: {result.get('error', '未知错误')}",
-                    'input_file': input_file
-                }
-            
-            # 获取处理统计信息和MDD分析结果
-            processing_stats = result.get('processing_stats', {})
-            total_time = time.time() - overall_start_time
-            
-            # 第3步：保存完整的人声和伴奏文件
-            print("[MDD-STEP3] 保存完整的分离文件...")
-            input_name = Path(input_file).stem
-            
-            # 保存完整的人声文件
-            full_vocal_file = Path(output_dir) / f"{input_name}_mdd_vocal_full.wav"
-            sf.write(full_vocal_file, vocal_track, sample_rate, subtype='PCM_24')
-            
-            # 保存完整的伴奏文件（如果有）
-            full_instrumental_file = None
-            if separation_result.instrumental_track is not None:
-                full_instrumental_file = Path(output_dir) / f"{input_name}_mdd_instrumental.wav"
-                sf.write(full_instrumental_file, separation_result.instrumental_track, sample_rate, subtype='PCM_24')
-            
-            # 从SeamlessSplitter结果中提取信息
-            num_segments = result.get('num_segments', 0)
-            saved_files = result.get('saved_files', [])
-            
-            # 将完整的分离文件加入保存列表
-            saved_files.append(str(full_vocal_file))
-            if full_instrumental_file:
-                saved_files.append(str(full_instrumental_file))
-            
-            # 构建v2.2格式返回结果
-            segment_files = [f for f in saved_files if '_segment_' in f]
-            segments = []
-            for i, file_path in enumerate(segment_files, 1):
-                file_name = Path(file_path).name
-                estimated_duration = 8.0
-                segments.append({
-                    'index': i,
-                    'start_time': (i-1) * estimated_duration,
-                    'end_time': i * estimated_duration, 
-                    'duration': estimated_duration,
-                    'filename': file_name,
-                    'mdd_features': {
-                        'source_pause_confidence': separation_result.separation_confidence,
-                        'quality_grade': 'A' if separation_result.separation_confidence > 0.7 else 'B',
-                        'has_mdd_analysis': True
-                    }
-                })
-
-            # 从SeamlessSplitter结果中获取分析信息
-            vocal_pause_analysis = result.get('vocal_pause_analysis', {})
-            bpm_features = vocal_pause_analysis.get('bpm_features', {})
-            
-            # 构建v2.2 MDD格式返回结果
-            mdd_result = {
-                'success': True,
-                'version': '2.2.0',
-                'method': 'MDD增强主副歌识别 + 统计学动态裁决 + BPM自适应',
-                'input_file': input_file,
-                'output_dir': output_dir,
-
-                # 分离信息
-                'backend_used': separation_result.backend_used,
-                'separation_confidence': separation_result.separation_confidence,
-                'separation_time': separation_time,
-
-                # v2.2 MDD处理统计
-                'mdd_processing_stats': {
-                    'mdd_analysis_time': processing_stats.get('processing_time', total_time) * 0.2,
-                    'chorus_detection_time': processing_stats.get('processing_time', total_time) * 0.1,
-                    'dynamic_threshold_time': processing_stats.get('processing_time', total_time) * 0.1,
-                    'splitting_time': processing_stats.get('processing_time', total_time) * 0.6,
-                    'total_mdd_time': total_time
-                },
-
-                # MDD检测结果统计
-                'mdd_detection_stats': {
-                    'candidate_pauses_detected': vocal_pause_analysis.get('total_pauses', 0),
-                    'mdd_enhanced_pauses': len(segment_files) - 1,
-                    'chorus_sections_detected': vocal_pause_analysis.get('chorus_sections', 0),
-                    'verse_sections_detected': vocal_pause_analysis.get('verse_sections', 0),
-                    'bpm_detected': bpm_features.get('main_bpm', None),
-                    'music_category': bpm_features.get('bpm_category', 'unknown'),
-                    'avg_mdd_score': vocal_pause_analysis.get('avg_mdd_score', 0.5),
-                    'avg_pause_confidence': vocal_pause_analysis.get('avg_confidence', 0.8),
-                },
-
-                # 输出结果
-                'num_segments': len(segment_files),
-                'saved_files': saved_files,
-                'segments': segments,
-                'full_vocal_file': str(full_vocal_file),
-                'instrumental_file': str(full_instrumental_file) if full_instrumental_file else None,
-                'audio_duration': processing_stats.get('audio_duration', 60.0),
-                'total_processing_time': total_time,
-                'mdd_enabled': True
-            }
-
-            print(f"[MDD-SUCCESS] MDD增强分割系统v2.2完成!")
-            print(f"  生成片段: {len(segment_files)} 个片段") 
-            print(f"  分离后端: {separation_result.backend_used}")
-            print(f"  分离质量: {separation_result.separation_confidence:.3f}")
-            print(f"  MDD平均评分: {vocal_pause_analysis.get('avg_mdd_score', 0.5):.3f}")
-            print(f"  主副歌识别: {'已启用' if vocal_pause_analysis.get('chorus_sections', 0) > 0 else '未检测到'}")
-            print(f"  分离时间: {separation_time:.1f}秒")
-            print(f"  总处理时间: {total_time:.1f}秒")
-            print(f"  BPM检测: {bpm_features.get('main_bpm', 'N/A')} BPM ({bpm_features.get('bpm_category', 'unknown')})")
-            print(f"  完整人声文件: {full_vocal_file.name}")
-            if full_instrumental_file:
-                print(f"  完整伴奏文件: {full_instrumental_file.name}")
-            print(f"  [技术栈] MDX23/Demucs分离 → MDD动态密度分析 → 主副歌识别 → 差异化智能分割")
-
-            return mdd_result
-            
-        finally:
-            # 恢复原始MDD配置
-            set_config('musical_dynamic_density.enable', original_mdd_enable)
-        
-    except Exception as e:
-        print(f"[MDD-ERROR] MDD增强分割系统v2.2失败: {e}")
-        import traceback
-        print(f"[MDD-DEBUG] 详细错误:")
-        print(traceback.format_exc())
-        return {
-            'success': False,
-            'version': '2.2.0',
-            'error': str(e),
-            'input_file': input_file,
-            'error_stage': 'MDD增强处理流水线'
-        }
-
 def main():
-    """主函数"""
+    """主函数 - 重构为纯传令兵模式"""
     print("=" * 60)
-    print("智能人声分割器 - 快速启动 (增强版)")
+    print("智能人声分割器 - 快速启动 (重构版)")
     print("=" * 60)
     
     # 检查系统状态
@@ -865,128 +299,61 @@ def main():
     
     # 创建输出目录
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    if processing_mode == 'vocal_separation':
-        if forced_backend:
-            output_dir = project_root / "output" / f"vocal_{forced_backend}_{timestamp}"
-        else:
-            output_dir = project_root / "output" / f"vocal_{timestamp}"
-    elif processing_mode == 'vocal_split_v2':
-        if forced_backend:
-            output_dir = project_root / "output" / f"v2_{forced_backend}_{timestamp}"
-        else:
-            output_dir = project_root / "output" / f"v2_{timestamp}"
-    elif processing_mode == 'vocal_split':
-        if forced_backend:
-            output_dir = project_root / "output" / f"vocal_split_{forced_backend}_{timestamp}"
-        else:
-            output_dir = project_root / "output" / f"vocal_split_{timestamp}"
-    else:  # smart_split
-        if forced_backend:
-            output_dir = project_root / "output" / f"quick_{forced_backend}_{timestamp}"
-        else:
-            output_dir = project_root / "output" / f"quick_{timestamp}"
+    if forced_backend and forced_backend != 'auto':
+        output_dir = project_root / "output" / f"unified_{forced_backend}_{timestamp}"
+    else:
+        output_dir = project_root / "output" / f"unified_{timestamp}"
     
     output_dir.mkdir(parents=True, exist_ok=True)
-    
     print(f"[OUTPUT] 输出目录: {output_dir.name}")
     
-    if processing_mode == 'vocal_separation':
-        print("\\n[START] 开始人声分离...")
-    elif processing_mode == 'vocal_split_v2':
-        print("\\n[V2.1-START] 启动统计学动态裁决系统v2.1...")
-    elif processing_mode == 'vocal_split':
-        print("\\n[START] 开始传统纯人声停顿分割...")
-    else:
-        print("\\n[START] 开始智能分割...")
-    
     try:
-        if processing_mode == 'vocal_separation':
-            # 纯人声分离模式
-            actual_backend = os.environ.get('FORCE_SEPARATION_BACKEND', selected_backend)
-            
-            print(f"\\n[CONFIG] 人声分离配置：")
-            print(f"  采样率: 44100 Hz")
-            print(f"  分离后端: {actual_backend}")
-            
-            # 执行人声分离
-            result = separate_vocals_only(
-                str(selected_file), 
-                str(output_dir), 
-                actual_backend, 
-                44100
-            )
-        elif processing_mode == 'vocal_split_v2':
-            # [NEW] 统计学动态裁决v2.1模式
-            actual_backend = os.environ.get('FORCE_SEPARATION_BACKEND', selected_backend)
-            
-            print(f"\\n[V2.1-CONFIG] 统计学动态裁决系统v2.1配置：")
-            print(f"  采样率: 44100 Hz")
-            print(f"  分离后端: {actual_backend}")
-            print(f"  核心技术: 统计学动态裁决")
-            print(f"  优化策略: BPM自适应+节拍对齐")
-            print(f"  质量保证: 边界完整性保护")
-            print(f"  输出格式: 24位WAV无损")
-            
-            # 执行v2.1统计学动态裁决分割
-            result = split_pure_vocal_v2(
-                str(selected_file), 
-                str(output_dir), 
-                actual_backend, 
-                44100
-            )
-        elif processing_mode == 'vocal_split':
-            # 传统纯人声停顿分割模式（禁用）
-            result = {
-                'success': False,
-                'error': '传统纯人声分割模式暂时禁用，请使用v2.1模式获得更好效果',
-                'input_file': str(selected_file),
-                'suggestion': '选择模式3 - 统计学动态裁决v2.1获得最佳效果'
-            }
-        else:
-            # 智能分割模式
-            from src.vocal_smart_splitter.core.seamless_splitter import SeamlessSplitter
-            from src.vocal_smart_splitter.utils.config_manager import get_config
-            
-            # 获取配置
-            sample_rate = get_config('audio.sample_rate', 44100)
-            config_backend = get_config('enhanced_separation.backend', 'auto')
-            # 获取实际将要使用的后端（优先环境变量）
-            actual_backend = os.environ.get('FORCE_SEPARATION_BACKEND', config_backend)
-            
-            print(f"\\n[CONFIG] 智能分割配置：")
-            print(f"  采样率: {sample_rate} Hz")
-            print(f"  配置文件后端: {config_backend}")
-            print(f"  实际使用后端: {actual_backend} {'(环境变量强制)' if 'FORCE_SEPARATION_BACKEND' in os.environ else ''}")
-            print(f"  双路检测: 启用")
-            print(f"  BPM自适应: 启用")
-            
-            # 创建分割器
-            print("\\n[INIT] 初始化分割器...")
-            splitter = SeamlessSplitter(sample_rate=sample_rate)
-            
-            # 执行分割
-            print("[PROCESS] 开始分割处理...")
-            result = splitter.split_audio_seamlessly(str(selected_file), str(output_dir))
+        # === 核心改造：统一调用指挥中心 ===
         
-        # 显示结果
-        if result.get('success', False):
+        # 1. 实例化官方大脑
+        from src.vocal_smart_splitter.core.seamless_splitter import SeamlessSplitter
+        from src.vocal_smart_splitter.utils.config_manager import get_config
+        
+        # 从配置文件获取初始采样率，但它会在加载时动态调整
+        sample_rate = get_config('audio.sample_rate', 44100)
+        splitter = SeamlessSplitter(sample_rate=sample_rate)
+        
+        # 2. 模式映射：将用户界面的模式映射到SeamlessSplitter的模式
+        mode_mapping = {
+            'vocal_separation': 'vocal_separation',
+            'vocal_split_v2': 'v2.1', 
+            'vocal_split_mdd': 'v2.2_mdd',
+            'smart_split': 'smart_split'
+        }
+        
+        seamless_mode = mode_mapping.get(processing_mode, 'v2.2_mdd')  # 默认使用v2.2 MDD
+        
+        # 3. 将用户选择的模式作为参数，下达指令
+        print(f"\\n[START] 正在启动统一分割引擎，模式: {seamless_mode}...")
+        print(f"[CONFIG] 使用分离后端: {selected_backend}")
+        
+        result = splitter.split_audio_seamlessly(
+            str(selected_file), 
+            str(output_dir), 
+            mode=seamless_mode
+        )
+        
+        # 4. 显示结果
+        if result.get('success'):
             print("\\n" + "=" * 60)
-            if processing_mode == 'vocal_split_v2':
-                print("[V2.1-SUCCESS] 统计学动态裁决系统v2.1成功完成!")
-            else:
-                print("[SUCCESS] 处理成功完成!")
+            print("[SUCCESS] 智能分割成功完成!")
             print("=" * 60)
-            
-            print(f"[OUTPUT] 输出目录: {output_dir}")
-            if processing_mode == 'vocal_split_v2':
-                print("[V2.1-SUCCESS] 可以直接使用这些高质量音频片段!")
-            else:
-                print("[SUCCESS] 可以直接使用这些音频文件!")
+            print(f"  生成片段数量: {result.get('num_segments', 0)}")
+            print(f"  文件保存在: {output_dir}")
+            print(f"  处理方法: {result.get('method', seamless_mode)}")
+            if 'backend_used' in result:
+                print(f"  使用后端: {result['backend_used']}")
+            if 'processing_time' in result:
+                print(f"  处理时间: {result['processing_time']:.1f}秒")
         else:
-            print("\\n[ERROR] 处理失败")
-            if 'error' in result:
-                print(f"错误: {result['error']}")
-                
+            print("\\n[ERROR] 处理失败:")
+            print(f"错误: {result.get('error', '未知错误')}")
+
     except ImportError as e:
         print(f"[ERROR] 模块导入失败: {e}")
         print("\\n请检查环境配置:")

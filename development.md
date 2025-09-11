@@ -23,13 +23,18 @@
     - 后端选择：mdx23 | demucs_v4 | auto；降级策略；分离质量评估
     - 入口：EnhancedVocalSeparator.separate_for_detection()
 - v2.0 纯人声检测
-  - src/vocal_smart_splitter/core/vocal_pause_detector.py（Silero VAD on vocal stem + 切点策略/零交叉）
-  - （规划）pure_vocal_pause_detector.py、spectral_aware_classifier.py、bpm_vocal_optimizer.py、multi_level_validator.py
+  - src/vocal_smart_splitter/core/vocal_pause_detector.py（542行，Silero VAD on vocal stem + 切点策略/零交叉）
+  - src/vocal_smart_splitter/core/pure_vocal_pause_detector.py（656行，多维特征分析）
+  - src/vocal_smart_splitter/core/spectral_aware_classifier.py（502行，频谱感知分类）
+  - src/vocal_smart_splitter/core/bpm_vocal_optimizer.py（479行，BPM优化）
+  - src/vocal_smart_splitter/core/multi_level_validator.py（552行，多级验证）
 - v2.1 VocalPrime 检测
   - 规范：vocal_prime.md（RMS/EMA/动态地板/滞回/平台平坦度/未来静默守卫/BPM禁切区）
-  - 实现：src/vocal_smart_splitter/core/vocal_prime_detector.py（存在，仍需补 BPM 禁切区）
+  - 实现：src/vocal_smart_splitter/core/vocal_prime_detector.py（361行，生产就绪）
 - 无缝分割与验证
-  - src/vocal_smart_splitter/core/seamless_splitter.py（主引擎，样本级分割，完美重构校验）
+  - src/vocal_smart_splitter/core/seamless_splitter.py（979行，主引擎，样本级分割，完美重构校验）
+  - src/vocal_smart_splitter/core/adaptive_vad_enhancer.py（1,363行，BPM自适应VAD增强）
+  - src/vocal_smart_splitter/core/quality_controller.py（1,058行，质量控制系统）
   - tests/test_seamless_reconstruction.py（拼接误差=0 验证）
 - 配置与工具
   - src/vocal_smart_splitter/utils/config_manager.py（参数集中管理）
@@ -42,7 +47,8 @@
 1) 输入音频（44.1kHz 单声道内部处理）
 2) EnhancedVocalSeparator → vocal_track（纯人声）
 3) 检测：
-   - v2.0：Silero VAD on vocal_track（已实现），或 VocalPrime（v2.1，规划接线）
+   - v2.0：Silero VAD + 多维特征分析（已实现，生产就绪）
+   - v2.1：VocalPrime RMS检测（已实现，生产就绪）
 4) 生成 pause/cut_point（零交叉吸附；可选 cut_at_speech_end）
 5) 质量控制（最小间隔/最小停顿；尾段保留）
 6) 样本级切割与导出（零处理，WAV/FLAC）
