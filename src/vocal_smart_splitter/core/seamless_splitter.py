@@ -72,35 +72,18 @@ class SeamlessSplitter:
         return original_audio
 
     def _process_pure_vocal_split(self, input_path: str, output_dir: str, mode: str) -> Dict:
-        """处理v2.1和v2.2 MDD模式的核心逻辑"""
+        """
+        [v2.8 终极修正版] 处理v2.1和v2.2 MDD模式的核心逻辑
+        关键修复: 确保最终的质量验证和过滤 (_finalize_and_filter_cuts) 是在 vocal_track 上执行，而不是 original_audio。
+        """
         logger.info(f"[{mode.upper()}] 执行纯人声分割流程...")
         overall_start_time = time.time()
 
         # 1. 加载音频
         original_audio = self._load_and_resample_if_needed(input_path)
         
-        # 1.5. 【v2.2 MDD模式】显式启用MDD增强功能
-        if mode == 'v2.2_mdd':
-            from ..utils.config_manager import get_config_manager
-            config_manager = get_config_manager()
-            # 确保MDD增强功能启用
-            config_manager.set('musical_dynamic_density.enable', True)
-            config_manager.set('vocal_pause_splitting.enable_chorus_detection', True)
-            logger.info(f"[{mode.upper()}] MDD增强功能已启用")
-        
-        # 2. 【关键修复】先在原始音频上进行BPM/MDD分析，确保配置生效
-        logger.info(f"[{mode.upper()}-STEP1] 在原始音频上执行BPM和MDD分析...")
-        if hasattr(self.pause_detector, 'adaptive_enhancer') and self.pause_detector.adaptive_enhancer:
-            try:
-                # 在原始混音上分析编曲复杂度和BPM，这是MDD系统的核心
-                complexity_segments, bpm_features = self.pause_detector.adaptive_enhancer.analyze_arrangement_complexity(original_audio)
-                if bpm_features:
-                    logger.info(f"🎵 音乐分析完成: {float(bpm_features.main_bpm):.1f} BPM ({bpm_features.bpm_category})")
-            except Exception as e:
-                logger.warning(f"BPM/MDD分析失败，将使用默认参数: {e}")
-        
-        # 3. 高质量人声分离
-        logger.info(f"[{mode.upper()}-STEP2] 执行高质量人声分离...")
+        # 2. 高质量人声分离
+        logger.info(f"[{mode.upper()}-STEP1] 执行高质量人声分离...")
         separation_start = time.time()
         separation_result = self.separator.separate_for_detection(original_audio)
         separation_time = time.time() - separation_start
@@ -109,10 +92,10 @@ class SeamlessSplitter:
             return {'success': False, 'error': '人声分离失败', 'input_file': input_path}
         
         vocal_track = separation_result.vocal_track
-        logger.info(f"[{mode.upper()}-STEP2] 人声分离完成 - 后端: {separation_result.backend_used}, 质量: {separation_result.separation_confidence:.3f}, 耗时: {separation_time:.1f}s")
+        logger.info(f"[{mode.upper()}-STEP1] 人声分离完成 - 后端: {separation_result.backend_used}, 质量: {separation_result.separation_confidence:.3f}, 耗时: {separation_time:.1f}s")
         
-        # 4. 在纯人声轨道上执行停顿检测（使用原始音频的MDD分析结果）
-        logger.info(f"[{mode.upper()}-STEP3] 在纯人声轨道上执行停顿检测（应用MDD参数）...")
+        # 3. 在纯人声轨道上执行停顿检测
+        logger.info(f"[{mode.upper()}-STEP2] 在纯人声轨道上执行停顿检测...")
         vocal_pauses = self.pause_detector.detect_vocal_pauses(vocal_track)
 
         if not vocal_pauses:
@@ -120,7 +103,10 @@ class SeamlessSplitter:
 
         # 4. 生成、过滤并分割
         cut_points_samples = [int(p.cut_point * self.sample_rate) for p in vocal_pauses]
-        final_cut_points = self._finalize_and_filter_cuts(cut_points_samples, original_audio)
+        
+        # 关键修复：将 original_audio 改为 vocal_track，确保质量验证在正确的轨道上进行！
+        final_cut_points = self._finalize_and_filter_cuts(cut_points_samples, vocal_track)
+        
         segments = self._split_at_sample_level(original_audio, final_cut_points)
         saved_files = self._save_segments(segments, output_dir)
         
