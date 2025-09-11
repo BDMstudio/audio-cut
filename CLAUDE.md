@@ -280,11 +280,6 @@ For the latest BPM-adaptive seamless splitter, focus on these key config values:
 
 ## 🎯 Critical Development Notes (v1.1.4)
 
-### Variable Naming Convention
-**IMPORTANT**: Always use `bpm` (not `bmp`) for all BPM-related variables and attributes:
-- ✅ Correct: `bpm_features`, `main_bpm`, `bpm_category`
-- ❌ Wrong: `bmp_features`, `main_bmp`, `bmp_category`
-
 ### Numpy Formatting Best Practice
 When logging numpy arrays, always use explicit `float()` conversion:
 ```python

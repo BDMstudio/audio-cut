@@ -98,15 +98,18 @@ class SeamlessSplitter:
             分割结果信息
         """
         logger.info(f"开始无缝分割: {input_path}")
+        logger.info(f"[DEBUG] SeamlessSplitter配置: min_pause={self.min_pause_duration}s, zero_processing={self.zero_processing}")
         
         try:
             # 1. 加载音频
             original_audio, original_sr = self._load_original_audio(input_path)
+            logger.info(f"[DEBUG] 音频加载完成: 时长 {len(original_audio)/original_sr:.2f}秒, 样本数 {len(original_audio)}")
             
             # ✅ 2. 直接调用智能化的停顿检测器
             # 它内部会处理BPM分析、自适应参数和VAD检测
             logger.info("\n=== 统一化人声停顿检测 ===")
             vocal_pauses = self.pause_detector.detect_vocal_pauses(original_audio)
+            logger.info(f"[DEBUG] 检测到的人声停顿数量: {len(vocal_pauses)}")
             
             if not vocal_pauses:
                 logger.warning("未找到符合条件的人声停顿，无法分割")
@@ -114,20 +117,24 @@ class SeamlessSplitter:
             
             # 3. 生成精确分割点
             cut_points_samples = [int(p.cut_point * self.sample_rate) for p in vocal_pauses]
+            logger.info(f"[DEBUG] 初始切点: {[p.cut_point for p in vocal_pauses]}")
             
             # 4. 应用最终的能量守卫和安全过滤
             logger.info("[FINAL CHECK] 应用最终能量守卫和安全过滤器...")
             from .quality_controller import QualityController
             qc = QualityController(self.sample_rate)
             cut_points_times = [p / self.sample_rate for p in cut_points_samples]
+            logger.info(f"[DEBUG] 待验证切点: {cut_points_times}")
             
             # 使用原始音频（混音）进行最终能量校验
             validated_cut_times = [qc.enforce_quiet_cut(original_audio, self.sample_rate, t) for t in cut_points_times]
             validated_cut_times = [t for t in validated_cut_times if t >= 0] # 移除无效切点
+            logger.info(f"[DEBUG] 能量校验后切点: {validated_cut_times}")
 
             # 纯化过滤
             final_cut_points_times = qc.pure_filter_cut_points(validated_cut_times, len(original_audio) / self.sample_rate)
             final_cut_points_samples = [int(t * self.sample_rate) for t in final_cut_points_times]
+            logger.info(f"[DEBUG] 纯化过滤后切点: {final_cut_points_times}")
             
             # CRITICAL FIX: 添加起始点和结束点，确保完整音频覆盖
             audio_length = len(original_audio)

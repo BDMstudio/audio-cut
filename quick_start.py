@@ -615,20 +615,58 @@ def split_pure_vocal_mdd(input_file: str, output_dir: str, backend: str = 'auto'
             
             # 第2步：在纯人声轨上执行MDD增强分析和分割
             print("[MDD-STEP2] 执行MDD增强分析和主副歌识别...")
+            print(f"[MDD-DEBUG] 人声轨道信息: 时长 {len(vocal_track)/sr:.2f}秒, 样本数 {len(vocal_track)}")
+            print(f"[MDD-DEBUG] MDD配置状态: enable={get_config('musical_dynamic_density.enable', False)}")
+            print(f"[MDD-DEBUG] 副歌检测状态: enable={get_config('vocal_pause_splitting.enable_chorus_detection', False)}")
             
             # 保存临时纯人声文件供SeamlessSplitter处理
             import tempfile
             with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as temp_vocal:
                 sf.write(temp_vocal.name, vocal_track, sample_rate)
                 temp_vocal_path = temp_vocal.name
+                print(f"[MDD-DEBUG] 临时人声文件已保存: {temp_vocal_path}")
             
             try:
                 # 创建SeamlessSplitter实例，启用MDD增强功能
+                print("[MDD-STEP2.1] 初始化SeamlessSplitter...")
                 splitter = SeamlessSplitter(sample_rate=sample_rate)
                 
                 # 在纯人声轨上执行MDD增强分割
-                print("[MDD-STEP2.1] 执行MDD增强主副歌识别分割...")
+                print("[MDD-STEP2.2] 执行MDD增强主副歌识别分割...")
+                print(f"[MDD-DEBUG] 输入文件: {temp_vocal_path}")
+                print(f"[MDD-DEBUG] 输出目录: {output_dir}")
+                
                 result = splitter.split_audio_seamlessly(temp_vocal_path, str(output_dir))
+                
+                print(f"[MDD-DEBUG] SeamlessSplitter返回结果: success={result.get('success', False)}")
+                if result.get('success', False):
+                    print(f"[MDD-DEBUG] 生成段数: {result.get('num_segments', 0)}")
+                    print(f"[MDD-DEBUG] 保存文件数: {len(result.get('saved_files', []))}")
+                    
+                    # 详细日志处理统计
+                    processing_stats = result.get('processing_stats', {})
+                    vocal_pause_analysis = result.get('vocal_pause_analysis', {})
+                    
+                    print(f"[MDD-DEBUG] 处理统计:")
+                    print(f"  - 音频时长: {processing_stats.get('audio_duration', 0):.2f}秒")
+                    print(f"  - 处理时间: {processing_stats.get('processing_time', 0):.2f}秒")
+                    
+                    print(f"[MDD-DEBUG] 停顿分析:")
+                    print(f"  - 总停顿数: {vocal_pause_analysis.get('total_pauses', 0)}")
+                    print(f"  - 有效停顿数: {vocal_pause_analysis.get('valid_pauses', 0)}")
+                    print(f"  - 平均置信度: {vocal_pause_analysis.get('avg_confidence', 0):.3f}")
+                    
+                    # BPM特征
+                    bpm_features = vocal_pause_analysis.get('bpm_features', {})
+                    if bpm_features:
+                        print(f"[MDD-DEBUG] BPM特征:")
+                        print(f"  - 主BPM: {bpm_features.get('main_bpm', 'N/A')}")
+                        print(f"  - BPM分类: {bpm_features.get('bpm_category', 'unknown')}")
+                
+                else:
+                    print(f"[MDD-ERROR] SeamlessSplitter失败: {result.get('error', '未知错误')}")
+                    # 输出更多调试信息
+                    print(f"[MDD-DEBUG] 完整返回结果: {result}")
                 
             finally:
                 # 清理临时文件
