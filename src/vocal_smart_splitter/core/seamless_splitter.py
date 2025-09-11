@@ -193,7 +193,11 @@ class SeamlessSplitter:
         audio_duration_s = len(audio) / self.sample_rate
         cut_times = sorted(list(set([p / self.sample_rate for p in cut_points_samples])))
         validated_times = [t for t in cut_times if self.quality_controller.enforce_quiet_cut(audio, self.sample_rate, t) >= 0]
-        final_times = self.quality_controller.pure_filter_cut_points(validated_times, audio_duration_s)
+        # 修复：降低最小间隔限制，允许更密集的切割
+        min_interval = get_config('quality_control.min_split_gap', 1.0)  # 从2.0降到1.0秒
+        final_times = self.quality_controller.pure_filter_cut_points(
+            validated_times, audio_duration_s, min_interval=min_interval
+        )
         final_samples = [0] + [int(t * self.sample_rate) for t in final_times] + [len(audio)]
         return sorted(list(set(final_samples)))
 

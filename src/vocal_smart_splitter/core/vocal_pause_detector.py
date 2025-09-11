@@ -182,13 +182,14 @@ class VocalPauseDetectorV2:
 
         return pause_segments
 
+# In src/vocal_smart_splitter/core/vocal_pause_detector.py
+
     def _filter_adaptive_pauses(self, pause_segments: List[Dict], bpm_features: Optional[BPMFeatures]) -> List[Dict]:
         """
-        [v2.3 最终版] 双模式智能裁决系统
-        技术: 引入"极度宽松"的初筛，并根据歌曲类型（快/慢）和动态（主/副歌）选择不同的统计策略。
+        [v2.5 终极修复版] 基于鲁棒统计学的智能裁决系统
+        技术: 统一使用75分位数作为基础动态阈值，彻底解决前奏长静音对统计模型的污染问题。
         """
         if not self.enable_bpm_adaptation or not bpm_features or not self.current_adaptive_params:
-            # 回退到最简单的静态过滤
             min_pause_duration = get_config('vocal_pause_splitting.min_pause_duration', 1.0)
             min_pause_samples = int(min_pause_duration * self.sample_rate)
             valid_pauses = [p for p in pause_segments if (p['end'] - p['start']) >= min_pause_samples]
@@ -197,111 +198,90 @@ class VocalPauseDetectorV2:
             logger.info(f"BPM自适应禁用，使用静态阈值 {min_pause_duration}s，过滤后剩 {len(valid_pauses)} 个停顿")
             return valid_pauses
 
-        # === 步骤 1: 极度宽松的初筛，收集所有潜在的"微停顿" ===
-        # 核心修复：使用一个非常小且固定的值（如0.3s），而不是动态计算的值，来确保快歌的短气口能进入候选池。
-        ABSOLUTE_MIN_PAUSE_S = 0.3
-        min_pause_samples = int(ABSOLUTE_MIN_PAUSE_S * self.sample_rate)
-
+        # === 步骤 1: 极度宽松的初筛 (从配置加载) ===
+        absolute_min_pause_s = get_config('vocal_pause_splitting.statistical_filter.absolute_min_pause', 0.3)
+        min_pause_samples = int(absolute_min_pause_s * self.sample_rate)
+        
         all_candidate_durations = []
-        # 在对 all_candidate_durations 进行操作之前，需要先对 pause_segments 里的 duration 进行计算
         for p in pause_segments:
-            p['duration'] = (p['end'] - p['start']) / self.sample_rate
-
-        for pause in pause_segments:
-            if pause['duration'] >= ABSOLUTE_MIN_PAUSE_S:
-                all_candidate_durations.append(pause['duration'])
+            duration = (p['end'] - p['start']) / self.sample_rate
+            p['duration'] = duration
+            if duration >= absolute_min_pause_s:
+                all_candidate_durations.append(duration)
 
         if not all_candidate_durations:
-            logger.warning("在应用极度宽松的初筛后，仍然没有找到任何候选停顿。歌曲可能过于连续。")
+            logger.warning(f"在应用最小初筛 ({absolute_min_pause_s}s) 后，没有找到任何候选停顿。")
             return []
 
-        # === 步骤 2: 统计学建模，理解这首歌的"停顿语言" ===
-        average_pause = np.mean(all_candidate_durations)
-        median_pause = np.median(all_candidate_durations)
-        std_dev = np.std(all_candidate_durations)
-        
-        # 使用百分位数为快歌寻找"异常长"的停顿，这通常是真正的分割点
-        # 对于快歌，75%的停顿可能都是0.4s的呼吸，而第90%的那个0.8s的停顿才是我们要找的
+        # === 步骤 2: 鲁棒的统计学建模 ===
+        # 关键修复：不再使用受极端值影响的 mean/median，统一使用 75分位数 作为核心判断基准。
+        # 75分位数能有效忽略前奏的超长静音，同时反映出歌曲主体部分中“较长”的停顿标准。
         percentile_75 = np.percentile(all_candidate_durations, 75)
-        percentile_90 = np.percentile(all_candidate_durations, 90)
-
-        # 【关键修复】从config.yaml读取统计学过滤配置
-        base_threshold_ratio = get_config('vocal_pause_splitting.statistical_filter.base_threshold_ratio', 0.7)
-        use_median_priority = get_config('vocal_pause_splitting.statistical_filter.use_median_priority', True)
-        chorus_multiplier = get_config('vocal_pause_splitting.statistical_filter.chorus_multiplier', 0.9)
-        mdd_threshold_multiplier = get_config('musical_dynamic_density.threshold_multiplier', 0.1)
-
-        logger.info(f"停顿时长统计模型: 平均值={average_pause:.3f}s, 中位数={median_pause:.3f}s, 75分位={percentile_75:.3f}s, 90分位={percentile_90:.3f}s")
-        logger.info(f"[CONFIG] 应用配置: base_ratio={base_threshold_ratio}, chorus_mult={chorus_multiplier}, mdd_mult={mdd_threshold_multiplier}")
-        logger.info(f"[DEBUG] 初筛候选数量: {len(all_candidate_durations)}, BPM类别: {getattr(self.current_adaptive_params, 'category', 'unknown')}")
-
-        # === 步骤 3: "双模式"智能裁决 ===
+        median_pause = np.median(all_candidate_durations) # 保留中位数用于快歌的激进模式
+        logger.info(f"鲁棒停顿时长统计模型: 75分位={percentile_75:.3f}s, 中位数={median_pause:.3f}s")
+        
+        # === 步骤 3: 统一的、配置驱动的智能裁决 ===
         valid_pauses = []
         total_audio_length = pause_segments[-1]['end'] if pause_segments else 0
-
-        # 获取MDD分析结果，这需要 adaptive_enhancer 在上游被调用并存储结果
-        # 我们假设 self.adaptive_enhancer.last_analyzed_segments 存在
         segments_with_mdd = getattr(self.adaptive_enhancer, 'last_analyzed_segments', [])
+        
+        # 从 config.yaml 加载所有调节因子
+        base_threshold_ratio = get_config('vocal_pause_splitting.statistical_filter.base_threshold_ratio', 0.7)
+        chorus_multiplier = get_config('vocal_pause_splitting.statistical_filter.chorus_multiplier', 1.0)
+        # 修复：使用正确的配置路径
+        mdd_threshold_multiplier = get_config('musical_dynamic_density.threshold_multiplier', 0.3)
+        logger.info(f"加载动态配置: 基础比例={base_threshold_ratio}, 副歌乘数={chorus_multiplier}, MDD影响={mdd_threshold_multiplier}")
+
+        # 核心修复：建立统一的基础动态阈值
+        base_dynamic_threshold = percentile_75 * base_threshold_ratio
 
         for pause in pause_segments:
             duration_s = pause['duration']
-            if duration_s < ABSOLUTE_MIN_PAUSE_S:
+            if duration_s < absolute_min_pause_s:
                 continue
 
-            # 确定当前停顿所处的音乐环境 (MDD)
-            current_time = (pause['start'] / self.sample_rate)
-            current_mdd = 0.5 # 默认中等密度
+            current_time = pause['start'] / self.sample_rate
+            current_mdd = 0.5
             if segments_with_mdd:
                 for seg in segments_with_mdd:
                     if seg.start_time <= current_time < seg.end_time:
                         current_mdd = seg.dynamic_density_score
                         break
             
-            # 决策逻辑
             is_head = (pause.get('start', 0) == 0)
             is_tail = (pause.get('end', 0) >= total_audio_length * 0.95)
             
-            # 【配置驱动的阈值计算】基于config.yaml参数
-            base_statistical_threshold = median_pause if use_median_priority else average_pause
-            
-            # 模式一：快歌裁决 (BPM > 120) - 寻找统计上的"异常长停顿"
-            if self.current_adaptive_params.category in ['fast', 'very_fast']:
-                # 使用配置的base_threshold_ratio来调整基础阈值
-                dynamic_threshold = percentile_75 * base_threshold_ratio
-                mode_type = "快歌模式"
-                # 对于非常激烈的副歌部分（高MDD），应用MDD阈值调整和副歌乘数
-                if current_mdd > 0.7:
-                    mdd_adjustment = 1.0 - (current_mdd * mdd_threshold_multiplier)  # MDD越高，阈值越低（更激进）
-                    dynamic_threshold = median_pause * base_threshold_ratio * chorus_multiplier * mdd_adjustment
-                    mode_type = "快歌+高密度模式"
-                
-            # 模式二：慢歌/中速歌裁决 (BPM <= 120) - 寻找"足够长且结构合理"的停顿
-            else:
-                # 使用配置的base_threshold_ratio调整基础阈值
-                dynamic_threshold = base_statistical_threshold * base_threshold_ratio
-                mode_type = "慢歌模式"
-                # 在激烈的副歌部分（高MDD），应用配置的调整策略
-                if current_mdd > 0.6:
-                    old_threshold = dynamic_threshold
-                    # 使用配置的mdd_threshold_multiplier和chorus_multiplier
-                    mdd_factor = 1.0 + (current_mdd - 0.6) * mdd_threshold_multiplier
-                    dynamic_threshold = dynamic_threshold * mdd_factor * chorus_multiplier
-                    mode_type = "慢歌+高密度模式"
-                    logger.debug(f"[DEBUG] 慢歌MDD调整: {old_threshold:.3f}s -> {dynamic_threshold:.3f}s (MDD={current_mdd:.2f}, factors={mdd_factor:.2f}×{chorus_multiplier})")
+            dynamic_threshold = base_dynamic_threshold
 
-            # 最终裁决
-            final_threshold = max(dynamic_threshold, ABSOLUTE_MIN_PAUSE_S) # 保证不低于绝对下限
+            # 模式一：快歌裁决 (BPM > 120) -> 激进模式
+            if self.current_adaptive_params.category in ['fast', 'very_fast']:
+                mode_type = "快歌模式"
+                if current_mdd > 0.7:
+                    # 在高潮部分变得更激进，允许切更短的停顿
+                    mdd_adjustment = 1.0 - (current_mdd * mdd_threshold_multiplier)
+                    dynamic_threshold = max(median_pause, dynamic_threshold * mdd_adjustment)
+                    mode_type = "快歌+高密度(激进)"
             
-            # 详细决策日志
-            if duration_s >= final_threshold or is_head or is_tail:
-                logger.debug(f"[KEEP] @{current_time:.2f}s: {duration_s:.3f}s >= {final_threshold:.3f}s ({mode_type}, MDD={current_mdd:.2f})")
+            # 模式二：慢歌/中速歌裁决 (BPM <= 120) -> 保守模式
             else:
-                logger.debug(f"[FILTER] @{current_time:.2f}s: {duration_s:.3f}s < {final_threshold:.3f}s ({mode_type}, MDD={current_mdd:.2f})")
+                mode_type = "慢歌模式"
+                if current_mdd > 0.6:
+                    # 在高潮部分变得更保守
+                    mdd_adjustment = 1.0 + (current_mdd - 0.6) * mdd_threshold_multiplier
+                    dynamic_threshold *= mdd_adjustment
+                    mode_type = "慢歌+高密度(保守)"
+            
+            # 应用副歌全局乘数并确保不低于绝对下限
+            final_threshold = max(dynamic_threshold * chorus_multiplier, absolute_min_pause_s)
 
             if duration_s >= final_threshold or is_head or is_tail:
                 valid_pauses.append(pause)
+            # 为了调试，暂时取消日志过滤，全部打印
+            logger.debug(f"[{'KEEP' if duration_s >= final_threshold or is_head or is_tail else 'FILTER'}] "
+                        f"@{current_time:.2f}s: dur {duration_s:.3f}s >= thr {final_threshold:.3f}s "
+                        f"({mode_type}, MDD={current_mdd:.2f})")
 
-        logger.info(f"双模式智能裁决完成: {len(pause_segments)}个候选 -> {len(valid_pauses)}个最终分割点")
+        logger.info(f"鲁棒统计裁决完成: {len(all_candidate_durations)}个候选 -> {len(valid_pauses)}个最终分割点")
         return valid_pauses
     
     def _get_mdd_score_for_pause(self, pause: Dict) -> float:
