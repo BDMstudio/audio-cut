@@ -73,8 +73,6 @@ class SeamlessSplitter:
             original_audio = librosa.resample(original_audio, orig_sr=sr, target_sr=self.sample_rate)
         return original_audio
 
-# In src/vocal_smart_splitter/core/seamless_splitter.py
-
     def _process_pure_vocal_split(self, input_path: str, output_dir: str, mode: str) -> Dict:
         """
         [v2.9 终极修正版] 处理v2.1和v2.2 MDD模式的核心逻辑
@@ -299,8 +297,8 @@ class SeamlessSplitter:
         boundaries = sorted(set(boundaries))
 
         # 4) 时长治理：先合并短段，再强拆长段
-        seg_min = get_config('quality_control.segment_min_duration', 1.0)
-        seg_max = get_config('quality_control.segment_max_duration', 20.0)
+        seg_min = get_config('quality_control.segment_min_duration', 4.0)
+        seg_max = get_config('quality_control.segment_max_duration', 18.0)
 
         # 合并短段（循环直到稳定）
         changed = True

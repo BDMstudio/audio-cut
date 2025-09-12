@@ -12,8 +12,8 @@ pure_vocal_detection:
   enable: true  # 启用纯人声检测系统v2.0
 
   # 基础检测参数
-  min_pause_duration: 0.5         # 最小停顿时长(秒)
-  breath_duration_range: [0.1, 0.3]  # 换气时长范围(秒)
+  min_pause_duration: 0.2         # 最小停顿时长(秒)
+  breath_duration_range: [0.1, 0.2]  # 换气时长范围(秒)
 
   # 特征权重配置
   f0_weight: 0.30                 # 基频特征权重
@@ -23,8 +23,8 @@ pure_vocal_detection:
 
   # [v2.6 新增] 相对能量谷检测
   enable_relative_energy_mode: true   # 启用相对能量模式
-  peak_relative_threshold_ratio: 0.12  # 能量谷阈值 = 峰值能量 * 8% (很宽松)
-  rms_relative_threshold_ratio: 0.20   # 能量谷阈值 = 平均能量 * 20% (作为辅助)
+  peak_relative_threshold_ratio: 0.08  # 能量谷阈值 = 峰值能量 * 8% (很宽松)
+  rms_relative_threshold_ratio: 0.05   # 能量谷阈值 = 平均能量 * 20% (作为辅助)
 
   # 检测阈值
   # energy_threshold_db: -40        # 能量阈值(dB)
