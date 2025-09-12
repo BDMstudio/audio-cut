@@ -879,13 +879,25 @@ class QualityController:
 
     def enforce_quiet_cut(self, x_mono, sr, t_sec,
                           win_ms=80, guard_db=3.0, floor_pct=0.05,
-                          search_right_ms=220):
+                          search_right_ms=350):
         """
         技术：局部RMS + 动态噪声地板。若 t 附近不够安静，只向右搜索第一个"够安静"的谷底。
         - win_ms: 评估窗口
         - guard_db: 相对地板的余量（地板+3dB 以内才算安静）
         - search_right_ms: 最多向右搜的距离（保证不提前）
         """
+        # 允许从配置覆盖守卫参数
+        try:
+            win_ms = get_config('quality_control.enforce_quiet_cut.win_ms', win_ms)
+            guard_db = get_config('quality_control.enforce_quiet_cut.guard_db', guard_db)
+            search_right_ms = get_config('quality_control.enforce_quiet_cut.search_right_ms', search_right_ms)
+            floor_cfg = get_config('quality_control.enforce_quiet_cut.floor_percentile', int(floor_pct*100))
+            # 支持传入百分数(0-100)或比例(0-1)
+            if isinstance(floor_cfg, (int, float)):
+                floor_pct = float(floor_cfg) / 100.0 if floor_cfg > 1 else float(floor_cfg)
+        except Exception:
+            pass
+
         hop_ms = 10
         rms_db, t_axis = self._moving_rms_db(x_mono, sr, frame_ms=win_ms, hop_ms=hop_ms)
         rms_db = self._ema_smooth(rms_db, sr, hop_ms=hop_ms, smooth_ms=120)

@@ -86,7 +86,7 @@ musical_dynamic_density:
   enable: true                    # 启用MDD增强功能
   
   # MDD指标权重
-  energy_weight: 0.7              # RMS能量权重（最重要）
+  energy_weight: 0.5              # RMS能量权重（最重要）
   spectral_weight: 0.3            # 频谱平坦度权重
   onset_weight: 0.2               # 音符起始率权重
   
@@ -265,7 +265,7 @@ vocal_pause_splitting:
     use_median_priority: true             # 优先使用中位数（更鲁棒）
     absolute_min_pause: 0.2               # 降低绝对最小停顿时长，检测更多停顿
     absolute_max_pause: 3.0               # 提高绝对最大停顿时长，包容更长停顿
-    chorus_multiplier: 0.7                # 副歌部分阈值倍数 (更激进)
+    chorus_multiplier: 0.5                # 副歌部分阈值倍数 (更激进)
   
   # ---- MDD增强配置 (v2.2.0新增) ----
   mdd_threshold_multiplier: 0.5           # MDD阈值调整倍数（见musical_dynamic_density配置）
