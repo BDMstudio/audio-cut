@@ -25,15 +25,19 @@ pip install -e .
 # ⚡ FAST MODE - One-click processing (recommended for daily use) 
 python quick_start.py
 # → Auto-selects best backend, provides 4 processing mode options
+# → v2.3 统一指挥中心架构：所有模式统一由SeamlessSplitter调度
 
-# 🎯 VocalPrime v2.1 - Pure vocal domain RMS detection (LATEST)
-python run_splitter.py input/01.mp3 --vocal-prime-v2
+# 🆕 MDD增强纯人声检测v2.2 - 音乐动态密度识别主副歌 (LATEST)
+# Built into quick_start.py option 4
+
+# 🎯 VocalPrime v2.1 - Pure vocal domain RMS detection 
+# Built into quick_start.py option 3
 
 # ✨ Pure vocal detection v2.0 (Multi-dimensional feature analysis) 
-python run_splitter.py input/01.mp3 --pure-vocal-v2
+# Legacy mode, use quick_start.py instead
 
 # 🔄 Seamless splitting (BPM adaptive + spectral classification)
-python run_splitter.py input/01.mp3 --seamless-vocal --validate-reconstruction
+# Built into quick_start.py option 1
 
 # Traditional intelligent splitting (legacy compatibility)
 python run_splitter.py input/01.mp3 --min-length 8 --max-length 12 --target-length 10
@@ -66,25 +70,25 @@ python tests/test_seamless_reconstruction.py # Seamless splitting test
 ```
 audio-cut/
 ├── src/vocal_smart_splitter/
-│   ├── core/                            # 10,475 lines total
-│   │   ├── adaptive_vad_enhancer.py     # BPM-adaptive VAD enhancer (1,363 lines)
+│   ├── core/                            # 10,295 lines total (verified 2025-09-11)
+│   │   ├── adaptive_vad_enhancer.py     # BPM-adaptive VAD enhancer (1,364 lines)
 │   │   ├── quality_controller.py        # Quality control system (1,058 lines)
-│   │   ├── enhanced_vocal_separator.py  # MDX23/Demucs vocal separation (815 lines)
-│   │   ├── pure_vocal_pause_detector.py # Pure vocal pause detector (656 lines)
-│   │   ├── smart_splitter.py            # Algorithm dispatcher (636 lines)
+│   │   ├── enhanced_vocal_separator.py  # MDX23/Demucs vocal separation (816 lines)
+│   │   ├── pure_vocal_pause_detector.py # Pure vocal pause detector (678 lines)
+│   │   ├── smart_splitter.py            # Legacy algorithm dispatcher (636 lines)
 │   │   ├── precise_voice_splitter.py    # Precise VAD splitter (628 lines)
-│   │   ├── breath_detector.py           # Breath detection (562 lines)
-│   │   ├── multi_level_validator.py     # Multi-level validation (552 lines)
-│   │   ├── vocal_pause_detector.py      # Enhanced Silero VAD detector V2 (533 lines)
-│   │   ├── content_analyzer.py          # Content analysis (515 lines)
-│   │   ├── spectral_aware_classifier.py # Spectral pattern classifier (502 lines)
-│   │   ├── dual_path_detector.py        # Dual-path validation (497 lines)
-│   │   ├── bpm_vocal_optimizer.py       # BPM-driven optimizer (479 lines)
-│   │   ├── vocal_separator.py           # Basic vocal separation (455 lines)
-│   │   ├── vocal_prime_detector.py      # VocalPrime RMS detector (361 lines)
+│   │   ├── breath_detector.py           # Legacy breath detection (562 lines)
+│   │   ├── multi_level_validator.py     # Multi-level validation (553 lines)
+│   │   ├── content_analyzer.py          # Legacy content analysis (515 lines)
+│   │   ├── spectral_aware_classifier.py # Spectral pattern classifier (503 lines)
+│   │   ├── dual_path_detector.py        # Dual-path validation (498 lines)
+│   │   ├── bpm_vocal_optimizer.py       # BPM-driven optimizer (480 lines)
+│   │   ├── vocal_separator.py           # Legacy vocal separation (455 lines)
+│   │   ├── vocal_prime_detector.py      # VocalPrime RMS detector (362 lines)
+│   │   ├── vocal_pause_detector.py      # Enhanced Silero VAD detector V2 (331 lines)
 │   │   ├── advanced_vad.py              # Advanced VAD (319 lines)
-│   │   ├── pause_priority_splitter.py   # Pause priority splitter (318 lines)
-│   │   └── seamless_splitter.py         # Main seamless splitting engine (224 lines)
+│   │   ├── pause_priority_splitter.py   # Legacy pause priority splitter (318 lines)
+│   │   └── seamless_splitter.py         # 🎯 统一指挥中心引擎 (219 lines)
 │   ├── utils/
 │   │   ├── config_manager.py            # Configuration management
 │   │   ├── audio_processor.py           # Audio I/O utilities
@@ -92,31 +96,46 @@ audio-cut/
 │   │   └── feature_extractor.py         # Audio feature extraction
 │   ├── main.py                          # Traditional pipeline entry
 │   └── config.yaml                      # Main configuration
-├── tests/
+├── tests/                               # Comprehensive test suite
+│   ├── unit/                            # Unit tests (7 files)
+│   ├── integration/                     # Integration tests  
+│   ├── contracts/                       # Contract tests
+│   ├── performance/                     # Performance benchmarks
 │   ├── test_seamless_reconstruction.py  # Core validation test
+│   ├── test_pure_vocal_detection_v2.py  # V2 detection tests
+│   ├── test_mdd_functionality.py        # MDD feature tests
 │   └── run_tests.py                     # Test runner
-├── quick_start.py                       # One-click processing (130 lines)
-├── run_splitter.py                      # CLI with parameters (230 lines)
+├── quick_start.py                       # 🎯 统一启动脚本 v2.3 (131 lines)
+├── run_splitter.py                      # Legacy CLI interface (230 lines)
 └── requirements.txt                     # Dependencies
 ```
 
-### 🆕 VocalPrime Pure Vocal Domain Detection (v2.1.1 - PRODUCTION READY)
+### 🆕 v2.3 统一指挥中心架构 (CURRENT PRODUCTION)
+**新架构设计原理**：quick_start.py → SeamlessSplitter统一调度所有处理模式
+
+**支持的处理模式**：
+1. **智能分割** (smart_split) - 原始混音上识别停顿
+2. **纯人声分离** (vocal_separation) - 仅分离不分割
+3. **纯人声检测v2.1** (v2.1) - 分离→统计学裁决→分割
+4. **MDD增强v2.2** (v2.2_mdd) - 音乐动态密度识别主副歌
+
+### 🔄 VocalPrime Pure Vocal Domain Detection (v2.1 - PRODUCTION STABLE)
 The VocalPrime system implements pure vocal domain RMS energy envelope detection with statistical dynamic filtering based on the vocal_prime.md specification:
 
-**Core VocalPrime Components (PRODUCTION VERIFIED):**
-- `src/vocal_smart_splitter/core/adaptive_vad_enhancer.py` - ✅ BPM-adaptive VAD enhancer (1,363 lines) - PRODUCTION
-- `src/vocal_smart_splitter/core/quality_controller.py` - ✅ Quality control system (1,058 lines) - PRODUCTION
-- `src/vocal_smart_splitter/core/enhanced_vocal_separator.py` - ✅ Enhanced vocal separator (815 lines) - MDX23/Demucs/HPSS chain
-- `src/vocal_smart_splitter/core/pure_vocal_pause_detector.py` - ✅ Pure vocal pause detector (656 lines) - Multi-dimensional analysis
-- `src/vocal_smart_splitter/core/smart_splitter.py` - ✅ Algorithm dispatcher (636 lines) - PRODUCTION
-- `src/vocal_smart_splitter/core/precise_voice_splitter.py` - ✅ Precise VAD splitter (628 lines) - PRODUCTION
-- `src/vocal_smart_splitter/core/multi_level_validator.py` - ✅ Multi-level validator (552 lines) - PRODUCTION
-- `src/vocal_smart_splitter/core/vocal_pause_detector.py` - ✅ VocalPauseDetectorV2 (533 lines) - Enhanced Silero VAD with statistical dynamic filtering
-- `src/vocal_smart_splitter/core/spectral_aware_classifier.py` - ✅ Spectral-aware classifier (502 lines) - PRODUCTION
-- `src/vocal_smart_splitter/core/dual_path_detector.py` - ✅ Dual-path detector (497 lines) - Cross-validation
-- `src/vocal_smart_splitter/core/bpm_vocal_optimizer.py` - ✅ BPM vocal optimizer (479 lines) - PRODUCTION
-- `src/vocal_smart_splitter/core/vocal_prime_detector.py` - ✅ VocalPrime RMS detector (361 lines) - PRODUCTION with hysteresis + statistical filtering
-- `src/vocal_smart_splitter/core/seamless_splitter.py` - ✅ Main seamless splitting engine (224 lines) - PRODUCTION
+**Core VocalPrime Components (PRODUCTION VERIFIED - Updated 2025-09-11):**
+- `seamless_splitter.py` - ✅ **统一指挥中心引擎** (219 lines) - **CURRENT MAIN ENGINE**
+- `adaptive_vad_enhancer.py` - ✅ BPM-adaptive VAD enhancer (1,364 lines) - PRODUCTION
+- `quality_controller.py` - ✅ Quality control system (1,058 lines) - PRODUCTION
+- `enhanced_vocal_separator.py` - ✅ Enhanced vocal separator (816 lines) - MDX23/Demucs/HPSS chain
+- `pure_vocal_pause_detector.py` - ✅ Pure vocal pause detector (678 lines) - Multi-dimensional analysis
+- `smart_splitter.py` - ⚠️ Legacy algorithm dispatcher (636 lines) - DEPRECATED
+- `precise_voice_splitter.py` - ⚠️ Legacy precise VAD splitter (628 lines) - LEGACY
+- `multi_level_validator.py` - ✅ Multi-level validator (553 lines) - PRODUCTION
+- `vocal_pause_detector.py` - ✅ VocalPauseDetectorV2 (331 lines) - Enhanced Silero VAD
+- `spectral_aware_classifier.py` - ✅ Spectral-aware classifier (503 lines) - PRODUCTION
+- `dual_path_detector.py` - ✅ Dual-path detector (498 lines) - Cross-validation
+- `bpm_vocal_optimizer.py` - ✅ BPM vocal optimizer (480 lines) - PRODUCTION
+- `vocal_prime_detector.py` - ✅ VocalPrime RMS detector (362 lines) - PRODUCTION with hysteresis
 
 **v2.1 VocalPrime Processing Pipeline:**
 1. **Audio Loading** - Direct 44.1kHz audio processing

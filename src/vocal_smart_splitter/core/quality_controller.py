@@ -1018,7 +1018,7 @@ class QualityController:
         
         return t_validated
 
-    def pure_filter_cut_points(self, cut_points, audio_duration, min_interval=2.0, min_segment_duration=0.5):
+    def pure_filter_cut_points(self, cut_points, audio_duration, min_interval=0.5, min_segment_duration=0.5):
         """
         纯粹的切点过滤器：只过滤，不重定位（vocal_prime.md 核心要求）
         

@@ -15,6 +15,7 @@ import soundfile as sf
 from ..utils.config_manager import get_config
 from ..utils.audio_processor import AudioProcessor
 from .vocal_pause_detector import VocalPauseDetectorV2
+from .pure_vocal_pause_detector import PureVocalPauseDetector
 from .quality_controller import QualityController
 from .enhanced_vocal_separator import EnhancedVocalSeparator
 
@@ -29,10 +30,11 @@ class SeamlessSplitter:
     def __init__(self, sample_rate: int = 44100):
         self.sample_rate = sample_rate
         self.audio_processor = AudioProcessor(sample_rate)
-        self.pause_detector = VocalPauseDetectorV2(sample_rate)
+        self.pause_detector = VocalPauseDetectorV2(sample_rate)  # 用于smart_split模式
+        self.pure_vocal_detector = PureVocalPauseDetector(sample_rate)  # 用于v2.1/v2.2模式
         self.quality_controller = QualityController(sample_rate)
         self.separator = EnhancedVocalSeparator(sample_rate)
-        logger.info(f"无缝分割器统一指挥中心初始化完成 (SR: {self.sample_rate})")
+        logger.info(f"无缝分割器统一指挥中心初始化完成 (SR: {self.sample_rate}) - 已加载双检测器")
 
     def split_audio_seamlessly(self, input_path: str, output_dir: str, mode: str = 'v2.2_mdd') -> Dict:
         """
@@ -96,18 +98,32 @@ class SeamlessSplitter:
         vocal_track = separation_result.vocal_track
         logger.info(f"[{mode.upper()}-STEP1] 人声分离完成 - 后端: {separation_result.backend_used}, 质量: {separation_result.separation_confidence:.3f}, 耗时: {separation_time:.1f}s")
         
-        # 3. 关键修复：调用新的双输入接口进行停顿检测
-        logger.info(f"[{mode.upper()}-STEP2] 在[纯人声轨道]上检测，使用[原始轨道]作为音乐背景分析...")
-        vocal_pauses = self.pause_detector.detect_vocal_pauses(
-            detection_target_audio=vocal_track,
-            context_audio=original_audio
+        # 3. 关键修复：使用正确的PureVocalPauseDetector进行停顿检测
+        logger.info(f"[{mode.upper()}-STEP2] 使用PureVocalPauseDetector在[纯人声轨道]上进行多维特征检测...")
+        
+        # 检查是否为v2.2 MDD模式
+        enable_mdd = (mode == 'v2.2_mdd')
+        vocal_pauses = self.pure_vocal_detector.detect_pure_vocal_pauses(
+            vocal_track, 
+            enable_mdd_enhancement=enable_mdd,
+            original_audio=original_audio  # 提供原始音频用于MDD分析
         )
 
         if not vocal_pauses:
             return self._create_single_segment_result(original_audio, input_path, output_dir, "未在纯人声中找到停顿")
 
         # 4. 生成、过滤并分割 (在 vocal_track 上进行最终验证)
-        cut_points_samples = [int(p.cut_point * self.sample_rate) for p in vocal_pauses]
+        # 转换PureVocalPause到样本点
+        cut_points_samples = []
+        for p in vocal_pauses:
+            if hasattr(p, 'cut_point'):
+                cut_points_samples.append(int(p.cut_point * self.sample_rate))
+            else:
+                # 兜底：使用停顿中心
+                center_time = (p.start_time + p.end_time) / 2
+                cut_points_samples.append(int(center_time * self.sample_rate))
+                
+        logger.info(f"[{mode.upper()}-STEP3] 生成{len(cut_points_samples)}个候选分割点")
         final_cut_points = self._finalize_and_filter_cuts(cut_points_samples, vocal_track)
         
         # 使用最终确定的分割点来切割原始音频

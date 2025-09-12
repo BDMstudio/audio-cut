@@ -83,6 +83,7 @@ class PureVocalPauseDetector:
         logger.info(f"纯人声停顿检测器初始化完成 (采样率: {sample_rate}) - 已集成能量谷切点计算")
     
     def detect_pure_vocal_pauses(self, vocal_audio: np.ndarray, 
+                                enable_mdd_enhancement: bool = False,
                                 original_audio: Optional[np.ndarray] = None) -> List[PureVocalPause]:
         """检测纯人声中的停顿
         
@@ -93,19 +94,35 @@ class PureVocalPauseDetector:
         Returns:
             检测到的停顿列表
         """
-        logger.info("开始纯人声停顿检测...")
+        logger.info(f"开始纯人声停顿检测... (MDD增强: {enable_mdd_enhancement})")
         
-        # 1. 提取多维特征
-        features = self._extract_vocal_features(vocal_audio)
-        
-        # 2. 检测候选停顿区域
-        candidate_pauses = self._detect_candidate_pauses(features)
-        
-        # 3. 特征融合分析
-        analyzed_pauses = self._analyze_pause_features(candidate_pauses, features, vocal_audio)
-        
-        # 4. 分类过滤
-        filtered_pauses = self._classify_and_filter(analyzed_pauses)
+        # 🔥 关键修复：启用相对能量谷检测
+        enable_relative_mode = get_config('pure_vocal_detection.enable_relative_energy_mode', False)
+        if enable_relative_mode:
+            logger.info("使用相对能量谷检测模式...")
+            peak_ratio = get_config('pure_vocal_detection.peak_relative_threshold_ratio', 0.1)
+            rms_ratio = get_config('pure_vocal_detection.rms_relative_threshold_ratio', 0.05)
+            
+            # 使用相对能量谷检测
+            filtered_pauses = self._detect_energy_valleys(vocal_audio, peak_ratio, rms_ratio)
+        else:
+            # 原有的多维特征检测流程
+            # 1. 提取多维特征
+            features = self._extract_vocal_features(vocal_audio)
+            
+            # 2. 检测候选停顿区域
+            candidate_pauses = self._detect_candidate_pauses(features)
+            
+            # 3. 特征融合分析
+            analyzed_pauses = self._analyze_pause_features(candidate_pauses, features, vocal_audio)
+            
+            # 4. 分类过滤
+            filtered_pauses = self._classify_and_filter(analyzed_pauses)
+            
+        # 5. MDD增强处理
+        if enable_mdd_enhancement and original_audio is not None:
+            logger.info("应用MDD增强处理...")
+            filtered_pauses = self._apply_mdd_enhancement(filtered_pauses, original_audio)
         
         # 🔥 关键修复：使用VocalPauseDetectorV2计算精确切点
         if filtered_pauses and vocal_audio is not None:
@@ -676,3 +693,195 @@ class PureVocalPauseDetector:
             logger.debug(f"停顿 {i+1}: [{pure_pause.start_time:.3f}s, {pure_pause.end_time:.3f}s] -> 切点 {pure_pause.cut_point:.3f}s ({pure_pause.quality_grade})")
         
         return pure_vocal_pauses
+
+    def _detect_energy_valleys(self, vocal_audio: np.ndarray, peak_ratio: float, rms_ratio: float) -> List[PureVocalPause]:
+        """
+        🔥 相对能量谷检测 - 解决长音频分割不足问题
+        
+        Args:
+            vocal_audio: 纯人声音频
+            peak_ratio: 峰值能量比率阈值
+            rms_ratio: RMS能量比率阈值
+            
+        Returns:
+            检测到的能量谷停顿列表
+        """
+        logger.info(f"🔥 相对能量谷检测: peak_ratio={peak_ratio}, rms_ratio={rms_ratio}")
+        
+        # 1. 计算RMS能量包络
+        frame_length = int(self.sample_rate * 0.025)  # 25ms
+        hop_length = int(self.sample_rate * 0.01)     # 10ms
+        rms_energy = librosa.feature.rms(y=vocal_audio, frame_length=frame_length, hop_length=hop_length)[0]
+        
+        # 2. 计算动态阈值
+        peak_energy = np.max(rms_energy)
+        avg_energy = np.mean(rms_energy)
+        peak_threshold = peak_energy * peak_ratio
+        rms_threshold = avg_energy * rms_ratio
+        
+        # 🔥 关键修复：使用更宽松的阈值(取较小值)
+        energy_threshold = min(peak_threshold, rms_threshold)
+        logger.info(f"峰值能量: {peak_energy:.6f}, 平均能量: {avg_energy:.6f}")
+        logger.info(f"能量谷阈值: {energy_threshold:.6f} (peak:{peak_threshold:.6f}, rms:{rms_threshold:.6f})")
+        
+        # 3. 找到低于阈值的区域
+        low_energy_mask = rms_energy < energy_threshold
+        time_frames = librosa.frames_to_time(np.arange(len(rms_energy)), sr=self.sample_rate, hop_length=hop_length)
+        
+        # 4. 将连续的低能量区域合并
+        pauses = []
+        in_pause = False
+        pause_start = 0.0
+        
+        # 🔥 关键修复：对于能量谷检测，使用更短的最小停顿时长
+        min_pause_duration = 0.2  # 200ms，适合音乐中的短暂停顿
+        
+        for i, (is_low, time) in enumerate(zip(low_energy_mask, time_frames)):
+            if is_low and not in_pause:
+                # 开始新的停顿
+                pause_start = time
+                in_pause = True
+            elif not is_low and in_pause:
+                # 结束当前停顿
+                pause_end = time
+                duration = pause_end - pause_start
+                
+                if duration >= min_pause_duration:
+                    # 计算停顿的平均能量作为置信度
+                    start_frame = max(0, int(pause_start * self.sample_rate / hop_length))
+                    end_frame = min(len(rms_energy), int(pause_end * self.sample_rate / hop_length))
+                    
+                    if start_frame < end_frame:
+                        pause_energy = np.mean(rms_energy[start_frame:end_frame])
+                        confidence = 1.0 - (pause_energy / energy_threshold)  # 越低能量置信度越高
+                        confidence = max(0.1, min(0.95, confidence))
+                        
+                        pause = PureVocalPause(
+                            start_time=pause_start,
+                            end_time=pause_end,
+                            duration=duration,
+                            pause_type='energy_valley',
+                            confidence=confidence,
+                            features={'energy': pause_energy, 'threshold': energy_threshold},
+                            cut_point=(pause_start + pause_end) / 2
+                        )
+                        pauses.append(pause)
+                        logger.debug(f"能量谷停顿: {pause_start:.3f}-{pause_end:.3f}s (时长:{duration:.3f}s, 置信度:{confidence:.3f})")
+                
+                in_pause = False
+        
+        # 处理文件末尾的停顿
+        if in_pause:
+            pause_end = time_frames[-1]
+            duration = pause_end - pause_start
+            if duration >= min_pause_duration:
+                confidence = 0.8  # 末尾停顿给予较高置信度
+                pause = PureVocalPause(
+                    start_time=pause_start,
+                    end_time=pause_end,
+                    duration=duration,
+                    pause_type='energy_valley',
+                    confidence=confidence,
+                    features={'energy': 0.0, 'threshold': energy_threshold},
+                    cut_point=(pause_start + pause_end) / 2
+                )
+                pauses.append(pause)
+        
+        logger.info(f"🔥 能量谷检测完成: 发现{len(pauses)}个能量谷停顿")
+        return pauses
+
+    def _apply_mdd_enhancement(self, pauses: List[PureVocalPause], original_audio: np.ndarray) -> List[PureVocalPause]:
+        """
+        🔥 MDD (音乐动态密度) 增强处理
+        
+        Args:
+            pauses: 原始停顿列表
+            original_audio: 原始混音音频
+            
+        Returns:
+            MDD增强后的停顿列表
+        """
+        logger.info("🔥 开始MDD增强处理...")
+        
+        if not pauses:
+            return pauses
+            
+        # 1. 计算音乐动态密度
+        frame_length = int(self.sample_rate * 0.1)  # 100ms窗口
+        hop_length = int(self.sample_rate * 0.05)   # 50ms跳跃
+        
+        # RMS能量密度
+        rms_energy = librosa.feature.rms(y=original_audio, frame_length=frame_length, hop_length=hop_length)[0]
+        
+        # 频谱平坦度
+        spectral_flatness = librosa.feature.spectral_flatness(y=original_audio, hop_length=hop_length)[0]
+        
+        # 音符起始检测
+        onset_frames = librosa.onset.onset_detect(y=original_audio, sr=self.sample_rate, hop_length=hop_length)
+        onset_strength = librosa.onset.onset_strength(y=original_audio, sr=self.sample_rate, hop_length=hop_length)
+        
+        # 时间轴
+        time_frames = librosa.frames_to_time(np.arange(len(rms_energy)), sr=self.sample_rate, hop_length=hop_length)
+        
+        # 2. 计算MDD指标权重
+        energy_weight = get_config('musical_dynamic_density.energy_weight', 0.7)
+        spectral_weight = get_config('musical_dynamic_density.spectral_weight', 0.3)
+        onset_weight = get_config('musical_dynamic_density.onset_weight', 0.2)
+        
+        # 3. 为每个停顿计算MDD评分
+        enhanced_pauses = []
+        threshold_multiplier = get_config('musical_dynamic_density.threshold_multiplier', 0.3)
+        max_multiplier = get_config('musical_dynamic_density.max_multiplier', 1.4)
+        min_multiplier = get_config('musical_dynamic_density.min_multiplier', 0.6)
+        
+        for pause in pauses:
+            # 找到停顿对应的时间窗口
+            start_frame = np.argmin(np.abs(time_frames - pause.start_time))
+            end_frame = np.argmin(np.abs(time_frames - pause.end_time))
+            
+            if start_frame >= end_frame or start_frame >= len(rms_energy):
+                enhanced_pauses.append(pause)
+                continue
+                
+            # 计算停顿周围的MDD
+            window_start = max(0, start_frame - 10)  # 扩展窗口
+            window_end = min(len(rms_energy), end_frame + 10)
+            
+            # RMS能量密度
+            local_rms = np.mean(rms_energy[window_start:window_end])
+            energy_score = local_rms / np.max(rms_energy) if np.max(rms_energy) > 0 else 0.0
+            
+            # 频谱平坦度 (越平坦密度越低)
+            local_flatness = np.mean(spectral_flatness[window_start:window_end])
+            spectral_score = 1.0 - local_flatness  # 反转，密度越高分数越高
+            
+            # 音符起始密度
+            onset_count = np.sum((onset_frames >= window_start) & (onset_frames < window_end))
+            onset_score = min(1.0, onset_count / 5.0)  # 归一化到0-1
+            
+            # 综合MDD评分
+            mdd_score = (energy_score * energy_weight + 
+                        spectral_score * spectral_weight + 
+                        onset_score * onset_weight)
+            
+            # 根据MDD调整停顿置信度
+            confidence_multiplier = 1.0 + (mdd_score * threshold_multiplier)
+            confidence_multiplier = max(min_multiplier, min(max_multiplier, confidence_multiplier))
+            
+            # 创建增强的停顿
+            enhanced_pause = PureVocalPause(
+                start_time=pause.start_time,
+                end_time=pause.end_time,
+                duration=pause.duration,
+                pause_type=f"{pause.pause_type}_mdd",
+                confidence=pause.confidence * confidence_multiplier,
+                features={**pause.features, 'mdd_score': mdd_score, 'confidence_multiplier': confidence_multiplier},
+                cut_point=pause.cut_point,
+                quality_grade=pause.quality_grade
+            )
+            enhanced_pauses.append(enhanced_pause)
+            
+            logger.debug(f"MDD增强 - 停顿{pause.start_time:.2f}s: MDD={mdd_score:.3f}, 置信度倍数={confidence_multiplier:.3f}")
+        
+        logger.info(f"🔥 MDD增强完成: {len(enhanced_pauses)}个停顿已优化")
+        return enhanced_pauses

@@ -41,64 +41,62 @@
 ```
 audio-cut/
 ├── input/                    # 输入音频文件目录
-│   └── 01.mp3               # 待分割的音频文件
+│   └── *.mp3/wav/flac       # 待分割的音频文件
 ├── output/                   # 输出目录（按时间戳命名）
 │   └── test_YYYYMMDD_HHMMSS/ # 每次测试的输出文件夹
-├── src/                      # 源代码目录
+├── src/                      # 源代码目录 (23个文件)
 │   └── vocal_smart_splitter/ # 核心模块
-│       ├── core/            # 核心算法模块 (11,239行)
-│       │   ├── adaptive_vad_enhancer.py        # BMP自适应VAD增强器 (1,363行) ✅
-│       │   ├── quality_controller.py           # 质量控制系统 (1,058行) ✅
-│       │   ├── seamless_splitter.py            # 无缝分割主引擎 (979行) ✅
-│       │   ├── enhanced_vocal_separator.py     # MDX23/Demucs增强分离器 (815行) ✅
-│       │   ├── pure_vocal_pause_detector.py    # 纯人声停顿检测器 (656行) ✅
-│       │   ├── smart_splitter.py               # 智能分割调度器 (636行) ✅
-│       │   ├── precise_voice_splitter.py       # 精确语音分割器 (628行) ✅
-│       │   ├── breath_detector.py              # 呼吸检测器 (562行) ✅
+│       ├── core/            # 核心算法模块 (19个文件, ~11,000行)
+│       │   ├── seamless_splitter.py            # 🎯 统一指挥中心引擎 (235行) ✅
+│       │   ├── adaptive_vad_enhancer.py        # BPM自适应VAD增强器 (1,364行) ✅
+│       │   ├── quality_controller.py           # 质量控制系统 (1,059行) ✅
+│       │   ├── enhanced_vocal_separator.py     # MDX23/Demucs增强分离器 (816行) ✅
+│       │   ├── pure_vocal_pause_detector.py    # 纯人声停顿检测器 (678行) ✅
+│       │   ├── smart_splitter.py               # 智能分割调度器 (636行) ⚠️ LEGACY
+│       │   ├── precise_voice_splitter.py       # 精确语音分割器 (628行) ⚠️ LEGACY
+│       │   ├── breath_detector.py              # 呼吸检测器 (562行) ⚠️ LEGACY
 │       │   ├── multi_level_validator.py        # 多级验证器 (552行) ✅
-│       │   ├── vocal_pause_detector.py         # 人声停顿检测器V2 (542行) ✅
+│       │   ├── vocal_pause_detector.py         # 人声停顿检测器V2 (331行) ✅
 │       │   ├── content_analyzer.py             # 内容分析器 (515行) ✅
 │       │   ├── spectral_aware_classifier.py    # 频谱感知分类器 (502行) ✅
 │       │   ├── dual_path_detector.py           # 双路径验证器 (497行) ✅
 │       │   ├── bpm_vocal_optimizer.py          # BPM人声优化器 (479行) ✅
 │       │   ├── vocal_separator.py              # 基础人声分离器 (455行) ✅
-│       │   ├── vocal_prime_detector.py         # VocalPrime RMS检测器 (361行) ✅
+│       │   ├── vocal_prime_detector.py         # VocalPrime RMS检测器 (362行) ✅
 │       │   ├── advanced_vad.py                 # 高级VAD检测 (319行) ✅
 │       │   └── pause_priority_splitter.py      # 停顿优先分割器 (318行) ✅
-│       ├── utils/           # 工具模块
-│       │   ├── adaptive_parameter_calculator.py # 🆕 BPM参数计算器 ✅
+│       ├── utils/           # 工具模块 (4个文件)
+│       │   ├── adaptive_parameter_calculator.py # BPM参数计算器 ✅
 │       │   ├── config_manager.py     # 配置管理 ✅
 │       │   ├── audio_processor.py    # 音频处理 ✅
 │       │   └── feature_extractor.py  # 特征提取 ✅
-│       ├── config.yaml      # 主配置文件 (v2.0.0 纯人声检测增强) ✅
-│       └── main.py         # 主程序入口 ✅
-├── tests/                   # 测试目录
-│   ├── unit/               # 单元测试 ✅
+│       ├── config.yaml      # 主配置文件 (v2.1.1 统计学动态裁决) ✅
+│       └── main.py         # 传统程序入口 ✅
+├── tests/                   # 测试目录 (12个测试文件)
+│   ├── unit/               # 单元测试 (7个文件) ✅
 │   │   ├── test_valley_cut.py          # 谷值切割测试 ✅
-│   │   ├── test_bpm_guard.py           # BPM守护测试 ✅
-│   │   └── test_defaults_guard.py      # 默认值守护测试 ✅
-│   ├── integration/        # 集成测试 ✅ 
+│   │   ├── test_bmp_guard.py           # BPM守护测试 ✅
+│   │   ├── test_defaults_guard.py      # 默认值守护测试 ✅
+│   │   └── test_*.py                   # 其他单元测试 ✅
+│   ├── integration/        # 集成测试 (3个文件) ✅
 │   │   └── test_pipeline_v2_valley.py  # 管道集成测试 ✅
-│   ├── contracts/          # 契约测试 ✅
+│   ├── contracts/          # 契约测试 (1个文件) ✅
 │   │   └── test_valley_contract.py     # 谷值切割契约 ✅
-│   ├── performance/        # 性能测试 ✅
+│   ├── performance/        # 性能测试 (1个文件) ✅
 │   │   └── test_valley_perf.py         # 性能基准测试 ✅
 │   ├── test_seamless_reconstruction.py     # 无缝重构验证测试 (核心) ✅
-│   └── test_pure_vocal_detection_v2.py     # 🆕 纯人声检测v2.0测试 ✅
+│   └── test_pure_vocal_detection_v2.py     # 纯人声检测v2.0测试 ✅
 ├── config/                  # 配置文件目录
 │   └── default.yaml        # 默认配置
 ├── MVSEP-MDX23-music-separation-model/ # MDX23模型项目
-├── quick_start.py          # 🚀 一键快速启动 (737行) ✅
+├── quick_start.py          # 🚀 一键快速启动 (131行) ✅
 ├── run_splitter.py         # 完整功能运行脚本 (231行) ✅
-├── gpu_config.py           # GPU配置工具
 ├── requirements.txt        # 依赖包清单
+├── PROJECT_CODE_INDEX_2025_09_11.md   # 📋 详细代码索引文档 (NEW)
 ├── README.md              # 项目说明文档
-├── CLAUDE.md              # 开发指南文档
 ├── development.md         # 技术路线/架构/模块
 ├── todo.md                # 开发进展与任务清单
-├── MDX23_SETUP.md         # MDX23模型设置指南
-├── vocal_prime.md         # VocalPrime技术方案
-└── PRD.md                 # 产品需求文档
+└── 其他文档...            # 技术规范和开发记录
 ```
 
 ## 🚀 Quick Start
@@ -563,26 +561,30 @@ python -c "import demucs.pretrained; print('Demucs OK')"
 
 ## 📈 项目状态
 
-**当前版本**: v2.1.1 (VocalPrime纯人声域检测+统计学动态裁决版本) - **生产就绪** 🚀
+**当前版本**: v2.2.0 (MDD音乐动态密度增强版) - **🚀 生产就绪**
 
 ### ✅ **核心系统完成度 (100%)**
+- ✅ **统一指挥中心**: SeamlessSplitter作为唯一引擎，支持4种处理模式
+- ✅ **🆕 MDD音乐动态密度技术**: 主副歌智能识别+动态切割策略+三维指标分析
 - ✅ **v2.1 VocalPrime检测器**: RMS能量包络+动态噪声地板+滞回检测+平台验证+统计学动态裁决
 - ✅ **v2.0 纯人声检测系统**: 多维特征+频谱分类+BPM优化+五级验证完整流水线
-- ✅ **双路检测系统**: Silero VAD主路 + MDX23/Demucs增强验证
+- ✅ **增强型人声分离器**: MDX23/Demucs v4/HPSS三级降级策略
 - ✅ **无缝拼接技术**: 0.00e+00精度差异，完美重构保证
-- ✅ **RTX 5060 Ti完全兼容**: PyTorch 2.8.0适配，16GB VRAM优化
-- ✅ **四种音乐风格**: 慢歌/中速/快歌/极快自动分类和参数适配
-- ✅ **智能降级机制**: MDX23 → Demucs v4 → HPSS自适应选择
-- ✅ **质量控制系统**: 置信度评分 + 节拍对齐双重验证
+- ✅ **BPM自适应VAD增强器**: 编曲复杂度感知，解决前后半段差异问题
+- ✅ **质量控制系统**: 多级验证 + 置信度评分 + 边界完整性保护
+- ✅ **完整测试体系**: 12个测试文件，涵盖unit/integration/contracts/performance
 
 ### 🎯 **技术指标达成**
 - 🎵 **分割精度**: 样本级精度 (0.00e+00重构误差)
 - 🧠 **检测准确率**: 94.1%平均置信度 → v2.1统计学裁决系统显著提升快歌准确率
-- ⚡ **处理速度**: CPU模式16s，GPU模式45s
+- ⚡ **处理速度**: CPU模式16s，GPU模式45s (60秒音频)
 - 💎 **音质保持**: WAV/FLAC无损输出，零处理保真
 - 🎶 **BPM范围**: 支持50-200 BPM全频段音乐
+- 📊 **代码规模**: 19个核心模块，~11,000行代码，生产级质量
 
 ### 📋 **系统架构演进**
+- **v2.2.0架构**: 原始音频→人声分离→基础停顿检测→**MDD增强处理**→主副歌识别→动态阈值调整→精确分割
+- **v2.1.1架构**: 原始音频→人声分离→统计学动态裁决→VocalPrime RMS检测→零交叉对齐→精确分割
 - **v2.1架构**: 原始音频→人声分离→VocalPrime RMS检测→静音平台验证→零交叉对齐→精确分割
 - **v2.0架构**: 原始音频→人声分离→四维特征分析→频谱分类→BPM优化→五级验证→样本分割
 - **v1.2架构**: 原始音频→BPM分析→双路检测(Silero VAD + 可选分离增强)→交叉验证→节拍对齐→精确分割
