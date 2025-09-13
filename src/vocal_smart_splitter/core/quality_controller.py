@@ -879,7 +879,7 @@ class QualityController:
 
     def enforce_quiet_cut(self, x_mono, sr, t_sec,
                           win_ms=80, guard_db=3.0, floor_pct=0.05,
-                          search_right_ms=350):
+                          search_right_ms=400):
         """
         技术：局部RMS + 动态噪声地板。若 t 附近不够安静，只向右搜索第一个"够安静"的谷底。
         - win_ms: 评估窗口

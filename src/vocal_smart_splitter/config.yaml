@@ -23,8 +23,21 @@ pure_vocal_detection:
 
   # [v2.6 新增] 相对能量谷检测
   enable_relative_energy_mode: true   # 启用相对能量模式
-  peak_relative_threshold_ratio: 0.08  # 能量谷阈值 = 峰值能量 * 8% (很宽松)
-  rms_relative_threshold_ratio: 0.05   # 能量谷阈值 = 平均能量 * 20% (作为辅助)
+  peak_relative_threshold_ratio: 0.16  # 峰值比例基线（建议 0.16–0.22）
+  rms_relative_threshold_ratio: 0.20   # 均值比例基线（建议 0.20–0.26）
+  relative_threshold_adaptation:
+    enable: true
+    clamp_min: 0.75
+    clamp_max: 1.25
+    bpm:
+      slow_multiplier: 1.10    # 慢歌更宽松，易找到谷
+      medium_multiplier: 1.00
+      fast_multiplier: 0.60    # 快歌更严格，抑制过切
+    mdd:
+      base: 1.0
+      gain: 0.2                # 高MDD → 降低倍率（更严格）
+  peak_relative_threshold_ratio: 0.22  # 能量谷阈值 = 峰值能量 * 8% (很宽松)
+  rms_relative_threshold_ratio: 0.26   # 能量谷阈值 = 平均能量 * 20% (作为辅助)
 
   # 检测阈值
   # energy_threshold_db: -40        # 能量阈值(dB)
@@ -209,7 +222,7 @@ quality_control:
 
   # 🔄 以下参数将被BPM自适应系统动态覆盖 (v1.2.0+)
   min_pause_at_split: 1.0                # ❌ 静态值，将被pause_duration_beats动态计算覆盖
-  min_split_gap: 0.5                     # 进一步降低最小切割间隔，允许更密集的分割
+  min_split_gap: 1.0                     # 最小切点间隔（秒），稳健默认，避免过密切割
 
   # ✅ 以下参数保持静态配置 (与音乐特征无关)
   min_vocal_content_ratio: 0.5           # 人声内容比例要求
@@ -228,8 +241,19 @@ quality_control:
   normalize_audio: false
   remove_click_noise: false
   smooth_transitions: false
+  # 旧键（兼容保留）：min/max_segment_duration
   min_segment_duration: null
   max_segment_duration: null
+  # 新键（终筛V2使用）：统一时长治理
+  segment_min_duration: 4.0              # 片段最小时长（秒）
+  segment_max_duration: 20.0             # 片段最长时长（秒）
+
+  # 安静守卫参数（可覆盖默认），用于零交叉对齐后的右推校正
+  enforce_quiet_cut:
+    win_ms: 80
+    guard_db: 3.0
+    search_right_ms: 350
+    floor_percentile: 5                  # 支持 5 或 0.05 两种写法
 
 # ============================================================================
 # BPM 自适应无缝分割 (v1.2.0 - 完全动态参数驱动)

@@ -102,6 +102,58 @@ class PureVocalPauseDetector:
             logger.info("使用相对能量谷检测模式...")
             peak_ratio = get_config('pure_vocal_detection.peak_relative_threshold_ratio', 0.1)
             rms_ratio = get_config('pure_vocal_detection.rms_relative_threshold_ratio', 0.05)
+            # BPM/MDD 自适应倍率（在相对能量模式下启用）
+            if get_config('pure_vocal_detection.relative_threshold_adaptation.enable', True):
+                ref_audio = original_audio if original_audio is not None else vocal_audio
+                try:
+                    tempo_est, _ = librosa.beat.beat_track(y=ref_audio, sr=self.sample_rate)
+                    # 兼容 ndarray/标量，统一为 float
+                    tempo = float(np.squeeze(np.asarray(tempo_est))) if tempo_est is not None else 0.0
+                except Exception:
+                    tempo = 0.0
+                bpm_cfg = get_config('vocal_pause_splitting.bpm_adaptive_settings', {})
+                slow_thr = bpm_cfg.get('slow_bpm_threshold', 80)
+                fast_thr = bpm_cfg.get('fast_bpm_threshold', 120)
+                bpm_mul_slow = get_config('pure_vocal_detection.relative_threshold_adaptation.bpm.slow_multiplier', 1.10)
+                bpm_mul_med = get_config('pure_vocal_detection.relative_threshold_adaptation.bpm.medium_multiplier', 1.00)
+                bpm_mul_fast = get_config('pure_vocal_detection.relative_threshold_adaptation.bpm.fast_multiplier', 0.85)
+                if tempo and tempo > 0:
+                    if tempo < slow_thr:
+                        mul_bpm = bpm_mul_slow; bpm_tag = 'slow'
+                    elif tempo > fast_thr:
+                        mul_bpm = bpm_mul_fast; bpm_tag = 'fast'
+                    else:
+                        mul_bpm = bpm_mul_med; bpm_tag = 'medium'
+                else:
+                    mul_bpm = bpm_mul_med; bpm_tag = 'unknown'
+
+                # 估算全曲 MDD（简化版）
+                def _mdd_score_simple(x, sr):
+                    try:
+                        rms = librosa.feature.rms(y=x, hop_length=512)[0]
+                        flat = librosa.feature.spectral_flatness(y=x)[0]
+                        onset_env = librosa.onset.onset_strength(y=x, sr=sr, hop_length=512)
+                        onsets = librosa.onset.onset_detect(onset_envelope=onset_env, sr=sr, hop_length=512)
+                        dur = max(0.1, len(x)/sr)
+                        onset_rate = len(onsets)/dur
+                        def nz(v):
+                            v = np.asarray(v); q10, q90 = np.quantile(v,0.1), np.quantile(v,0.9)
+                            if q90-q10 < 1e-9: return 0.0
+                            return float(np.clip((np.mean(v)-q10)/(q90-q10), 0, 1))
+                        rms_s, flat_s = nz(rms), nz(flat)
+                        onset_s = float(np.clip(onset_rate/10.0, 0, 1))
+                        return float(np.clip(0.5*rms_s + 0.3*flat_s + 0.2*onset_s, 0, 1))
+                    except Exception:
+                        return 0.5
+                mdd_s = _mdd_score_simple(ref_audio, self.sample_rate)
+                mdd_base = get_config('pure_vocal_detection.relative_threshold_adaptation.mdd.base', 1.0)
+                mdd_gain = get_config('pure_vocal_detection.relative_threshold_adaptation.mdd.gain', 0.2)
+                mul_mdd = mdd_base + (0.1 - mdd_gain*mdd_s)
+                clamp_min = get_config('pure_vocal_detection.relative_threshold_adaptation.clamp_min', 0.75)
+                clamp_max = get_config('pure_vocal_detection.relative_threshold_adaptation.clamp_max', 1.25)
+                mul = float(np.clip(mul_bpm*mul_mdd, clamp_min, clamp_max))
+                peak_ratio *= mul; rms_ratio *= mul
+                logger.info(f"相对阈值自适应：BPM={tempo:.1f}({bpm_tag}), MDD={mdd_s:.2f}, mul={mul:.2f} → peak={peak_ratio:.3f}, rms={rms_ratio:.3f}")
             
             # 使用相对能量谷检测
             filtered_pauses = self._detect_energy_valleys(vocal_audio, peak_ratio, rms_ratio)
