@@ -323,6 +323,206 @@ class SeamlessSplitter:
         boundaries: List[int] = [0] + [int(t * sr) for t in filtered_times] + [len(audio_for_split)]
         boundaries = sorted(set(boundaries))
         logger.info(f"[FinalizeV2] 初始边界数: {len(boundaries)}")
+        # VPP一次判定：仅做“合并短段”，不再做任何二次插点/强拆，避免破坏首次优选切点
+        seg_min = float(get_config('quality_control.segment_min_duration', 4.0))
+        changed_local = True
+        while changed_local and len(boundaries) > 2:
+            changed_local = False
+            durs_local = [(boundaries[i+1]-boundaries[i]) / sr for i in range(len(boundaries)-1)]
+            for i, d in enumerate(durs_local):
+                if d < seg_min:
+                    rm_idx = i+1 if i+1 < len(boundaries)-1 else i
+                    logger.info(f"[FinalizeV2] 合并短段: 移除边界索引 {rm_idx}，片段时长 {d:.3f}s < {seg_min:.3f}s")
+                    del boundaries[rm_idx]
+                    changed_local = True
+                    break
+        logger.info(f"[FinalizeV2] 最终边界数: {len(boundaries)}")
+        return boundaries
+
+        # 新治理策略：
+        # 1) 仅使用首次高质量能量谷作为切点；
+        # 2) 合并短段（< segment_min_duration）；
+        # 3) 对超长段（> segment_max_duration）在该段内做“二次能量谷检测”，再合并一次短段；
+        seg_min = float(get_config('quality_control.segment_min_duration', 4.0))
+        seg_max = float(get_config('quality_control.segment_max_duration', 18.0))
+        min_gap_s = float(get_config('quality_control.min_split_gap', 1.0))
+        min_gap_samples = max(1, int(min_gap_s * sr))
+
+        def _merge_short(bounds: List[int]) -> List[int]:
+            changed_local = True
+            while changed_local and len(bounds) > 2:
+                changed_local = False
+                durs_local = [(bounds[i+1]-bounds[i]) / sr for i in range(len(bounds)-1)]
+                for i, d in enumerate(durs_local):
+                    if d < seg_min:
+                        rm_idx = i+1 if i+1 < len(bounds)-1 else i
+                        logger.info(f"[FinalizeV2] 合并短段: 移除边界索引 {rm_idx}，片段时长 {d:.3f}s < {seg_min:.3f}s")
+                        del bounds[rm_idx]
+                        changed_local = True
+                        break
+            return bounds
+
+        def _second_valley_for_long(bounds: List[int]) -> List[int]:
+            new_bounds = list(bounds)
+            for i in range(len(bounds)-1):
+                start = bounds[i]
+                end = bounds[i+1]
+                span_s = (end - start) / sr
+                if span_s > seg_max:
+                    n_add = int(np.floor(span_s / seg_max))
+                    if n_add <= 0:
+                        continue
+                    step = span_s / (n_add + 1)
+                    for k in range(1, n_add+1):
+                        t_candidate = (start / sr) + step * k
+                        valley_idx = None
+                        try:
+                            local_rms_ms = int(get_config('vocal_pause_splitting.local_rms_window_ms', 25))
+                            guard_ms = int(get_config('vocal_pause_splitting.lookahead_guard_ms', 120))
+                            floor_pct = float(get_config('vocal_pause_splitting.silence_floor_percentile', 5))
+                            valley_idx = self.pause_detector._select_valley_cut_point(
+                                x_guard, start, end, sr, local_rms_ms, guard_ms, floor_pct
+                            )
+                        except Exception:
+                            valley_idx = None
+                        if valley_idx is None:
+                            t_adj = _fallback_local_min(t_candidate)
+                            valley_idx = int(round(t_adj * sr))
+                        lo = start + min_gap_samples
+                        hi = end - min_gap_samples
+                        if hi <= lo:
+                            logger.warning(f"[FinalizeV2] 长段过窄无法插点 [{start},{end}]，跳过")
+                            continue
+                        valley_idx = int(np.clip(valley_idx, lo, hi))
+                        if any(abs(valley_idx - bb) < min_gap_samples for bb in (start, end)):
+                            valley_idx = int(np.clip((start + end)//2, lo, hi))
+                        new_bounds.append(valley_idx)
+                        logger.info(f"[FinalizeV2] 二次检测切点: 区间[{i},{i+1}] 追加 valley@{valley_idx/sr:.3f}s (span={span_s:.3f}s)")
+            # 去重与样本间隔清理
+            new_bounds = sorted(set(new_bounds))
+            cleaned = [new_bounds[0]]
+            for b in new_bounds[1:]:
+                if b - cleaned[-1] >= min_gap_samples:
+                    cleaned.append(b)
+                else:
+                    logger.info(f"[FinalizeV2] 移除过近边界(二次): prev={cleaned[-1]} this={b}")
+            if cleaned[-1] != new_bounds[-1]:
+                if new_bounds[-1] - cleaned[-1] < min_gap_samples:
+                    if len(cleaned) >= 2:
+                        cleaned[-1] = new_bounds[-1]
+                    else:
+                        cleaned.append(new_bounds[-1])
+                else:
+                    cleaned.append(new_bounds[-1])
+            return cleaned
+
+        # 迭代版二次谷值：
+        def _second_valley_iterative(bounds: List[int], max_passes: int = 3) -> List[int]:
+            cur = list(bounds)
+            # 记录第一轮的超长区间（样本坐标），后续仅对这些区间再做2轮
+            def _get_long_spans(bds: List[int]) -> List[Tuple[int, int]]:
+                out = []
+                for ii in range(len(bds)-1):
+                    st, ed = bds[ii], bds[ii+1]
+                    if (ed - st) / sr > seg_max:
+                        out.append((st, ed))
+                return out
+
+            initial_long_spans = _get_long_spans(cur)
+
+            def _in_initial_long(st: int, ed: int) -> bool:
+                for a, b in initial_long_spans:
+                    if st >= a and ed <= b:
+                        return True
+                return False
+
+            passes = 0
+            while passes < max_passes:
+                passes += 1
+                added = False
+                new_bounds = list(cur)
+                for ii in range(len(cur)-1):
+                    start, end = cur[ii], cur[ii+1]
+                    span_s = (end - start) / sr
+                    if span_s <= seg_max:
+                        continue
+                    # 仅对第一轮发现的超长区间在后续轮次继续处理
+                    if passes > 1 and not _in_initial_long(start, end):
+                        continue
+                    # 使用 ceil 方案，严格收敛到 seg_max
+                    n_add = int(np.ceil(span_s / seg_max)) - 1
+                    if n_add <= 0:
+                        continue
+                    step = span_s / (n_add + 1)
+                    for k in range(1, n_add + 1):
+                        t_candidate = (start / sr) + step * k
+                        valley_idx = None
+                        try:
+                            local_rms_ms = int(get_config('vocal_pause_splitting.local_rms_window_ms', 25))
+                            guard_ms = int(get_config('vocal_pause_splitting.lookahead_guard_ms', 120))
+                            floor_pct = float(get_config('vocal_pause_splitting.silence_floor_percentile', 5))
+                            valley_idx = self.pause_detector._select_valley_cut_point(
+                                x_guard, start, end, sr, local_rms_ms, guard_ms, floor_pct
+                            )
+                        except Exception:
+                            valley_idx = None
+                        if valley_idx is None:
+                            t_adj = _fallback_local_min(t_candidate)
+                            valley_idx = int(round(t_adj * sr))
+                        # 间隔与范围保护
+                        lo = start + min_gap_samples
+                        hi = end - min_gap_samples
+                        if hi <= lo:
+                            logger.warning(f"[FinalizeV2] 长段过窄无法插点 [{start},{end}]，跳过")
+                            continue
+                        valley_idx = int(np.clip(valley_idx, lo, hi))
+                        if any(abs(valley_idx - bb) < min_gap_samples for bb in (start, end)):
+                            valley_idx = int(np.clip((start + end)//2, lo, hi))
+                        new_bounds.append(valley_idx)
+                        added = True
+                        logger.info(f"[FinalizeV2] 二次检测切点(p#{passes}): 区间[{ii},{ii+1}] 追加 valley@{valley_idx/sr:.3f}s (span={span_s:.3f}s)")
+                # 去重与间隔清理
+                new_bounds = sorted(set(new_bounds))
+                cleaned = [new_bounds[0]]
+                for b in new_bounds[1:]:
+                    if b - cleaned[-1] >= min_gap_samples:
+                        cleaned.append(b)
+                    else:
+                        logger.info(f"[FinalizeV2] 移除过近边界(二次p#{passes}): prev={cleaned[-1]} this={b}")
+                if cleaned[-1] != new_bounds[-1]:
+                    if new_bounds[-1] - cleaned[-1] < min_gap_samples:
+                        if len(cleaned) >= 2:
+                            cleaned[-1] = new_bounds[-1]
+                        else:
+                            cleaned.append(new_bounds[-1])
+                    else:
+                        cleaned.append(new_bounds[-1])
+                cur = cleaned
+                # 检查是否已满足上限
+                max_span = 0.0
+                for ii in range(len(cur)-1):
+                    span_s = (cur[ii+1] - cur[ii]) / sr
+                    if span_s > max_span:
+                        max_span = span_s
+                if max_span <= seg_max:
+                    break
+                # 若本轮没有新增，提前退出
+                if not added:
+                    break
+                # 仅对第一轮标记的超长片段继续后续轮次
+                if passes == 1:
+                    initial_long_spans = _get_long_spans(cur)
+            return cur
+
+        # 1) 合并短段（尊重首次能量谷切点，不新增切点）
+        boundaries = _merge_short(boundaries)
+        # 2) 迭代对超长段做局部二次谷值檢测（最多3轮，且仅对第一轮判定的超长区间再做后续2轮）
+        boundaries = _second_valley_iterative(boundaries, max_passes=3)
+        # 3) 再合并一次短段，确保满足 segment_min_duration
+        boundaries = _merge_short(boundaries)
+
+        logger.info(f"[FinalizeV2] 最终边界数: {len(boundaries)}")
+        return boundaries
 
         # 长短段治理
         seg_min = get_config('quality_control.segment_min_duration', 4.0)
@@ -410,6 +610,19 @@ class SeamlessSplitter:
             else:
                 cleaned.append(boundaries[-1])
         boundaries = cleaned
+        # 最终一次短段合并：确保所有片段长度≥segment_min_duration
+        changed = True
+        seg_min = float(get_config('quality_control.segment_min_duration', 4.0))
+        while changed and len(boundaries) > 2:
+            changed = False
+            durs = [(boundaries[i+1]-boundaries[i]) / sr for i in range(len(boundaries)-1)]
+            for i, d in enumerate(durs):
+                if d < seg_min and len(boundaries) > 2:
+                    rm_idx = i+1 if i+1 < len(boundaries)-1 else i
+                    logger.info(f"[FinalizeV2] 合并短段(最终): 移除边界索引 {rm_idx}，片段时长 {d:.3f}s < {seg_min:.3f}s")
+                    del boundaries[rm_idx]
+                    changed = True
+                    break
         if insert_pass >= max_insert_pass:
             logger.warning(f"[FinalizeV2] 强拆循环达到上限 {max_insert_pass} 次，提前退出")
         logger.info(f"[FinalizeV2] 最终边界数: {len(boundaries)}")

@@ -19,18 +19,20 @@ pure_vocal_detection:
 
   # Relative energy valleys (robust defaults)
   enable_relative_energy_mode: true
-  peak_relative_threshold_ratio: 0.18   # recommended 0.16–0.22
-  rms_relative_threshold_ratio: 0.22    # recommended 0.20–0.26
+  # 提高相对阈值以产生更充足且更“长”的能量谷候选，避免遗留超长段
+  peak_relative_threshold_ratio: 0.26   # recommended 0.16–0.22
+  rms_relative_threshold_ratio: 0.32    # recommended 0.20–0.26
 
   # BPM/MDD-driven adaptation of relative thresholds
   relative_threshold_adaptation:
     enable: true
-    clamp_min: 0.75
-    clamp_max: 1.25
+    # 收窄自适应振幅，避免把阈值压得过低导致候选过少
+    clamp_min: 0.85
+    clamp_max: 1.15
     bpm:
-      slow_multiplier: 1.10
+      slow_multiplier: 1.08
       medium_multiplier: 1.00
-      fast_multiplier: 0.85
+      fast_multiplier: 0.92
     mdd:
       base: 1.0
       gain: 0.2
@@ -50,19 +52,21 @@ pure_vocal_detection:
     classify_thresholds:
       slow: { mpd: 0.60, p95: 1.20, rr: 0.35 }
       fast: { mpd: 0.25, pr: 18, rr: 0.15 }
-    multipliers: { slow: 1.10, medium: 1.00, fast: 0.85 }
+    # 轻度倍率，配合收窄后的clamp，避免阈值过度起伏
+    multipliers: { slow: 1.08, medium: 1.00, fast: 0.92 }
     clamp_min: 0.75
     clamp_max: 1.25
 
   # Candidate scoring and NMS preferences
   valley_scoring:
-    w_len: 0.6
-    w_quiet: 0.4
+    # 强化“长谷优先”，保持安静度为次要因子
+    w_len: 0.7
+    w_quiet: 0.3
     w_flat: 0.1
     use_weighted_nms: true
-    merge_close_ms: 80            # 合并间隔≤此阈值的小停顿（默认80ms）
+    merge_close_ms: 300           # 合并更近的碎谷，提升候选质量
     max_raw_candidates: 1200      # 能量谷原始候选上限，防爆炸
-    max_kept_after_nms: 150       # NMS后最多保留的切点数，避免后续计算爆炸
+    max_kept_after_nms: 200       # 适度上调，确保有足够一轮切点供选择
 
 spectral_classifier:
   breath_threshold: 0.3
@@ -96,6 +100,7 @@ quality_control:
   validate_split_points: true
   # adaptive (may be overridden by BPM layer if present)
   min_pause_at_split: 1.0
+  # 降低最小切点间隔，让一次检测能保留更多“足够分散”的切点
   min_split_gap: 1.0
   # static constraints
   min_vocal_content_ratio: 0.4
@@ -107,20 +112,22 @@ quality_control:
   remove_click_noise: false
   smooth_transitions: false
   # Length governance (V2 finalize)
-  segment_min_duration: 4.0
+  # 仅用于“合并短段”下限；上限不在终筛强制，建议作为目标范围调参
+  segment_min_duration: 5.0
   segment_max_duration: 18.0
   # Quiet guard override (optional)
   enforce_quiet_cut:
     win_ms: 80
-    guard_db: 3.0
-    search_right_ms: 250
+    # 略微放宽守卫余量并缩短右推距离，减少被推到边界导致的长段残留
+    guard_db: 2.5
+    search_right_ms: 150
     floor_percentile: 5
 
 smart_splitting:
   use_pause_priority_algorithm: false
   use_precise_voice_algorithm: false
-  min_segment_length: 5
-  max_segment_length: 15
+  min_segment_length: 4
+  max_segment_length: 18
   target_segment_length: 8
 
 vocal_separation:
@@ -171,3 +178,21 @@ logging:
   format: '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
   max_file_size: '10MB'
   backup_count: 3
+
+# 可选：BPM 自适应核心参数覆盖（若启用自适应层，以下覆盖将被使用）
+bpm_adaptive_core:
+  pause_duration_beats:
+    slow: 1.5
+    medium: 1.0
+    fast: 0.6       # 快歌允许更短的“最小停顿”认定
+    very_fast: 0.5
+  split_gap_phrases:
+    slow: 4
+    medium: 3
+    fast: 2         # 快歌降低分割间隙（按乐句/拍计算），避免遗留超长段
+    very_fast: 2
+  speech_pad_beats:
+    slow: 0.8
+    medium: 0.5
+    fast: 0.3
+    very_fast: 0.2
