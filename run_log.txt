@@ -1,0 +1,129 @@
+/home/ubuntu/.local/lib/python3.10/site-packages/pyannote/audio/core/io.py:212: UserWarning: torchaudio._backend.list_audio_backends has been deprecated. This deprecation is part of a large refactoring effort to transition TorchAudio into a maintenance phase. The decoding and encoding capabilities of PyTorch for both audio and video are being consolidated into TorchCodec. Please see https://github.com/pytorch/audio/issues/3902 for more information. It will be removed from the 2.9 release. 
+  torchaudio.list_audio_backends()
+/home/ubuntu/.local/lib/python3.10/site-packages/speechbrain/utils/torch_audio_backend.py:57: UserWarning: torchaudio._backend.list_audio_backends has been deprecated. This deprecation is part of a large refactoring effort to transition TorchAudio into a maintenance phase. The decoding and encoding capabilities of PyTorch for both audio and video are being consolidated into TorchCodec. Please see https://github.com/pytorch/audio/issues/3902 for more information. It will be removed from the 2.9 release. 
+  available_backends = torchaudio.list_audio_backends()
+2025-09-14 07:43:46,020 - __main__ - INFO - 创建输出目录: /mnt/e/BDM_STATION/Desktop/BDM_projects/audio-cut/output/test_20250914_074346
+2025-09-14 07:43:46,020 - __main__ - INFO - 使用无缝人声停顿分割模式...
+2025-09-14 07:43:46,028 - src.vocal_smart_splitter.utils.config_manager - INFO - 配置文件加载成功
+2025-09-14 07:43:46,028 - src.vocal_smart_splitter.utils.config_manager - INFO - 配置参数验证通过
+2025-09-14 07:43:46,028 - src.vocal_smart_splitter.utils.config_manager - INFO - 配置管理器初始化完成，配置文件: /mnt/e/BDM_STATION/Desktop/BDM_projects/audio-cut/src/vocal_smart_splitter/config.yaml
+2025-09-14 07:43:46,028 - __main__ - INFO - 使用采样率: 44100Hz
+2025-09-14 07:43:46,028 - src.vocal_smart_splitter.utils.adaptive_parameter_calculator - INFO - BPM驱动自适应参数计算器初始化完成
+2025-09-14 07:43:46,028 - src.vocal_smart_splitter.core.adaptive_vad_enhancer - INFO - BPM分析器初始化完成 (采样率: 44100)
+2025-09-14 07:43:46,028 - src.vocal_smart_splitter.core.adaptive_vad_enhancer - INFO - 乐器复杂度分析器初始化完成
+2025-09-14 07:43:46,028 - src.vocal_smart_splitter.core.adaptive_vad_enhancer - INFO - BPM感知的编曲复杂度自适应VAD增强器初始化完成
+2025-09-14 07:43:46,028 - src.vocal_smart_splitter.core.vocal_pause_detector - INFO - BPM自适应增强器已启用
+Using cache found in /home/ubuntu/.cache/torch/hub/snakers4_silero-vad_master
+2025-09-14 07:43:47,173 - src.vocal_smart_splitter.core.vocal_pause_detector - INFO - Silero VAD模型加载成功
+2025-09-14 07:43:47,174 - src.vocal_smart_splitter.core.vocal_pause_detector - INFO - VocalPauseDetectorV2 初始化完成 (SR: 44100)
+2025-09-14 07:43:47,174 - src.vocal_smart_splitter.utils.adaptive_parameter_calculator - INFO - BPM驱动自适应参数计算器初始化完成
+2025-09-14 07:43:47,174 - src.vocal_smart_splitter.core.adaptive_vad_enhancer - INFO - BPM分析器初始化完成 (采样率: 44100)
+2025-09-14 07:43:47,174 - src.vocal_smart_splitter.core.adaptive_vad_enhancer - INFO - 乐器复杂度分析器初始化完成
+2025-09-14 07:43:47,174 - src.vocal_smart_splitter.core.adaptive_vad_enhancer - INFO - BPM感知的编曲复杂度自适应VAD增强器初始化完成
+2025-09-14 07:43:47,174 - src.vocal_smart_splitter.core.vocal_pause_detector - INFO - BPM自适应增强器已启用
+Using cache found in /home/ubuntu/.cache/torch/hub/snakers4_silero-vad_master
+2025-09-14 07:43:47,683 - src.vocal_smart_splitter.core.vocal_pause_detector - INFO - Silero VAD模型加载成功
+2025-09-14 07:43:47,683 - src.vocal_smart_splitter.core.vocal_pause_detector - INFO - VocalPauseDetectorV2 初始化完成 (SR: 44100)
+2025-09-14 07:43:47,683 - src.vocal_smart_splitter.core.pure_vocal_pause_detector - INFO - 纯人声停顿检测器初始化完成 (采样率: 44100) - 已集成能量谷切点计算
+2025-09-14 07:43:47,692 - vocal_smart_splitter.utils.config_manager - INFO - 配置文件加载成功
+2025-09-14 07:43:47,692 - vocal_smart_splitter.utils.config_manager - INFO - 配置参数验证通过
+2025-09-14 07:43:47,692 - vocal_smart_splitter.utils.config_manager - INFO - 配置管理器初始化完成，配置文件: /mnt/e/BDM_STATION/Desktop/BDM_projects/audio-cut/src/vocal_smart_splitter/config.yaml
+2025-09-14 07:43:47,692 - vocal_smart_splitter.utils.adaptive_parameter_calculator - INFO - BPM驱动自适应参数计算器初始化完成
+2025-09-14 07:43:47,692 - src.vocal_smart_splitter.core.quality_controller - INFO - BPM感知质量控制器初始化完成
+2025-09-14 07:43:47,695 - src.vocal_smart_splitter.core.enhanced_vocal_separator - INFO - 检查MDX23路径: /mnt/e/BDM_STATION/Desktop/BDM_projects/audio-cut/MVSEP-MDX23-music-separation-model
+2025-09-14 07:43:47,696 - src.vocal_smart_splitter.core.enhanced_vocal_separator - INFO - ✓ 找到MDX23 inference.py: /mnt/e/BDM_STATION/Desktop/BDM_projects/audio-cut/MVSEP-MDX23-music-separation-model/inference.py
+2025-09-14 07:43:47,699 - src.vocal_smart_splitter.core.enhanced_vocal_separator - INFO - ✓ MDX23后端可用 - 找到2个模型: ['Kim_Inst.onnx', 'Kim_Vocal_2.onnx']
+2025-09-14 07:43:47,700 - src.vocal_smart_splitter.core.enhanced_vocal_separator - WARNING - Demucs v4未安装
+2025-09-14 07:43:47,700 - src.vocal_smart_splitter.core.enhanced_vocal_separator - INFO - 可用分离后端: ['mdx23']
+2025-09-14 07:43:47,700 - src.vocal_smart_splitter.core.enhanced_vocal_separator - INFO - 增强型分离器初始化完成 - 主后端: mdx23
+2025-09-14 07:43:47,700 - src.vocal_smart_splitter.core.seamless_splitter - INFO - 无缝分割器统一指挥中心初始化完成 (SR: 44100) - 已加载双检测器
+2025-09-14 07:43:47,700 - __main__ - INFO - 开始无缝分割: input/yesterday once more.MP3
+2025-09-14 07:43:47,700 - __main__ - INFO - 输出目录: /mnt/e/BDM_STATION/Desktop/BDM_projects/audio-cut/output/test_20250914_074346
+2025-09-14 07:43:47,700 - __main__ - INFO - 分割策略: 基于人声停顿的精确分割
+2025-09-14 07:43:47,700 - __main__ - INFO - 输出格式: 无损WAV/FLAC，零音频处理
+2025-09-14 07:43:47,700 - src.vocal_smart_splitter.core.seamless_splitter - INFO - 开始无缝分割: input/yesterday once more.MP3 (模式: v2.2_mdd)
+2025-09-14 07:43:47,700 - src.vocal_smart_splitter.core.seamless_splitter - INFO - [V2.2_MDD] 执行纯人声分割流程...
+2025-09-14 07:43:48,646 - src.vocal_smart_splitter.utils.audio_processor - INFO - 音频加载完成: 时长=60.11s, 采样率=44100Hz
+2025-09-14 07:43:48,646 - src.vocal_smart_splitter.core.seamless_splitter - INFO - [V2.2_MDD-STEP1] 执行高质量人声分离...
+2025-09-14 07:43:48,646 - src.vocal_smart_splitter.core.enhanced_vocal_separator - INFO - === 分离后端选择决策 ===
+2025-09-14 07:43:48,646 - src.vocal_smart_splitter.core.enhanced_vocal_separator - INFO - 配置后端: mdx23
+2025-09-14 07:43:48,646 - src.vocal_smart_splitter.core.enhanced_vocal_separator - INFO - 后端状态概览:
+2025-09-14 07:43:48,646 - src.vocal_smart_splitter.core.enhanced_vocal_separator - INFO -   ✓ mdx23: 可用
+2025-09-14 07:43:48,646 - src.vocal_smart_splitter.core.enhanced_vocal_separator - INFO -   ✗ demucs_v4: 不可用 (demucs模块未安装)
+2025-09-14 07:43:48,647 - src.vocal_smart_splitter.core.enhanced_vocal_separator - INFO - ✓ 选择用户指定后端: mdx23
+2025-09-14 07:43:48,647 - src.vocal_smart_splitter.core.enhanced_vocal_separator - INFO - === 开始MDX23 CLI分离 ===
+2025-09-14 07:43:48,647 - src.vocal_smart_splitter.core.enhanced_vocal_separator - INFO - 临时目录: /tmp/mdx23_separation_qp8a3j4x
+2025-09-14 07:43:48,647 - src.vocal_smart_splitter.core.enhanced_vocal_separator - INFO - 输入文件: /tmp/mdx23_separation_qp8a3j4x/input.wav
+2025-09-14 07:43:48,647 - src.vocal_smart_splitter.core.enhanced_vocal_separator - INFO - 输出目录: /tmp/mdx23_separation_qp8a3j4x/output
+2025-09-14 07:43:48,663 - src.vocal_smart_splitter.core.enhanced_vocal_separator - INFO - 音频写入完成: /tmp/mdx23_separation_qp8a3j4x/input.wav (长度: 2650752样本, 采样率: 44100Hz)
+2025-09-14 07:43:48,667 - src.vocal_smart_splitter.core.enhanced_vocal_separator - INFO - MDX23使用模型: Kim Model 2 (默认)
+2025-09-14 07:43:48,737 - src.vocal_smart_splitter.core.enhanced_vocal_separator - INFO - MDX23启用大GPU模式 (GPU内存: 15.9GB)
+2025-09-14 07:43:48,737 - src.vocal_smart_splitter.core.enhanced_vocal_separator - INFO - MDX23参数: chunk_size=1000000, overlap_large=0.6, overlap_small=0.5
+2025-09-14 07:43:48,740 - src.vocal_smart_splitter.core.enhanced_vocal_separator - INFO - MDX23命令: /usr/bin/python /mnt/e/BDM_STATION/Desktop/BDM_projects/audio-cut/MVSEP-MDX23-music-separation-model/inference.py --input_audio /tmp/mdx23_separation_qp8a3j4x/input.wav --output_folder /tmp/mdx23_separation_qp8a3j4x/output --large_gpu --overlap_large 0.6 --overlap_small 0.5 --chunk_size 1000000 --single_onnx --only_vocals
+2025-09-14 07:43:48,740 - src.vocal_smart_splitter.core.enhanced_vocal_separator - INFO - 执行目录: /mnt/e/BDM_STATION/Desktop/BDM_projects/audio-cut
+2025-09-14 07:43:48,740 - src.vocal_smart_splitter.core.enhanced_vocal_separator - INFO - MDX23项目路径: /mnt/e/BDM_STATION/Desktop/BDM_projects/audio-cut/MVSEP-MDX23-music-separation-model
+2025-09-14 07:43:48,741 - src.vocal_smart_splitter.core.enhanced_vocal_separator - INFO - 开始执行MDX23命令...
+2025-09-14 07:43:49,555 - src.vocal_smart_splitter.core.enhanced_vocal_separator - INFO - MDX23命令执行完成，返回码: 1
+2025-09-14 07:43:49,555 - src.vocal_smart_splitter.core.enhanced_vocal_separator - INFO - MDX23输出: GPU use: 0
+[WARN] Demucs模块导入失败，跳过兼容性修复
+
+2025-09-14 07:43:49,555 - src.vocal_smart_splitter.core.enhanced_vocal_separator - WARNING - MDX23错误: Traceback (most recent call last):
+  File "/mnt/e/BDM_STATION/Desktop/BDM_projects/audio-cut/MVSEP-MDX23-music-separation-model/inference.py", line 37, in <module>
+    from demucs.states import load_model as original_load_model
+ModuleNotFoundError: No module named 'demucs'
+
+2025-09-14 07:43:49,555 - src.vocal_smart_splitter.core.enhanced_vocal_separator - ERROR - MDX23执行失败 (返回码 1)
+2025-09-14 07:43:49,555 - src.vocal_smart_splitter.core.enhanced_vocal_separator - ERROR - ✗ MDX23 CLI分离失败: MDX23执行失败: Traceback (most recent call last):
+  File "/mnt/e/BDM_STATION/Desktop/BDM_projects/audio-cut/MVSEP-MDX23-music-separation-model/inference.py", line 37, in <module>
+    from demucs.states import load_model as original_load_model
+ModuleNotFoundError: No module named 'demucs'
+
+2025-09-14 07:43:49,555 - src.vocal_smart_splitter.core.enhanced_vocal_separator - ERROR - 失败时的状态信息:
+2025-09-14 07:43:49,555 - src.vocal_smart_splitter.core.enhanced_vocal_separator - ERROR -   临时目录: /tmp/mdx23_separation_qp8a3j4x
+2025-09-14 07:43:49,555 - src.vocal_smart_splitter.core.enhanced_vocal_separator - ERROR -   MDX23项目路径: /mnt/e/BDM_STATION/Desktop/BDM_projects/audio-cut/MVSEP-MDX23-music-separation-model
+2025-09-14 07:43:49,555 - src.vocal_smart_splitter.core.enhanced_vocal_separator - ERROR -   可用模型: ['Kim_Inst.onnx', 'Kim_Vocal_2.onnx']
+2025-09-14 07:43:49,556 - src.vocal_smart_splitter.core.enhanced_vocal_separator - WARNING - MDX23分离失败，尝试降级到Demucs v4: MDX23执行失败: Traceback (most recent call last):
+  File "/mnt/e/BDM_STATION/Desktop/BDM_projects/audio-cut/MVSEP-MDX23-music-separation-model/inference.py", line 37, in <module>
+    from demucs.states import load_model as original_load_model
+ModuleNotFoundError: No module named 'demucs'
+
+2025-09-14 07:43:49,556 - src.vocal_smart_splitter.core.seamless_splitter - ERROR - 无缝分割失败: ❌ MDX23分离失败且无Demucs备选: MDX23执行失败: Traceback (most recent call last):
+  File "/mnt/e/BDM_STATION/Desktop/BDM_projects/audio-cut/MVSEP-MDX23-music-separation-model/inference.py", line 37, in <module>
+    from demucs.states import load_model as original_load_model
+ModuleNotFoundError: No module named 'demucs'
+Traceback (most recent call last):
+  File "/mnt/e/BDM_STATION/Desktop/BDM_projects/audio-cut/src/vocal_smart_splitter/core/enhanced_vocal_separator.py", line 323, in _separate_with_mdx23
+    return self._separate_with_mdx23_cli(audio, start_time)
+  File "/mnt/e/BDM_STATION/Desktop/BDM_projects/audio-cut/src/vocal_smart_splitter/core/enhanced_vocal_separator.py", line 386, in _separate_with_mdx23_cli
+    raise RuntimeError(f"MDX23执行失败: {result.stderr}")
+RuntimeError: MDX23执行失败: Traceback (most recent call last):
+  File "/mnt/e/BDM_STATION/Desktop/BDM_projects/audio-cut/MVSEP-MDX23-music-separation-model/inference.py", line 37, in <module>
+    from demucs.states import load_model as original_load_model
+ModuleNotFoundError: No module named 'demucs'
+
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/mnt/e/BDM_STATION/Desktop/BDM_projects/audio-cut/src/vocal_smart_splitter/core/seamless_splitter.py", line 57, in split_audio_seamlessly
+    return self._process_pure_vocal_split(input_path, output_dir, mode)
+  File "/mnt/e/BDM_STATION/Desktop/BDM_projects/audio-cut/src/vocal_smart_splitter/core/seamless_splitter.py", line 90, in _process_pure_vocal_split
+    separation_result = self.separator.separate_for_detection(original_audio)
+  File "/mnt/e/BDM_STATION/Desktop/BDM_projects/audio-cut/src/vocal_smart_splitter/core/enhanced_vocal_separator.py", line 242, in separate_for_detection
+    result = self._separate_with_mdx23(audio)
+  File "/mnt/e/BDM_STATION/Desktop/BDM_projects/audio-cut/src/vocal_smart_splitter/core/enhanced_vocal_separator.py", line 331, in _separate_with_mdx23
+    raise RuntimeError(f"❌ MDX23分离失败且无Demucs备选: {e}")
+RuntimeError: ❌ MDX23分离失败且无Demucs备选: MDX23执行失败: Traceback (most recent call last):
+  File "/mnt/e/BDM_STATION/Desktop/BDM_projects/audio-cut/MVSEP-MDX23-music-separation-model/inference.py", line 37, in <module>
+    from demucs.states import load_model as original_load_model
+ModuleNotFoundError: No module named 'demucs'
+
+2025-09-14 07:43:49,560 - __main__ - INFO - ==================================================
+2025-09-14 07:43:49,560 - __main__ - INFO - 分割完成！
+2025-09-14 07:43:49,560 - __main__ - INFO - 输出目录: /mnt/e/BDM_STATION/Desktop/BDM_projects/audio-cut/output/test_20250914_074346
+2025-09-14 07:43:49,560 - __main__ - ERROR - 处理失败: 'num_segments'
+2025-09-14 07:43:49,561 - __main__ - ERROR - Traceback (most recent call last):
+  File "/mnt/e/BDM_STATION/Desktop/BDM_projects/audio-cut/run_splitter.py", line 168, in main
+    logger.info(f"生成片段数: {result['num_segments']}")
+KeyError: 'num_segments'
+

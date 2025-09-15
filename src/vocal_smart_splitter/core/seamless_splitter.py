@@ -6,7 +6,7 @@ import os
 import numpy as np
 import librosa
 import logging
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Tuple
 from pathlib import Path
 import time
 import tempfile
@@ -122,8 +122,20 @@ class SeamlessSplitter:
                 cut_points_samples.append(int(center_time * self.sample_rate))
                 
         logger.info(f"[{mode.upper()}-STEP3] 生成{len(cut_points_samples)}个候选分割点")
+        # 将样本点转换为(time, score)形式，暂以score=confidence占位（若有）
+        cut_candidates = []
+        for p in vocal_pauses:
+            t = float(getattr(p, 'cut_point', (p.start_time + p.end_time)/2))
+            s = float(getattr(p, 'confidence', 1.0))
+            # 过滤疑似间奏的超长静默
+            dur = float(getattr(p, 'duration', (p.end_time - p.start_time)))
+            interlude_min_s = get_config('pure_vocal_detection.pause_stats_adaptation.interlude_min_s', 4.0)
+            if False and dur >= interlude_min_s:
+                continue
+            cut_candidates.append((t, s))
+
         final_cut_points = self._finalize_and_filter_cuts_v2(
-            cut_points_samples,
+            cut_candidates,
             original_audio,
             pure_vocal_audio=vocal_track
         )
@@ -200,6 +212,209 @@ class SeamlessSplitter:
             'processing_time': processing_time, 'input_file': input_path, 'output_dir': output_dir
         }
 
+    def _finalize_and_filter_cuts_v2(self,
+                                     cut_candidates,
+                                     audio_for_split: np.ndarray,
+                                     pure_vocal_audio: Optional[np.ndarray] = None) -> List[int]:
+        """
+        方案2：带评分候选的加权NMS + 守卫校正 + 长短段治理（直接在此函数内完成）。
+
+        - 输入可为：
+          1) [(time_sec, score), ...]
+          2) 样本点列表（int）
+          3) 时间列表（float，单位秒）
+        """
+        sr = self.sample_rate
+        x_guard = pure_vocal_audio if pure_vocal_audio is not None else audio_for_split
+        duration_s = len(audio_for_split) / sr
+
+        # 解析候选为 time, score
+        times: List[float] = []
+        scores: List[float] = []
+        if isinstance(cut_candidates, list) and cut_candidates:
+            first = cut_candidates[0]
+            if isinstance(first, tuple) and len(first) >= 2:
+                for t, s in cut_candidates:
+                    times.append(float(t))
+                    scores.append(float(s))
+            elif isinstance(first, int):
+                times = [float(p) / sr for p in cut_candidates]
+                scores = [1.0] * len(times)
+            else:
+                times = [float(p) for p in cut_candidates]
+                scores = [1.0] * len(times)
+
+        # 加权NMS（可控开关）
+        use_weighted_nms = get_config('pure_vocal_detection.valley_scoring.use_weighted_nms', True)
+        if times and use_weighted_nms:
+            logger.info(f"[FinalizeV2] 加权NMS准备: candidates={len(times)}")
+            pairs: List[Tuple[float, float]] = list(zip(times, scores))
+            try:
+                pairs.sort(key=lambda x: x[1], reverse=True)
+            except Exception:
+                pairs = [(t, 1.0) for t in times]
+            min_gap = get_config('quality_control.min_split_gap', 1.0)
+            kept: List[Tuple[float, float]] = []
+            before_n = len(pairs)
+            for t, s in pairs:
+                if all(abs(t - kt) >= min_gap for kt, _ in kept):
+                    kept.append((t, s))
+            # 安全上限：防止极端情况下候选仍然过多导致后续计算量爆炸
+            try:
+                max_kept = int(get_config('pure_vocal_detection.valley_scoring.max_kept_after_nms', 150))
+            except Exception:
+                max_kept = 150
+            if len(kept) > max_kept:
+                kept = kept[:max_kept]
+            after_n = len(kept)
+            top_score = kept[0][1] if kept else (pairs[0][1] if pairs else None)
+            try:
+                if top_score is not None:
+                    logger.info(f"[NMS] candidates={before_n} -> kept={after_n}, top_score={float(top_score):.3f}")
+                else:
+                    logger.info(f"[NMS] candidates={before_n} -> kept={after_n}")
+            except Exception:
+                pass
+            times = sorted([t for t, _ in kept])
+        elif times:
+            # 基础去重
+            times = sorted(set(times))
+
+        if not times:
+            return [0, len(audio_for_split)]
+
+        # 守卫右推与零交叉吸附
+        logger.info(f"[FinalizeV2] 守卫校正开始: {len(times)} 个候选")
+        def _fallback_local_min(t0: float) -> float:
+            search_ms = get_config('quality_control.enforce_quiet_cut.search_right_ms', 300)
+            win = int(sr * (search_ms / 1000.0))
+            c = int(t0 * sr)
+            a = c
+            b = min(len(x_guard), c + max(win, int(0.05 * sr)))
+            if b <= a + 1:
+                return t0
+            seg = np.abs(x_guard[a:b])
+            idx = int(np.argmin(seg))
+            return (a + idx) / sr
+
+        corrected: List[float] = []
+        for idx_t, t in enumerate(times):
+            try:
+                t_adj = self.quality_controller.safe_zero_crossing_align(x_guard, sr, t, window_ms=10)
+                if t_adj is None or t_adj < 0:
+                    t_adj = self.quality_controller.enforce_quiet_cut_fast(x_guard, sr, t)
+                if t_adj is None or t_adj < 0:
+                    t_adj = _fallback_local_min(t)
+                t_adj = float(np.clip(t_adj, 0.0 + 1e-3, duration_s - 1e-3))
+                corrected.append(t_adj)
+                if idx_t % 5 == 0:
+                    logger.info(f"[FinalizeV2] 守卫校正进度 {idx_t+1}/{len(times)}: {t:.3f}s -> {t_adj:.3f}s")
+            except Exception:
+                corrected.append(t)
+
+        # 最小间隔过滤（再次稳固）
+        min_interval = get_config('quality_control.min_split_gap', 1.0)
+        filtered_times = self.quality_controller.pure_filter_cut_points(
+            corrected, duration_s, min_interval=min_interval
+        )
+        logger.info(f"[FinalizeV2] 最小间隔过滤: {len(corrected)} -> {len(filtered_times)}")
+
+        # 构建边界
+        boundaries: List[int] = [0] + [int(t * sr) for t in filtered_times] + [len(audio_for_split)]
+        boundaries = sorted(set(boundaries))
+        logger.info(f"[FinalizeV2] 初始边界数: {len(boundaries)}")
+
+        # 长短段治理
+        seg_min = get_config('quality_control.segment_min_duration', 4.0)
+        seg_max = get_config('quality_control.segment_max_duration', 18.0)
+
+        changed = True
+        merge_pass = 0
+        while changed and len(boundaries) > 2:
+            changed = False
+            merge_pass += 1
+            durs = [(boundaries[i+1]-boundaries[i]) / sr for i in range(len(boundaries)-1)]
+            for i, d in enumerate(durs):
+                if d < seg_min and len(boundaries) > 2:
+                    rm_idx = i+1 if i+1 < len(boundaries)-1 else i
+                    del boundaries[rm_idx]
+                    changed = True
+                    logger.info(f"[FinalizeV2] 合并短段 pass#{merge_pass}: 移除边界索引 {rm_idx}，片段时长 {d:.3f}s")
+                    break
+
+        def _insert_split(boundaries: List[int], start_idx: int, count: int):
+            start = boundaries[start_idx]
+            end = boundaries[start_idx+1]
+            span_s = (end - start) / sr
+            step = span_s / (count + 1)
+            min_gap_s = float(get_config('quality_control.min_split_gap', 1.0))
+            min_gap_samples = max(1, int(min_gap_s * sr))
+            for k in range(1, count+1):
+                t_candidate = (start / sr) + step * k
+                t_adj = self.quality_controller.enforce_quiet_cut_fast(x_guard, sr, t_candidate)
+                if t_adj is None or t_adj < 0:
+                    t_adj = _fallback_local_min(t_candidate)
+                # 转为样本并与边界保持最小间隔，避免 0s 片段
+                b_idx = int(round(t_adj * sr))
+                lo = start + min_gap_samples
+                hi = end - min_gap_samples
+                if hi <= lo:
+                    # 区间太窄，不插入，避免制造0s片段
+                    logger.warning(f"[FinalizeV2] 区间[{start},{end}] 太短，跳过插入切点")
+                    continue
+                # 将切点夹紧到有效范围
+                b_idx = int(np.clip(b_idx, lo, hi))
+                # 去重：避免与现有边界过近
+                if any(abs(b_idx - bb) < min_gap_samples for bb in boundaries[start_idx:start_idx+2]):
+                    # 回退到中点
+                    b_idx = int((start + end) // 2)
+                    b_idx = int(np.clip(b_idx, lo, hi))
+                boundaries.append(b_idx)
+
+        changed = True
+        insert_pass = 0
+        max_insert_pass = 10
+        while changed and insert_pass < max_insert_pass:
+            changed = False
+            insert_pass += 1
+            boundaries.sort()
+            i = 0
+            while i < len(boundaries) - 1:
+                span_s = (boundaries[i+1] - boundaries[i]) / sr
+                if span_s > seg_max:
+                    n_add = int(np.floor(span_s / seg_max))
+                    _insert_split(boundaries, i, n_add)
+                    changed = True
+                    logger.info(f"[FinalizeV2] 强拆长段 pass#{insert_pass}: 在区间[{i},{i+1}] 追加 {n_add} 个切点 (span={span_s:.3f}s)")
+                    break
+                i += 1
+
+        # 二次清理：去重与最小样本间隔，避免 0s 片段
+        min_gap_s = float(get_config('quality_control.min_split_gap', 1.0))
+        min_gap_samples = max(1, int(min_gap_s * sr))
+        boundaries = sorted(set(boundaries))
+        cleaned = [boundaries[0]]
+        for b in boundaries[1:]:
+            if b - cleaned[-1] >= min_gap_samples:
+                cleaned.append(b)
+            else:
+                logger.info(f"[FinalizeV2] 移除过近边界: prev={cleaned[-1]} this={b} (<{min_gap_samples} samples)")
+        # 确保保留结尾边界
+        if cleaned[-1] != boundaries[-1]:
+            if boundaries[-1] - cleaned[-1] < min_gap_samples:
+                # 如果最后一段过短，保留结尾，移除上一个
+                if len(cleaned) >= 2:
+                    cleaned[-1] = boundaries[-1]
+                else:
+                    cleaned.append(boundaries[-1])
+            else:
+                cleaned.append(boundaries[-1])
+        boundaries = cleaned
+        if insert_pass >= max_insert_pass:
+            logger.warning(f"[FinalizeV2] 强拆循环达到上限 {max_insert_pass} 次，提前退出")
+        logger.info(f"[FinalizeV2] 最终边界数: {len(boundaries)}")
+        return boundaries
+
     def _finalize_and_filter_cuts(self, cut_points_samples: List[int], audio: np.ndarray) -> List[int]:
         """对切割点进行最终的排序、去重和安全校验"""
         audio_duration_s = len(audio) / self.sample_rate
@@ -216,10 +431,15 @@ class SeamlessSplitter:
     def _split_at_sample_level(self, audio: np.ndarray, final_cut_points: List[int]) -> List[np.ndarray]:
         """执行样本级分割"""
         segments = []
+        # 避免 0s 片段：至少保持10ms样本长度
+        min_keep_samples = max(1, int(0.01 * self.sample_rate))
         for i in range(len(final_cut_points) - 1):
             start = final_cut_points[i]
             end = final_cut_points[i+1]
-            segments.append(audio[start:end])
+            if end - start >= min_keep_samples:
+                segments.append(audio[start:end])
+            else:
+                logger.info(f"[Split] 跳过过短片段 idx={i} len_samples={end-start}")
         return segments
     
     def _save_segments(self, segments: List[np.ndarray], output_dir: str) -> List[str]:
@@ -240,105 +460,148 @@ class SeamlessSplitter:
             'note': reason, 'input_file': input_path, 'output_dir': output_dir
         }
 
-    def _finalize_and_filter_cuts_v2(self,
-                                     cut_points_samples: List[int],
-                                     audio_for_split: np.ndarray,
-                                     pure_vocal_audio: Optional[np.ndarray] = None) -> List[int]:
-        """
-        终筛改造V2：
-        - 采纳守卫校正后的切点时间（零交叉 + 右推安静守卫）。
-        - 使用最小间隔过滤，避免密集切；
-        - 时长治理：合并过短片段，强拆过长片段（优先在局部谷/安静点切）。
-        """
-        sr = self.sample_rate
-        x_guard = pure_vocal_audio if pure_vocal_audio is not None else audio_for_split
-        duration_s = len(audio_for_split) / sr
+# def _finalize_and_filter_cuts_v2(self,
+#                                      cut_candidates,
+#                                      audio_for_split: np.ndarray,
+#                                      pure_vocal_audio: Optional[np.ndarray] = None) -> List[int]:
+#         """
+#         终筛改造V2：
+#         - 采纳守卫校正后的切点时间（零交叉 + 右推安静守卫）。
+#         - 使用最小间隔过滤，避免密集切；
+#         - 时长治理：合并过短片段，强拆过长片段（优先在局部谷/安静点切）。
+#         """
+#         # DEPRECATED duplicate (top-level), not used by engine. Keep inert for history.
+#         try:
+#             _ = len(audio_for_split)
+#         except Exception:
+#             return [0, 0]
+#         return [0, len(audio_for_split)]
+#         sr = self.sample_rate
+#         x_guard = pure_vocal_audio if pure_vocal_audio is not None else audio_for_split
+#         duration_s = len(audio_for_split) / sr
 
-        # 1) 去重并转为时间
-        cut_times = sorted(set([max(0.0, min(len(audio_for_split) - 1, p)) / sr for p in cut_points_samples]))
-        if not cut_times:
-            return [0, len(audio_for_split)]
+#         # (方案2) 加权NMS入口：支持 [(time, score)] / 样本点 / 时间 列表
+#         times = []
+#         scores = []
+#         try:
+#             if isinstance(cut_candidates, list) and len(cut_candidates) > 0:
+#                 first = cut_candidates[0]
+#                 if isinstance(first, tuple) and len(first) >= 2:
+#                     for t, s in cut_candidates:
+#                         times.append(float(t))
+#                         scores.append(float(s))
+#                 elif isinstance(first, int):
+#                     times = [float(p) / sr for p in cut_candidates]
+#                     scores = [1.0] * len(times)
+#                 else:
+#                     times = [float(p) for p in cut_candidates]
+#                     scores = [1.0] * len(times)
+#         except Exception:
+#             pass
 
-        # 2) 逐点做零交叉对齐 + 安静守卫校正；失败则在右窗内取局部最小
-        def _fallback_local_min(t0: float) -> float:
-            # 在右侧 search_right_ms 窗内寻找局部最小能量点
-            search_ms = get_config('quality_control.enforce_quiet_cut.search_right_ms', 300)
-            win = int(sr * (search_ms / 1000.0))
-            c = int(t0 * sr)
-            a = c
-            b = min(len(x_guard), c + max(win, int(0.05 * sr)))  # 至少50ms窗口
-            if b <= a + 1:
-                return t0
-            seg = np.abs(x_guard[a:b])
-            idx = int(np.argmin(seg))
-            return (a + idx) / sr
+#         use_weighted_nms = get_config('pure_vocal_detection.valley_scoring.use_weighted_nms', True)
+#         if times and use_weighted_nms:
+#             # Weighted NMS based on score
+#             pairs = list(zip(times, scores))
+#             try:
+#                 pairs.sort(key=lambda x: x[1], reverse=True)
+#             except Exception:
+#                 pairs = [(t, 1.0) for t in times]
+#             min_gap = get_config('quality_control.min_split_gap', 1.0)
+#             kept = []
+#             for t, s in pairs:
+#                 if all(abs(t - kt) >= min_gap for kt, _ in kept):
+#                     kept.append((t, s))
+#             times = sorted([t for t, _ in kept])
+#             cut_points_samples = [int(t * sr) for t in times]
+#         else:
+#             cut_points_samples = []
 
-        corrected = []
-        for t in cut_times:
-            try:
-                t_adj = self.quality_controller.safe_zero_crossing_align(x_guard, sr, t, window_ms=10)
-                if t_adj is None or t_adj < 0:
-                    t_adj = self.quality_controller.enforce_quiet_cut(x_guard, sr, t)
-                if t_adj is None or t_adj < 0:
-                    t_adj = _fallback_local_min(t)
-                t_adj = float(np.clip(t_adj, 0.0 + 1e-3, duration_s - 1e-3))
-                corrected.append(t_adj)
-            except Exception:
-                corrected.append(t)
+#         # 1) 去重并转为时间
+#         cut_times = sorted(set([max(0.0, min(len(audio_for_split) - 1, p)) / sr for p in cut_points_samples]))
+#         if not cut_times:
+#             return [0, len(audio_for_split)]
 
-        # 3) 过滤：边界/最小间隔
-        min_interval = get_config('quality_control.min_split_gap', 1.0)
-        filtered_times = self.quality_controller.pure_filter_cut_points(
-            corrected, duration_s, min_interval=min_interval
-        )
+#         # 2) 逐点做零交叉对齐 + 安静守卫校正；失败则在右窗内取局部最小
+#         def _fallback_local_min(t0: float) -> float:
+#             # 在右侧 search_right_ms 窗内寻找局部最小能量点
+#             search_ms = get_config('quality_control.enforce_quiet_cut.search_right_ms', 300)
+#             win = int(sr * (search_ms / 1000.0))
+#             c = int(t0 * sr)
+#             a = c
+#             b = min(len(x_guard), c + max(win, int(0.05 * sr)))  # 至少50ms窗口
+#             if b <= a + 1:
+#                 return t0
+#             seg = np.abs(x_guard[a:b])
+#             idx = int(np.argmin(seg))
+#             return (a + idx) / sr
 
-        # 构建边界（样本点）
-        boundaries = [0] + [int(t * sr) for t in filtered_times] + [len(audio_for_split)]
-        boundaries = sorted(set(boundaries))
+#         corrected = []
+#         for t in cut_times:
+#             try:
+#                 t_adj = self.quality_controller.safe_zero_crossing_align(x_guard, sr, t, window_ms=10)
+#                 if t_adj is None or t_adj < 0:
+#                     t_adj = self.quality_controller.enforce_quiet_cut(x_guard, sr, t)
+#                 if t_adj is None or t_adj < 0:
+#                     t_adj = _fallback_local_min(t)
+#                 t_adj = float(np.clip(t_adj, 0.0 + 1e-3, duration_s - 1e-3))
+#                 corrected.append(t_adj)
+#             except Exception:
+#                 corrected.append(t)
 
-        # 4) 时长治理：先合并短段，再强拆长段
-        seg_min = get_config('quality_control.segment_min_duration', 4.0)
-        seg_max = get_config('quality_control.segment_max_duration', 18.0)
+#         # 3) 过滤：边界/最小间隔
+#         min_interval = get_config('quality_control.min_split_gap', 1.0)
+#         filtered_times = self.quality_controller.pure_filter_cut_points(
+#             corrected, duration_s, min_interval=min_interval
+#         )
 
-        # 合并短段（循环直到稳定）
-        changed = True
-        while changed and len(boundaries) > 2:
-            changed = False
-            durations = [ (boundaries[i+1]-boundaries[i]) / sr for i in range(len(boundaries)-1) ]
-            for i, d in enumerate(durations):
-                if d < seg_min and len(boundaries) > 2:
-                    # 移除该段的右侧边界，与右段合并（末段则合并到左侧）
-                    rm_idx = i+1 if i+1 < len(boundaries)-1 else i
-                    del boundaries[rm_idx]
-                    changed = True
-                    break
+#         # 构建边界（样本点）
+#         boundaries = [0] + [int(t * sr) for t in filtered_times] + [len(audio_for_split)]
+#         boundaries = sorted(set(boundaries))
 
-        # 强拆超长段
-        def _insert_split(boundaries: List[int], start_idx: int, count: int):
-            start = boundaries[start_idx]
-            end = boundaries[start_idx+1]
-            span_s = (end - start) / sr
-            step = span_s / (count + 1)
-            for k in range(1, count+1):
-                t_candidate = (start / sr) + step * k
-                t_adj = self.quality_controller.enforce_quiet_cut(x_guard, sr, t_candidate)
-                if t_adj is None or t_adj < 0:
-                    t_adj = _fallback_local_min(t_candidate)
-                boundaries.append(int(np.clip(t_adj * sr, start+1, end-1)))
+#         # 4) 时长治理：先合并短段，再强拆长段
+#         seg_min = get_config('quality_control.segment_min_duration', 4)
+#         seg_max = get_config('quality_control.segment_max_duration', 18.0)
 
-        changed = True
-        while changed:
-            changed = False
-            boundaries.sort()
-            i = 0
-            while i < len(boundaries) - 1:
-                span_s = (boundaries[i+1] - boundaries[i]) / sr
-                if span_s > seg_max:
-                    n_add = int(np.floor(span_s / seg_max))
-                    _insert_split(boundaries, i, n_add)
-                    changed = True
-                    break
-                i += 1
+#         # 合并短段（循环直到稳定）
+#         changed = True
+#         while changed and len(boundaries) > 2:
+#             changed = False
+#             durations = [ (boundaries[i+1]-boundaries[i]) / sr for i in range(len(boundaries)-1) ]
+#             for i, d in enumerate(durations):
+#                 if d < seg_min and len(boundaries) > 2:
+#                     # 移除该段的右侧边界，与右段合并（末段则合并到左侧）
+#                     rm_idx = i+1 if i+1 < len(boundaries)-1 else i
+#                     del boundaries[rm_idx]
+#                     changed = True
+#                     break
 
-        boundaries = sorted(set(boundaries))
-        return boundaries
+#         # 强拆超长段
+#         def _insert_split(boundaries: List[int], start_idx: int, count: int):
+#             start = boundaries[start_idx]
+#             end = boundaries[start_idx+1]
+#             span_s = (end - start) / sr
+#             step = span_s / (count + 1)
+#             for k in range(1, count+1):
+#                 t_candidate = (start / sr) + step * k
+#                 t_adj = self.quality_controller.enforce_quiet_cut(x_guard, sr, t_candidate)
+#                 if t_adj is None or t_adj < 0:
+#                     t_adj = _fallback_local_min(t_candidate)
+#                 boundaries.append(int(np.clip(t_adj * sr, start+1, end-1)))
+
+#         changed = True
+#         while changed:
+#             changed = False
+#             boundaries.sort()
+#             i = 0
+#             while i < len(boundaries) - 1:
+#                 span_s = (boundaries[i+1] - boundaries[i]) / sr
+#                 if span_s > seg_max:
+#                     n_add = int(np.floor(span_s / seg_max))
+#                     _insert_split(boundaries, i, n_add)
+#                     changed = True
+#                     break
+#                 i += 1
+
+#         boundaries = sorted(set(boundaries))
+#         return boundaries

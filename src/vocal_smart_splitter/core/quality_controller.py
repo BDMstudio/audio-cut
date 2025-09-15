@@ -49,6 +49,18 @@ class QualityController:
         self.smooth_transitions = get_config('quality_control.smooth_transitions', True)
         
         logger.info("BPM感知质量控制器初始化完成")
+        # 守卫能量包络缓存，避免重复全曲计算
+        self._guard_cache = {
+            'arr_ptr': None,
+            'length': 0,
+            'sr': 0,
+            'win_ms': 0,
+            'hop_ms': 0,
+            'smooth_ms': 0,
+            'rms_db': None,
+            'global_floor': None,
+            'floor_pct': 0.05,
+        }
     
     def apply_bpm_adaptive_parameters(self, bpm: float, complexity: float, 
                                      instrument_count: int) -> None:
@@ -951,6 +963,93 @@ class QualityController:
             return -1.0  # 负值表示无效切点
         return best * (hop_ms/1000.0)
 
+    def enforce_quiet_cut_fast(self, x_mono, sr, t_sec,
+                               win_ms=80, guard_db=3.0, floor_pct=0.05,
+                               search_right_ms=400):
+        """
+        加速版守卫：使用缓存的能量包络，避免为每个切点重复全曲扫描。
+        逻辑与 enforce_quiet_cut 一致。
+        """
+        try:
+            win_ms = get_config('quality_control.enforce_quiet_cut.win_ms', win_ms)
+            guard_db = get_config('quality_control.enforce_quiet_cut.guard_db', guard_db)
+            search_right_ms = get_config('quality_control.enforce_quiet_cut.search_right_ms', search_right_ms)
+            floor_cfg = get_config('quality_control.enforce_quiet_cut.floor_percentile', int(floor_pct*100))
+            if isinstance(floor_cfg, (int, float)):
+                floor_pct = float(floor_cfg) / 100.0 if floor_cfg > 1 else float(floor_cfg)
+        except Exception:
+            pass
+        hop_ms = 10
+        rms_db, global_floor = self._get_guard_env_cached(x_mono, sr, win_ms, hop_ms, 120, float(floor_pct))
+        floor_db = np.full_like(rms_db, global_floor)
+        def ok(idx):
+            adaptive_guard = guard_db
+            if global_floor < -40:
+                adaptive_guard = guard_db
+            elif global_floor > -30:
+                adaptive_guard = guard_db * 1.5
+            return rms_db[idx] <= floor_db[idx] + adaptive_guard
+        idx = int(t_sec / (hop_ms/1000.0))
+        if idx < 0 or idx >= len(rms_db):
+            return t_sec
+        if ok(idx):
+            return t_sec
+        max_step = int(search_right_ms / hop_ms)
+        best = None
+        for k in range(1, max_step+1):
+            j = idx + k
+            if j >= len(rms_db): break
+            if ok(j):
+                best = j
+                break
+        if best is None:
+            for j in range(idx + max_step + 1, len(rms_db)):
+                if ok(j):
+                    best = j
+                    break
+        if best is None:
+            return -1.0
+        return best * (hop_ms/1000.0)
+
+    def _get_guard_env_cached(self, x: np.ndarray, sr: int, frame_ms: int, hop_ms: int, smooth_ms: int, floor_pct: float):
+        """获取或构建守卫使用的 RMS dB 包络与全局地板（带缓存）。"""
+        if not hasattr(self, '_guard_cache'):
+            self._guard_cache = {
+                'arr_ptr': None, 'length': 0, 'sr': 0, 'win_ms': 0, 'hop_ms': 0, 'smooth_ms': 0,
+                'rms_db': None, 'global_floor': None, 'floor_pct': 0.05,
+            }
+        try:
+            arr_ptr = int(x.__array_interface__['data'][0])
+        except Exception:
+            arr_ptr = id(x)
+        same = (
+            self._guard_cache['arr_ptr'] == arr_ptr and
+            self._guard_cache['length'] == len(x) and
+            self._guard_cache['sr'] == sr and
+            self._guard_cache['win_ms'] == frame_ms and
+            self._guard_cache['hop_ms'] == hop_ms and
+            self._guard_cache['smooth_ms'] == smooth_ms and
+            abs(self._guard_cache['floor_pct'] - floor_pct) < 1e-12 and
+            self._guard_cache['rms_db'] is not None
+        )
+        if same:
+            return self._guard_cache['rms_db'], self._guard_cache['global_floor']
+        rms_db, _ = self._moving_rms_db(x, sr, frame_ms=frame_ms, hop_ms=hop_ms)
+        rms_db = self._ema_smooth(rms_db, sr, hop_ms=hop_ms, smooth_ms=smooth_ms)
+        global_floor = float(np.percentile(rms_db, floor_pct * 100.0))
+        self._guard_cache.update({
+            'arr_ptr': arr_ptr,
+            'length': len(x),
+            'sr': sr,
+            'win_ms': frame_ms,
+            'hop_ms': hop_ms,
+            'smooth_ms': smooth_ms,
+            'rms_db': rms_db,
+            'global_floor': global_floor,
+            'floor_pct': floor_pct,
+        })
+        return rms_db, global_floor
+
     def _moving_rms_db(self, x: np.ndarray, sr: int, frame_ms: int = 30, hop_ms: int = 10):
         """RMS 能量包络计算"""
         frame = int(sr * frame_ms / 1000)
@@ -1022,7 +1121,7 @@ class QualityController:
         t_zc = best_zc / sr
         
         # 2. 验证零交叉对齐后的切点是否安静
-        t_validated = self.enforce_quiet_cut(x_mono, sr, t_zc)
+        t_validated = self.enforce_quiet_cut_fast(x_mono, sr, t_zc)
         
         # 3. 如果验证后偏离太多，说明零交叉对齐把我们拉到了高能量区，回退到原始切点
         if abs(t_validated - t_zc) > 0.050:  # 50ms tolerance

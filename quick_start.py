@@ -4,6 +4,7 @@
 # AI-SUMMARY: 精简的传令兵模式快速启动脚本，统一调用SeamlessSplitter
 
 import sys
+import logging
 from pathlib import Path
 from datetime import datetime
 import torch
@@ -72,6 +73,11 @@ def select_processing_mode():
 
 def main():
     """主函数 - 重构为纯传令兵模式"""
+    # 轻量日志配置：让核心模块的INFO日志在控制台可见
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    )
     print("=" * 60)
     print("智能人声分割器 - 快速启动 (v2.3 统一指挥中心版)")
     print("=" * 60)
@@ -99,6 +105,12 @@ def main():
     print(f"[OUTPUT] 输出目录: {output_dir.name}")
 
     try:
+        # 轻量环境诊断日志，便于定位虚拟环境与后端问题
+        import sys as _sys, os as _os
+        print(f"[DIAG] Python: {_sys.executable}")
+        print(f"[DIAG] VIRTUAL_ENV: {_os.environ.get('VIRTUAL_ENV', '')}")
+        print(f"[DIAG] FORCE_SEPARATION_BACKEND: {_os.environ.get('FORCE_SEPARATION_BACKEND', '')}")
+
         # === 核心改造：统一调用指挥中心 ===
         sample_rate = get_config('audio.sample_rate', 44100)
         splitter = SeamlessSplitter(sample_rate=sample_rate)
@@ -121,6 +133,10 @@ def main():
             if 'processing_time' in result: print(f"  总耗时: {result['processing_time']:.1f}秒")
         else:
             print(f"\n[ERROR] 处理失败: {result.get('error', '未知错误')}")
+            # 输出最小诊断信息
+            print(f"[DIAG] Python: {_sys.executable}")
+            print(f"[DIAG] VIRTUAL_ENV: {_os.environ.get('VIRTUAL_ENV', '')}")
+            print(f"[DIAG] FORCE_SEPARATION_BACKEND: {_os.environ.get('FORCE_SEPARATION_BACKEND', '')}")
 
     except Exception as e:
         print(f"[FATAL] 脚本顶层出现未捕获异常: {e}")

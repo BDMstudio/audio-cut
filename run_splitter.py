@@ -164,8 +164,15 @@ def main():
         logger.info(f"输出目录: {output_dir}")
         
         if args.seamless_vocal:
-            # 无缝分割结果显示
-            logger.info(f"生成片段数: {result['num_segments']}")
+            # 无缝分割结果显示（失败分支保护 + 轻量诊断日志）
+            if not result.get('success'):
+                logger.error(f"无缝分割失败: {result.get('error', '未知错误')}")
+                # 轻量提示当前解释器与后端强制变量，便于定位环境问题
+                import sys, os
+                logger.info(f"Python可执行文件: {sys.executable}")
+                logger.info(f"VIRTUAL_ENV: {os.environ.get('VIRTUAL_ENV', '')}")
+                logger.info(f"FORCE_SEPARATION_BACKEND: {os.environ.get('FORCE_SEPARATION_BACKEND', '')}")
+            logger.info(f"生成片段数: {result.get('num_segments', 0)}")
             logger.info(f"处理模式: {result.get('processing_type', 'seamless_vocal_pause_splitting')}")
             
             # 显示人声停顿分析
@@ -182,7 +189,7 @@ def main():
                     logger.info(f"最大差异: {validation['max_difference']:.2e}")
                     
             # 运行额外验证（如果请求）
-            if args.validate_reconstruction and result['success']:
+            if args.validate_reconstruction and result.get('success'):
                 logger.info("运行拼接完整性验证...")
                 try:
                     from tests.test_seamless_reconstruction import SeamlessReconstructionTester

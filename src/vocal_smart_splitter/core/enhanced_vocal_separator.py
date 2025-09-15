@@ -335,7 +335,11 @@ class EnhancedVocalSeparator:
         temp_dir = None
         try:
             logger.info("=== 开始MDX23 CLI分离 ===")
-            
+            # 轻量诊断：确认即将用于子进程的解释器与虚拟环境
+            import sys as _sys, os as _os
+            logger.info(f"PYTHON (CLI): {_sys.executable}")
+            logger.info(f"VIRTUAL_ENV: {_os.environ.get('VIRTUAL_ENV', '')}")
+
             # 创建临时目录
             temp_dir = tempfile.mkdtemp(prefix='mdx23_separation_')
             input_file = os.path.join(temp_dir, 'input.wav')
@@ -439,7 +443,25 @@ class EnhancedVocalSeparator:
         
         # 基础命令
         cmd = [sys.executable, str(inference_script)]
-        
+        # 预检：在同一解释器内尝试导入 demucs（与 CLI 一致）
+        try:
+            probe = subprocess.run(
+                [sys.executable, '-c', 'import demucs,sys;print("demucs_ok")'],
+                capture_output=True, text=True, timeout=10
+            )
+            if probe.returncode == 0 and 'demucs_ok' in (probe.stdout or ''):
+                logger.info("Demucs import preflight: OK")
+            else:
+                logger.warning(f"Demucs import preflight: FAIL (rc={probe.returncode}) stdout={probe.stdout!r} stderr={probe.stderr!r}")
+        except Exception as _e:
+            logger.warning(f"Demucs import preflight exception: {_e}")
+
+        # 记录即将执行的命令（精简）
+        try:
+            logger.info(f"MDX23 CLI cmd: {' '.join(cmd)}")
+        except Exception:
+            pass
+
         # 添加输入输出参数
         cmd.extend(['--input_audio', input_file])
         cmd.extend(['--output_folder', output_dir])

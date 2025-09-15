@@ -156,7 +156,28 @@ class PureVocalPauseDetector:
                 logger.info(f"相对阈值自适应：BPM={tempo:.1f}({bpm_tag}), MDD={mdd_s:.2f}, mul={mul:.2f} → peak={peak_ratio:.3f}, rms={rms_ratio:.3f}")
             
             # 使用相对能量谷检测
+            try:
+                if get_config('pure_vocal_detection.pause_stats_adaptation.enable', True):
+                    mul_pause, vpp_log = self._estimate_vpp_multiplier(vocal_audio)
+                    clamp_min = get_config('pure_vocal_detection.pause_stats_adaptation.clamp_min', 0.75)
+                    clamp_max = get_config('pure_vocal_detection.pause_stats_adaptation.clamp_max', 1.25)
+                    mul_pause = float(np.clip(mul_pause, clamp_min, clamp_max))
+                    peak_ratio *= mul_pause; rms_ratio *= mul_pause
+                    logger.info(f"VPP自适应：{vpp_log}, mul_pause={mul_pause:.2f} → peak={peak_ratio:.3f}, rms={rms_ratio:.3f}")
+            except Exception as e:
+                logger.warning(f"VPP自适应失败（忽略）：{e}")
             filtered_pauses = self._detect_energy_valleys(vocal_audio, peak_ratio, rms_ratio)
+            # VPP后处理：合并过近停顿与粗筛上限，防止候选爆炸
+            try:
+                filtered_pauses = self._compress_pauses(filtered_pauses)
+            except Exception:
+                pass
+            # VPP最高限定：total_valley = 歌曲时长 / segment_min_duration
+            try:
+                duration_s = float(len(vocal_audio)) / float(self.sample_rate)
+                filtered_pauses = self._apply_total_valley_cap(filtered_pauses, duration_s)
+            except Exception as e:
+                logger.warning(f"VPP最高限定应用失败（忽略）：{e}")
         else:
             # 原有的多维特征检测流程
             # 1. 提取多维特征
@@ -233,6 +254,94 @@ class PureVocalPauseDetector:
             zero_crossing_rate=zero_crossing_rate,
             rms_energy=rms_energy
         )
+
+    def _apply_total_valley_cap(self, pauses: List[PureVocalPause], duration_s: float) -> List[PureVocalPause]:
+        """基于VPP最高限定裁剪能量谷数量。
+        total_valley = 歌曲时长 / segment_min_duration；若候选超过该值，仅保留“最安静”的 total_valley 个。
+        “最安静”按 (threshold - energy) 从大到小排序；若缺失则按 confidence 降序。
+        """
+        if not pauses:
+            return pauses
+        try:
+            seg_min = float(get_config('quality_control.segment_min_duration', 4.0))
+            if seg_min <= 0:
+                seg_min = 4.0
+        except Exception:
+            seg_min = 4.0
+        try:
+            import math
+            total_valley = max(1, int(math.floor(duration_s / seg_min)))
+        except Exception:
+            total_valley = max(1, int(duration_s // seg_min) if seg_min > 0 else 1)
+
+        if len(pauses) <= total_valley:
+            return pauses
+
+        def quiet_key(p: PureVocalPause):
+            thr = 0.0
+            eng = 0.0
+            try:
+                if isinstance(p.features, dict):
+                    thr = float(p.features.get('threshold', 0.0))
+                    eng = float(p.features.get('energy', 0.0))
+            except Exception:
+                pass
+            q = thr - eng
+            if not np.isfinite(q):
+                q = 0.0
+            return (q, float(getattr(p, 'confidence', 0.0)))
+
+        sorted_pauses = sorted(pauses, key=quiet_key, reverse=True)
+        capped = sorted_pauses[:total_valley]
+        capped = sorted(capped, key=lambda p: p.start_time)
+        logger.info(f"VPP最高限定生效: 原始={len(pauses)} -> 保留={len(capped)} (上限={total_valley})")
+        return capped
+
+    def _compress_pauses(self, pauses: List[PureVocalPause]) -> List[PureVocalPause]:
+        """合并相邻很近的停顿，并限制原始候选上限以避免后续阶段的指数级计算量。
+
+        合并策略：gap <= merge_close_ms 视为同一停顿，取更长区间，置信度取两者较大。
+        上限策略：按置信度降序保留前 max_raw_candidates 个。
+        """
+        if not pauses:
+            return pauses
+        try:
+            merge_close_ms = get_config('pure_vocal_detection.valley_scoring.merge_close_ms', 80)
+            merge_gap = float(merge_close_ms) / 1000.0
+        except Exception:
+            merge_gap = 0.08
+
+        if merge_gap > 0 and len(pauses) > 1:
+            pauses = sorted(pauses, key=lambda p: p.start_time)
+            merged: List[PureVocalPause] = []
+            cur = pauses[0]
+            for nxt in pauses[1:]:
+                gap = nxt.start_time - cur.end_time
+                if gap <= merge_gap:
+                    cur = PureVocalPause(
+                        start_time=cur.start_time,
+                        end_time=max(cur.end_time, nxt.end_time),
+                        duration=max(cur.end_time, nxt.end_time) - cur.start_time,
+                        pause_type=cur.pause_type,
+                        confidence=max(cur.confidence, nxt.confidence),
+                        features=cur.features,
+                        cut_point=0.0,
+                        quality_grade=cur.quality_grade
+                    )
+                else:
+                    merged.append(cur)
+                    cur = nxt
+            merged.append(cur)
+            pauses = merged
+
+        try:
+            max_raw = int(get_config('pure_vocal_detection.valley_scoring.max_raw_candidates', 1200))
+        except Exception:
+            max_raw = 1200
+        if len(pauses) > max_raw:
+            pauses = sorted(pauses, key=lambda p: p.confidence, reverse=True)[:max_raw]
+
+        return pauses
     
     def _extract_formants(self, audio: np.ndarray, n_formants: int = 3) -> List[np.ndarray]:
         """提取共振峰能量
@@ -764,6 +873,14 @@ class PureVocalPauseDetector:
         frame_length = int(self.sample_rate * 0.025)  # 25ms
         hop_length = int(self.sample_rate * 0.01)     # 10ms
         rms_energy = librosa.feature.rms(y=vocal_audio, frame_length=frame_length, hop_length=hop_length)[0]
+
+        # 1.1 频谱平坦度（可选微提示，用于 valley 打分中的 w_flat）
+        try:
+            spectral_flatness = librosa.feature.spectral_flatness(
+                y=vocal_audio, hop_length=hop_length
+            )[0]
+        except Exception:
+            spectral_flatness = None
         
         # 2. 计算动态阈值
         peak_energy = np.max(rms_energy)
@@ -807,7 +924,33 @@ class PureVocalPauseDetector:
                         pause_energy = np.mean(rms_energy[start_frame:end_frame])
                         confidence = 1.0 - (pause_energy / energy_threshold)  # 越低能量置信度越高
                         confidence = max(0.1, min(0.95, confidence))
-                        
+                        # 方案2：长度/安静度/平坦度(可选) 加权；偏向更长且更安静的停顿
+                        try:
+                            def _map01(x, a, b):
+                                if b <= a:
+                                    return 0.0
+                                return float(np.clip((x - a) / (b - a), 0.0, 1.0))
+                            w_len = get_config('pure_vocal_detection.valley_scoring.w_len', 0.6)
+                            w_quiet = get_config('pure_vocal_detection.valley_scoring.w_quiet', 0.4)
+                            w_flat = get_config('pure_vocal_detection.valley_scoring.w_flat', 0.1)
+                            # 长度分数：0.2~1.5s → 0..1
+                            len_score = _map01(duration, 0.20, 1.50)
+                            # 安静度分数：能量越低越高
+                            quiet_raw = 1.0 - float(pause_energy / max(1e-12, energy_threshold))
+                            quiet_score = float(np.clip(quiet_raw, 0.0, 1.0))
+                            # 平坦度提示：使用 1 - flatness 的均值（更“非噪声”更高）；失败则 0.5
+                            flat_hint = 0.5
+                            if spectral_flatness is not None:
+                                sf_start = max(0, int(pause_start * self.sample_rate / hop_length))
+                                sf_end = min(len(spectral_flatness), int(pause_end * self.sample_rate / hop_length))
+                                if sf_end > sf_start:
+                                    local_flat = float(np.mean(spectral_flatness[sf_start:sf_end]))
+                                    flat_hint = float(np.clip(1.0 - local_flat, 0.0, 1.0))
+                            combined = (w_len * len_score) + (w_quiet * quiet_score) + (w_flat * flat_hint)
+                            confidence = max(0.1, min(0.99, combined))
+                        except Exception:
+                            pass
+
                         pause = PureVocalPause(
                             start_time=pause_start,
                             end_time=pause_end,
@@ -937,3 +1080,151 @@ class PureVocalPauseDetector:
         
         logger.info(f"🔥 MDD增强完成: {len(enhanced_pauses)}个停顿已优化")
         return enhanced_pauses
+
+    def _estimate_vpp_multiplier(self, vocal_audio: np.ndarray):
+        """估计 VPP（Vocal Pause Profile）并返回倍率与日志。
+        仅在演唱区间(singing_blocks)内统计，避免将间奏计入停顿画像。
+        返回: (mul_pause: float, log_str: str)
+        """
+        sr = self.sample_rate
+        hop = self.hop_length
+        # 能量 dB 包络
+        rms = librosa.feature.rms(y=vocal_audio, hop_length=hop)[0]
+        db = 20.0 * np.log10(rms + 1e-12)
+        # 地板与阈值
+        delta_db = get_config('pure_vocal_detection.pause_stats_adaptation.delta_db', 3.0)
+        floor_pct = 5.0
+        try:
+            floor_pct = float(get_config('quality_control.enforce_quiet_cut.floor_percentile', 5))
+        except Exception:
+            pass
+        floor_db = np.percentile(db, floor_pct)
+        thr_db = floor_db + float(delta_db)
+        mask = db > thr_db
+
+        # 形态学：闭后开（基于运行长度的简单实现）
+        close_ms = get_config('pure_vocal_detection.pause_stats_adaptation.morph_close_ms', 150)
+        open_ms = get_config('pure_vocal_detection.pause_stats_adaptation.morph_open_ms', 50)
+        frame_sec = hop / float(sr)
+        close_k = max(1, int(close_ms / 1000.0 / frame_sec))
+        open_k = max(1, int(open_ms / 1000.0 / frame_sec))
+
+        def fill_false_runs(m: np.ndarray, max_len: int) -> np.ndarray:
+            m = m.astype(bool).copy()
+            n = len(m)
+            i = 0
+            while i < n:
+                if not m[i]:
+                    j = i
+                    while j < n and not m[j]:
+                        j += 1
+                    if (j - i) <= max_len:
+                        m[i:j] = True
+                    i = j
+                else:
+                    i += 1
+            return m
+
+        def remove_true_runs(m: np.ndarray, max_len: int) -> np.ndarray:
+            m = m.astype(bool).copy()
+            n = len(m)
+            i = 0
+            while i < n:
+                if m[i]:
+                    j = i
+                    while j < n and m[j]:
+                        j += 1
+                    if (j - i) <= max_len:
+                        m[i:j] = False
+                    i = j
+                else:
+                    i += 1
+            return m
+
+        mask = fill_false_runs(mask, close_k)
+        mask = remove_true_runs(mask, open_k)
+
+        # 提取演唱区间 blocks
+        sing_block_min_s = get_config('pure_vocal_detection.pause_stats_adaptation.sing_block_min_s', 2.0)
+        min_frames_block = max(1, int(sing_block_min_s / frame_sec))
+        blocks = []
+        n = len(mask)
+        i = 0
+        while i < n:
+            if mask[i]:
+                j = i
+                while j < n and mask[j]:
+                    j += 1
+                if (j - i) >= min_frames_block:
+                    blocks.append((i, j))
+                i = j
+            else:
+                i += 1
+
+        if not blocks:
+            return 1.0, "VPP{no_singing_blocks}"
+
+        # 统计块内停顿（mask==False）
+        interlude_min_s = get_config('pure_vocal_detection.pause_stats_adaptation.interlude_min_s', 4.0)
+        interlude_min_frames = int(interlude_min_s / frame_sec)
+        # 可选：对长静默做 ±pad 的 voice_active 覆盖率检测，以更稳健地识别间奏
+        icc_enable = get_config('pure_vocal_detection.pause_stats_adaptation.interlude_coverage_check.enable', False)
+        icc_pad_s = float(get_config('pure_vocal_detection.pause_stats_adaptation.interlude_coverage_check.pad_seconds', 2.0))
+        icc_thr = float(get_config('pure_vocal_detection.pause_stats_adaptation.interlude_coverage_check.coverage_threshold', 0.10))
+        icc_pad_frames = int(icc_pad_s / frame_sec) if icc_pad_s > 0 else 0
+        rest_durations = []
+        total_block_frames = 0
+        for a, b in blocks:
+            total_block_frames += (b - a)
+            i = a
+            while i < b:
+                if not mask[i]:
+                    j = i
+                    while j < b and not mask[j]:
+                        j += 1
+                    span = j - i
+                    if span >= interlude_min_frames:
+                        # 如果开启覆盖率检测，仅当覆盖率很低时才判为间奏
+                        if icc_enable:
+                            a0 = max(0, i - icc_pad_frames)
+                            b0 = min(n, j + icc_pad_frames)
+                            # 语音活动覆盖率（演唱）
+                            coverage = float(np.mean(mask[a0:b0])) if (b0 > a0) else 0.0
+                            if coverage < icc_thr:
+                                i = j
+                                continue
+                        # 默认行为：保守剔除长静默
+                        else:
+                            i = j
+                            continue
+                    rest_durations.append(span * frame_sec)
+                    i = j
+                else:
+                    i += 1
+
+        if not rest_durations or total_block_frames == 0:
+            return 1.0, "VPP{no_rests}"
+
+        import statistics as stats
+        mpd = float(np.median(rest_durations)) if hasattr(np, 'median') else stats.median(rest_durations)
+        p95 = float(np.percentile(rest_durations, 95))
+        pr = float(len(rest_durations) / (total_block_frames * frame_sec / 60.0))
+        rr = float(sum(rest_durations) / (total_block_frames * frame_sec))
+
+        # 分类与倍率
+        th = get_config('pure_vocal_detection.pause_stats_adaptation.classify_thresholds', {})
+        slow_th = th.get('slow', {'mpd': 0.60, 'p95': 1.20, 'rr': 0.35})
+        fast_th = th.get('fast', {'mpd': 0.25, 'pr': 18, 'rr': 0.15})
+        is_slow = (mpd >= slow_th.get('mpd', 0.60)) or (p95 >= slow_th.get('p95', 1.20)) or (rr >= slow_th.get('rr', 0.35))
+        is_fast = (mpd <= fast_th.get('mpd', 0.25)) and (pr >= fast_th.get('pr', 18)) and (rr <= fast_th.get('rr', 0.15))
+        if is_slow:
+            cls = 'slow'
+        elif is_fast:
+            cls = 'fast'
+        else:
+            cls = 'medium'
+
+        mults = get_config('pure_vocal_detection.pause_stats_adaptation.multipliers', {'slow':1.10,'medium':1.00,'fast':0.85})
+        mul_pause = float(mults.get(cls, 1.0))
+        vpp_log = f"VPP{{cls={cls}, mpd={mpd:.2f}, p95={p95:.2f}, pr={pr:.1f}/min, rr={rr:.2f}}}"
+        return mul_pause, vpp_log
