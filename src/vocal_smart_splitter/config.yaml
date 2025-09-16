@@ -115,6 +115,9 @@ quality_control:
   # 仅用于“合并短段”下限；上限不在终筛强制，建议作为目标范围调参
   segment_min_duration: 5.0
   segment_max_duration: 18.0
+  # Pure-music splitting: min duration threshold (seconds). 0 = disabled (default).
+  pure_music_min_duration: 6.0
+
   # Quiet guard override (optional)
   enforce_quiet_cut:
     win_ms: 80
