@@ -117,6 +117,7 @@ quality_control:
   segment_max_duration: 18.0
   # Pure-music splitting: min duration threshold (seconds). 0 = disabled (default).
   pure_music_min_duration: 6.0
+  segment_vocal_threshold_db: -50.0
 
   # Quiet guard override (optional)
   enforce_quiet_cut:

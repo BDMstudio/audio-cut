@@ -91,7 +91,8 @@ class SeamlessSplitter:
         )
 
         if not vocal_pauses:
-            return self._create_single_segment_result(original_audio, input_path, output_dir, "未在纯人声中找到停顿")
+            has_vocal = self._estimate_vocal_presence(vocal_track)
+            return self._create_single_segment_result(original_audio, input_path, output_dir, "未在纯人声中找到停顿", is_vocal=has_vocal)
 
         # 4. 生成、过滤并分割 (在 vocal_track 上进行最终验证)
         # 转换PureVocalPause到样本点
@@ -142,8 +143,9 @@ class SeamlessSplitter:
         )
 
         # 使用最终确定的分割点来切割原始音频
+        segment_vocal_flags = self._classify_segments_vocal_presence(vocal_track, final_cut_points)
         segments = self._split_at_sample_level(original_audio, final_cut_points)
-        saved_files = self._save_segments(segments, output_dir)
+        saved_files = self._save_segments(segments, output_dir, segment_is_vocal=segment_vocal_flags)
 
         # 5. 保存完整的分离文件
         input_name = Path(input_path).stem
@@ -162,6 +164,8 @@ class SeamlessSplitter:
             'success': True, 'method': f'pure_vocal_split_{mode}', 'num_segments': len(segments),
             'saved_files': saved_files, 'backend_used': separation_result.backend_used,
             'separation_confidence': separation_result.separation_confidence, 'processing_time': total_time,
+            'segment_vocal_flags': segment_vocal_flags,
+            'segment_labels': ['human' if flag else 'music' for flag in segment_vocal_flags],
             'input_file': input_path, 'output_dir': output_dir
         }
 
@@ -493,20 +497,54 @@ class SeamlessSplitter:
                 logger.info(f"[Split] 跳过过短片段 idx={i} len_samples={end-start}")
         return segments
 
-    def _save_segments(self, segments: List[np.ndarray], output_dir: str) -> List[str]:
-        """保存分割后的片段"""
+    def _classify_segments_vocal_presence(self, vocal_audio: np.ndarray, cut_points: List[int]) -> List[bool]:
+        """根据人声轨能量判断每个片段是否包含人声"""
+        num_segments = max(len(cut_points) - 1, 0)
+        if vocal_audio is None or getattr(vocal_audio, 'size', 0) == 0:
+            return [True] * num_segments
+        sr = self.sample_rate
+        threshold_db = float(get_config('quality_control.segment_vocal_threshold_db', -50.0))
+        min_samples = max(1, int(0.02 * sr))
+        flags: List[bool] = []
+        for i in range(num_segments):
+            start = max(0, min(int(cut_points[i]), len(vocal_audio)))
+            end = max(start, min(int(cut_points[i + 1]), len(vocal_audio)))
+            if end - start < min_samples:
+                flags.append(False)
+                continue
+            segment = vocal_audio[start:end]
+            rms = float(np.sqrt(np.mean(np.square(segment)) + 1e-12))
+            rms_db = 20.0 * np.log10(rms)
+            flags.append(rms_db > threshold_db)
+        return flags
+
+    def _estimate_vocal_presence(self, vocal_audio: np.ndarray) -> bool:
+        """估算给定人声轨整体是否包含人声"""
+        if vocal_audio is None or getattr(vocal_audio, 'size', 0) == 0:
+            return False
+        flags = self._classify_segments_vocal_presence(vocal_audio, [0, len(vocal_audio)])
+        return bool(flags[0]) if flags else False
+
+    def _save_segments(self, segments: List[np.ndarray], output_dir: str, segment_is_vocal: Optional[List[bool]] = None) -> List[str]:
+        """保存分割后的片段，并根据人声识别结果命名"""
         saved_files = []
         for i, segment_audio in enumerate(segments):
-            output_path = Path(output_dir) / f"segment_{i+1:03d}.wav"
+            is_vocal = True
+            if segment_is_vocal is not None and i < len(segment_is_vocal):
+                is_vocal = bool(segment_is_vocal[i])
+            label = 'human' if is_vocal else 'music'
+            output_path = Path(output_dir) / f"segment_{i+1:03d}_{label}.wav"
             sf.write(output_path, segment_audio, self.sample_rate, subtype='PCM_24')
             saved_files.append(str(output_path))
         return saved_files
 
-    def _create_single_segment_result(self, audio: np.ndarray, input_path: str, output_dir: str, reason: str) -> Dict:
+    def _create_single_segment_result(self, audio: np.ndarray, input_path: str, output_dir: str, reason: str, is_vocal: bool = True) -> Dict:
         """当无法分割时，创建单个片段的结果"""
         logger.warning(f"{reason}，将输出为单个文件。")
-        saved_files = self._save_segments([audio], output_dir)
+        saved_files = self._save_segments([audio], output_dir, segment_is_vocal=[is_vocal])
         return {
             'success': True, 'num_segments': 1, 'saved_files': saved_files,
+            'segment_vocal_flags': [is_vocal],
+            'segment_labels': ['human' if is_vocal else 'music'],
             'note': reason, 'input_file': input_path, 'output_dir': output_dir
         }

@@ -38,13 +38,15 @@ python run_splitter.py input/your_song.mp3 --mode v2.2_mdd
 ```yaml
 quality_control:
   min_split_gap: 1.0                 # 最小切点间隔（秒）
-  segment_min_duration: 1.0          # 片段最小时长（秒）
-  segment_max_duration: 20.0         # 片段最长时长（秒）
+  segment_min_duration: 5.0          # 片段最小时长（秒）
+  segment_max_duration: 18.0         # 片段最长时长（秒）
+  pure_music_min_duration: 6.0       # 无人声区间的最小检测窗口
+  segment_vocal_threshold_db: -50.0  # 片段人声判定阈值（dB）
   enforce_quiet_cut:
     win_ms: 80
-    guard_db: 3.0
-    search_right_ms: 350
-    floor_percentile: 5              # 5 或 0.05 皆可
+    guard_db: 2.5
+    search_right_ms: 150
+    floor_percentile: 5
 ```
 说明：若未显式配置，程序会使用内建默认值。
 
@@ -73,8 +75,8 @@ quality_control:
   - `quality_control.enforce_quiet_cut.search_right_ms`: 120–200
 
 - 长短段治理（仅合并短段）
-  - `quality_control.segment_min_duration`: 4–6（兜底短碎片）
-  - `quality_control.segment_max_duration`: 15–20（目标参考；终筛不强制打断）
+  - `quality_control.segment_min_duration`: 5–6（兜底短碎片）
+  - `quality_control.segment_max_duration`: 15–18（超长段将自动能量切分）
 
 ### 常见现象 → 快速处置
 - 仍有超长片段（> seg_max）
@@ -91,7 +93,7 @@ quality_control:
 - 切点过多 / 片段太碎
   1) `merge_close_ms` ↑（120–150）；
   2) `min_split_gap` ↑（1.2–1.5）；
-  3) `segment_min_duration` ↑（5→6）。
+  3) `segment_min_duration` 根据风格在 5–6 范围微调。
 
 - 切点靠边/轻微爆音
   1) `guard_db` ↑（2.5–3.0）；

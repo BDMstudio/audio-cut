@@ -59,8 +59,18 @@ mdx23_config.txt
 *.backup
 *.bak
 
-# Claude settings (local only)
+# Claude/codex settings (local only)
 .claude/settings.local.json
 .claude/
 CLAUDE.md
 AGENTS.md
+
+# Pytest caches & coverage
+.pytest_cache/
+.cache/
+.coverage
+coverage.xml
+htmlcov/
+
+# Bug snapshots (local only)
+BUG_snip/
