@@ -14,7 +14,6 @@ import soundfile as sf
 
 from ..utils.config_manager import get_config
 from ..utils.audio_processor import AudioProcessor
-from .vocal_pause_detector import VocalPauseDetectorV2
 from .pure_vocal_pause_detector import PureVocalPauseDetector
 from .quality_controller import QualityController
 from .enhanced_vocal_separator import EnhancedVocalSeparator
@@ -30,41 +29,25 @@ class SeamlessSplitter:
     def __init__(self, sample_rate: int = 44100):
         self.sample_rate = sample_rate
         self.audio_processor = AudioProcessor(sample_rate)
-        self.pause_detector = VocalPauseDetectorV2(sample_rate)  # 用于smart_split模式
-        self.pure_vocal_detector = PureVocalPauseDetector(sample_rate)  # 用于v2.1/v2.2模式
+        self.pure_vocal_detector = PureVocalPauseDetector(sample_rate)  # 用于v2.2模式
         self.quality_controller = QualityController(sample_rate)
         self.separator = EnhancedVocalSeparator(sample_rate)
-        logger.info(f"无缝分割器统一指挥中心初始化完成 (SR: {self.sample_rate}) - 已加载双检测器")
+        logger.info(f"无缝分割器统一指挥中心初始化完成 (SR: {self.sample_rate}) - 已加载纯人声检测器")
 
     def split_audio_seamlessly(self, input_path: str, output_dir: str, mode: str = 'v2.2_mdd') -> Dict:
-        """
-        执行无缝分割的主入口。
-
-        Args:
-            input_path: 输入文件路径
-            output_dir: 输出目录
-            mode: 分割模式 ('v2.1', 'v2.2_mdd', 'smart_split', 'vocal_separation')
-
-        Returns:
-            分割结果信息
-        """
+        """执行无缝分割的主入口，支持纯人声分离与 v2.2 MDD 模式"""
         logger.info(f"开始无缝分割: {input_path} (模式: {mode})")
 
         try:
             if mode == 'vocal_separation':
                 return self._process_vocal_separation_only(input_path, output_dir)
-            elif mode in ['v2.1', 'v2.2_mdd']:
-                return self._process_pure_vocal_split(input_path, output_dir, mode)
-            elif mode == 'smart_split':
-                return self._process_smart_split(input_path, output_dir)
-            else:
-                logger.warning(f"未知模式 {mode}，使用默认v2.2 MDD模式")
-                return self._process_pure_vocal_split(input_path, output_dir, 'v2.2_mdd')
+            if mode != 'v2.2_mdd':
+                logger.warning(f"未知模式 {mode}，使用默认 v2.2 MDD 模式")
+            return self._process_pure_vocal_split(input_path, output_dir, 'v2.2_mdd')
 
         except Exception as e:
             logger.error(f"无缝分割失败: {e}", exc_info=True)
             return {'success': False, 'error': str(e), 'input_file': input_path}
-
     def _load_and_resample_if_needed(self, input_path: str):
         """加载音频并根据需要重采样"""
         original_audio, sr = self.audio_processor.load_audio(input_path, normalize=False)
@@ -75,7 +58,7 @@ class SeamlessSplitter:
 
     def _process_pure_vocal_split(self, input_path: str, output_dir: str, mode: str) -> Dict:
         """
-        [v2.9 终极修正版] 处理v2.1和v2.2 MDD模式的核心逻辑
+        [v2.9 终极修正版] 处理v2.2 MDD模式的核心逻辑
         关键修复: 调用新的双音频输入接口，确保音乐分析在 original_audio 上，而VAD检测在 vocal_track 上。
         """
         logger.info(f"[{mode.upper()}] 执行纯人声分割流程...")
@@ -181,25 +164,6 @@ class SeamlessSplitter:
             'separation_confidence': separation_result.separation_confidence, 'processing_time': total_time,
             'input_file': input_path, 'output_dir': output_dir
         }
-
-    def _process_smart_split(self, input_path: str, output_dir: str) -> Dict:
-        """处理传统智能分割模式"""
-        logger.info("[SMART_SPLIT] 执行传统智能分割...")
-        original_audio = self._load_and_resample_if_needed(input_path)
-        vocal_pauses = self.pause_detector.detect_vocal_pauses(original_audio)
-        if not vocal_pauses:
-            return self._create_single_segment_result(original_audio, input_path, output_dir, "未找到符合条件的停顿")
-
-        cut_points_samples = [int(p.cut_point * self.sample_rate) for p in vocal_pauses]
-        final_cut_points = self._finalize_and_filter_cuts_v2(
-            cut_points_samples,
-            original_audio,
-            pure_vocal_audio=None
-        )
-        segments = self._split_at_sample_level(original_audio, final_cut_points)
-        saved_files = self._save_segments(segments, output_dir)
-
-        return {'success': True, 'method': 'smart_split', 'num_segments': len(segments), 'saved_files': saved_files, 'input_file': input_path, 'output_dir': output_dir}
 
     def _process_vocal_separation_only(self, input_path: str, output_dir: str) -> Dict:
         """处理纯人声分离模式"""
@@ -427,6 +391,65 @@ class SeamlessSplitter:
         boundaries: List[int] = [0] + [int(t * sr) for t in filtered_times] + [len(audio_for_split)]
         boundaries = sorted(set(boundaries))
         logger.info(f"[FinalizeV2] 初始边界数: {len(boundaries)}")
+        seg_max = float(get_config('quality_control.segment_max_duration', 18.0))
+        min_gap_samples = max(1, int(get_config('quality_control.min_split_gap', 1.0) * sr))
+
+        def _find_energy_min_cut(start_idx: int, end_idx: int, source_audio: np.ndarray) -> Optional[int]:
+            span = end_idx - start_idx
+            if span <= min_gap_samples * 2:
+                return None
+            search_start = start_idx + span // 4
+            search_end = start_idx + (3 * span) // 4
+            if search_end - search_start <= min_gap_samples:
+                return None
+            sub = source_audio[search_start:search_end]
+            if sub.size == 0:
+                return None
+            win = max(1, int(0.02 * sr))
+            sq = np.square(sub)
+            if sub.size >= win > 1:
+                kernel = np.ones(win, dtype=sq.dtype) / float(win)
+                energy = np.convolve(sq, kernel, mode='same')
+            else:
+                energy = sq
+            min_offset = int(np.argmin(energy))
+            return search_start + min_offset
+
+        def _split_long_segments(bounds: List[int]) -> List[int]:
+            if seg_max <= 0:
+                return bounds
+            updated = sorted(set(bounds))
+            target_audio = x_guard if x_guard is not None else audio_for_split
+            max_passes = 8
+            passes = 0
+            changed = True
+            while changed and passes < max_passes:
+                changed = False
+                passes += 1
+                new_points: List[int] = []
+                for i in range(len(updated) - 1):
+                    start_idx = updated[i]
+                    end_idx = updated[i + 1]
+                    if (end_idx - start_idx) / sr <= seg_max:
+                        continue
+                    cut_idx = _find_energy_min_cut(start_idx, end_idx, target_audio)
+                    if cut_idx is None:
+                        cut_idx = start_idx + (end_idx - start_idx) // 2
+                    cut_idx = int(np.clip(cut_idx, start_idx + min_gap_samples, end_idx - min_gap_samples))
+                    if cut_idx <= start_idx or cut_idx >= end_idx:
+                        continue
+                    if all(abs(cut_idx - existing) >= min_gap_samples for existing in updated):
+                        new_points.append(cut_idx)
+                if new_points:
+                    updated.extend(new_points)
+                    updated = sorted(set(updated))
+                    changed = True
+            if passes >= max_passes and changed:
+                logger.warning(f'[FinalizeV2] long-segment splitting reached max passes {max_passes}; segments may still exceed {seg_max:.3f}s')
+            return updated
+
+        boundaries = _split_long_segments(boundaries)
+
         # VPP一次判定：仅做“合并短段”，不再做任何二次插点/强拆，避免破坏首次优选切点
         seg_min = float(get_config('quality_control.segment_min_duration', 4.0))
         changed_local = True
@@ -440,295 +463,6 @@ class SeamlessSplitter:
                     del boundaries[rm_idx]
                     changed_local = True
                     break
-        logger.info(f"[FinalizeV2] 最终边界数: {len(boundaries)}")
-        return boundaries
-
-        # 新治理策略：
-        # 1) 仅使用首次高质量能量谷作为切点；
-        # 2) 合并短段（< segment_min_duration）；
-        # 3) 对超长段（> segment_max_duration）在该段内做“二次能量谷检测”，再合并一次短段；
-        seg_min = float(get_config('quality_control.segment_min_duration', 4.0))
-        seg_max = float(get_config('quality_control.segment_max_duration', 18.0))
-        min_gap_s = float(get_config('quality_control.min_split_gap', 1.0))
-        min_gap_samples = max(1, int(min_gap_s * sr))
-
-        def _merge_short(bounds: List[int]) -> List[int]:
-            changed_local = True
-            while changed_local and len(bounds) > 2:
-                changed_local = False
-                durs_local = [(bounds[i+1]-bounds[i]) / sr for i in range(len(bounds)-1)]
-                for i, d in enumerate(durs_local):
-                    if d < seg_min:
-                        rm_idx = i+1 if i+1 < len(bounds)-1 else i
-                        logger.info(f"[FinalizeV2] 合并短段: 移除边界索引 {rm_idx}，片段时长 {d:.3f}s < {seg_min:.3f}s")
-                        del bounds[rm_idx]
-                        changed_local = True
-                        break
-            return bounds
-
-        def _second_valley_for_long(bounds: List[int]) -> List[int]:
-            new_bounds = list(bounds)
-            for i in range(len(bounds)-1):
-                start = bounds[i]
-                end = bounds[i+1]
-                span_s = (end - start) / sr
-                if span_s > seg_max:
-                    n_add = int(np.floor(span_s / seg_max))
-                    if n_add <= 0:
-                        continue
-                    step = span_s / (n_add + 1)
-                    for k in range(1, n_add+1):
-                        t_candidate = (start / sr) + step * k
-                        valley_idx = None
-                        try:
-                            local_rms_ms = int(get_config('vocal_pause_splitting.local_rms_window_ms', 25))
-                            guard_ms = int(get_config('vocal_pause_splitting.lookahead_guard_ms', 120))
-                            floor_pct = float(get_config('vocal_pause_splitting.silence_floor_percentile', 5))
-                            valley_idx = self.pause_detector._select_valley_cut_point(
-                                x_guard, start, end, sr, local_rms_ms, guard_ms, floor_pct
-                            )
-                        except Exception:
-                            valley_idx = None
-                        if valley_idx is None:
-                            t_adj = _fallback_local_min(t_candidate)
-                            valley_idx = int(round(t_adj * sr))
-                        lo = start + min_gap_samples
-                        hi = end - min_gap_samples
-                        if hi <= lo:
-                            logger.warning(f"[FinalizeV2] 长段过窄无法插点 [{start},{end}]，跳过")
-                            continue
-                        valley_idx = int(np.clip(valley_idx, lo, hi))
-                        if any(abs(valley_idx - bb) < min_gap_samples for bb in (start, end)):
-                            valley_idx = int(np.clip((start + end)//2, lo, hi))
-                        new_bounds.append(valley_idx)
-                        logger.info(f"[FinalizeV2] 二次检测切点: 区间[{i},{i+1}] 追加 valley@{valley_idx/sr:.3f}s (span={span_s:.3f}s)")
-            # 去重与样本间隔清理
-            new_bounds = sorted(set(new_bounds))
-            cleaned = [new_bounds[0]]
-            for b in new_bounds[1:]:
-                if b - cleaned[-1] >= min_gap_samples:
-                    cleaned.append(b)
-                else:
-                    logger.info(f"[FinalizeV2] 移除过近边界(二次): prev={cleaned[-1]} this={b}")
-            if cleaned[-1] != new_bounds[-1]:
-                if new_bounds[-1] - cleaned[-1] < min_gap_samples:
-                    if len(cleaned) >= 2:
-                        cleaned[-1] = new_bounds[-1]
-                    else:
-                        cleaned.append(new_bounds[-1])
-                else:
-                    cleaned.append(new_bounds[-1])
-            return cleaned
-
-        # 迭代版二次谷值：
-        def _second_valley_iterative(bounds: List[int], max_passes: int = 3) -> List[int]:
-            cur = list(bounds)
-            # 记录第一轮的超长区间（样本坐标），后续仅对这些区间再做2轮
-            def _get_long_spans(bds: List[int]) -> List[Tuple[int, int]]:
-                out = []
-                for ii in range(len(bds)-1):
-                    st, ed = bds[ii], bds[ii+1]
-                    if (ed - st) / sr > seg_max:
-                        out.append((st, ed))
-                return out
-
-            initial_long_spans = _get_long_spans(cur)
-
-            def _in_initial_long(st: int, ed: int) -> bool:
-                for a, b in initial_long_spans:
-                    if st >= a and ed <= b:
-                        return True
-                return False
-
-            passes = 0
-            while passes < max_passes:
-                passes += 1
-                added = False
-                new_bounds = list(cur)
-                for ii in range(len(cur)-1):
-                    start, end = cur[ii], cur[ii+1]
-                    span_s = (end - start) / sr
-                    if span_s <= seg_max:
-                        continue
-                    # 仅对第一轮发现的超长区间在后续轮次继续处理
-                    if passes > 1 and not _in_initial_long(start, end):
-                        continue
-                    # 使用 ceil 方案，严格收敛到 seg_max
-                    n_add = int(np.ceil(span_s / seg_max)) - 1
-                    if n_add <= 0:
-                        continue
-                    step = span_s / (n_add + 1)
-                    for k in range(1, n_add + 1):
-                        t_candidate = (start / sr) + step * k
-                        valley_idx = None
-                        try:
-                            local_rms_ms = int(get_config('vocal_pause_splitting.local_rms_window_ms', 25))
-                            guard_ms = int(get_config('vocal_pause_splitting.lookahead_guard_ms', 120))
-                            floor_pct = float(get_config('vocal_pause_splitting.silence_floor_percentile', 5))
-                            valley_idx = self.pause_detector._select_valley_cut_point(
-                                x_guard, start, end, sr, local_rms_ms, guard_ms, floor_pct
-                            )
-                        except Exception:
-                            valley_idx = None
-                        if valley_idx is None:
-                            t_adj = _fallback_local_min(t_candidate)
-                            valley_idx = int(round(t_adj * sr))
-                        # 间隔与范围保护
-                        lo = start + min_gap_samples
-                        hi = end - min_gap_samples
-                        if hi <= lo:
-                            logger.warning(f"[FinalizeV2] 长段过窄无法插点 [{start},{end}]，跳过")
-                            continue
-                        valley_idx = int(np.clip(valley_idx, lo, hi))
-                        if any(abs(valley_idx - bb) < min_gap_samples for bb in (start, end)):
-                            valley_idx = int(np.clip((start + end)//2, lo, hi))
-                        new_bounds.append(valley_idx)
-                        added = True
-                        logger.info(f"[FinalizeV2] 二次检测切点(p#{passes}): 区间[{ii},{ii+1}] 追加 valley@{valley_idx/sr:.3f}s (span={span_s:.3f}s)")
-                # 去重与间隔清理
-                new_bounds = sorted(set(new_bounds))
-                cleaned = [new_bounds[0]]
-                for b in new_bounds[1:]:
-                    if b - cleaned[-1] >= min_gap_samples:
-                        cleaned.append(b)
-                    else:
-                        logger.info(f"[FinalizeV2] 移除过近边界(二次p#{passes}): prev={cleaned[-1]} this={b}")
-                if cleaned[-1] != new_bounds[-1]:
-                    if new_bounds[-1] - cleaned[-1] < min_gap_samples:
-                        if len(cleaned) >= 2:
-                            cleaned[-1] = new_bounds[-1]
-                        else:
-                            cleaned.append(new_bounds[-1])
-                    else:
-                        cleaned.append(new_bounds[-1])
-                cur = cleaned
-                # 检查是否已满足上限
-                max_span = 0.0
-                for ii in range(len(cur)-1):
-                    span_s = (cur[ii+1] - cur[ii]) / sr
-                    if span_s > max_span:
-                        max_span = span_s
-                if max_span <= seg_max:
-                    break
-                # 若本轮没有新增，提前退出
-                if not added:
-                    break
-                # 仅对第一轮标记的超长片段继续后续轮次
-                if passes == 1:
-                    initial_long_spans = _get_long_spans(cur)
-            return cur
-
-        # 1) 合并短段（尊重首次能量谷切点，不新增切点）
-        boundaries = _merge_short(boundaries)
-        # 2) 迭代对超长段做局部二次谷值檢测（最多3轮，且仅对第一轮判定的超长区间再做后续2轮）
-        boundaries = _second_valley_iterative(boundaries, max_passes=3)
-        # 3) 再合并一次短段，确保满足 segment_min_duration
-        boundaries = _merge_short(boundaries)
-
-        logger.info(f"[FinalizeV2] 最终边界数: {len(boundaries)}")
-        return boundaries
-
-        # 长短段治理
-        seg_min = get_config('quality_control.segment_min_duration', 4.0)
-        seg_max = get_config('quality_control.segment_max_duration', 18.0)
-
-        changed = True
-        merge_pass = 0
-        while changed and len(boundaries) > 2:
-            changed = False
-            merge_pass += 1
-            durs = [(boundaries[i+1]-boundaries[i]) / sr for i in range(len(boundaries)-1)]
-            for i, d in enumerate(durs):
-                if d < seg_min and len(boundaries) > 2:
-                    rm_idx = i+1 if i+1 < len(boundaries)-1 else i
-                    del boundaries[rm_idx]
-                    changed = True
-                    logger.info(f"[FinalizeV2] 合并短段 pass#{merge_pass}: 移除边界索引 {rm_idx}，片段时长 {d:.3f}s")
-                    break
-
-        def _insert_split(boundaries: List[int], start_idx: int, count: int):
-            start = boundaries[start_idx]
-            end = boundaries[start_idx+1]
-            span_s = (end - start) / sr
-            step = span_s / (count + 1)
-            min_gap_s = float(get_config('quality_control.min_split_gap', 1.0))
-            min_gap_samples = max(1, int(min_gap_s * sr))
-            for k in range(1, count+1):
-                t_candidate = (start / sr) + step * k
-                t_adj = self.quality_controller.enforce_quiet_cut_fast(x_guard, sr, t_candidate)
-                if t_adj is None or t_adj < 0:
-                    t_adj = _fallback_local_min(t_candidate)
-                # 转为样本并与边界保持最小间隔，避免 0s 片段
-                b_idx = int(round(t_adj * sr))
-                lo = start + min_gap_samples
-                hi = end - min_gap_samples
-                if hi <= lo:
-                    # 区间太窄，不插入，避免制造0s片段
-                    logger.warning(f"[FinalizeV2] 区间[{start},{end}] 太短，跳过插入切点")
-                    continue
-                # 将切点夹紧到有效范围
-                b_idx = int(np.clip(b_idx, lo, hi))
-                # 去重：避免与现有边界过近
-                if any(abs(b_idx - bb) < min_gap_samples for bb in boundaries[start_idx:start_idx+2]):
-                    # 回退到中点
-                    b_idx = int((start + end) // 2)
-                    b_idx = int(np.clip(b_idx, lo, hi))
-                boundaries.append(b_idx)
-
-        changed = True
-        insert_pass = 0
-        max_insert_pass = 10
-        while changed and insert_pass < max_insert_pass:
-            changed = False
-            insert_pass += 1
-            boundaries.sort()
-            i = 0
-            while i < len(boundaries) - 1:
-                span_s = (boundaries[i+1] - boundaries[i]) / sr
-                if span_s > seg_max:
-                    n_add = int(np.floor(span_s / seg_max))
-                    _insert_split(boundaries, i, n_add)
-                    changed = True
-                    logger.info(f"[FinalizeV2] 强拆长段 pass#{insert_pass}: 在区间[{i},{i+1}] 追加 {n_add} 个切点 (span={span_s:.3f}s)")
-                    break
-                i += 1
-
-        # 二次清理：去重与最小样本间隔，避免 0s 片段
-        min_gap_s = float(get_config('quality_control.min_split_gap', 1.0))
-        min_gap_samples = max(1, int(min_gap_s * sr))
-        boundaries = sorted(set(boundaries))
-        cleaned = [boundaries[0]]
-        for b in boundaries[1:]:
-            if b - cleaned[-1] >= min_gap_samples:
-                cleaned.append(b)
-            else:
-                logger.info(f"[FinalizeV2] 移除过近边界: prev={cleaned[-1]} this={b} (<{min_gap_samples} samples)")
-        # 确保保留结尾边界
-        if cleaned[-1] != boundaries[-1]:
-            if boundaries[-1] - cleaned[-1] < min_gap_samples:
-                # 如果最后一段过短，保留结尾，移除上一个
-                if len(cleaned) >= 2:
-                    cleaned[-1] = boundaries[-1]
-                else:
-                    cleaned.append(boundaries[-1])
-            else:
-                cleaned.append(boundaries[-1])
-        boundaries = cleaned
-        # 最终一次短段合并：确保所有片段长度≥segment_min_duration
-        changed = True
-        seg_min = float(get_config('quality_control.segment_min_duration', 4.0))
-        while changed and len(boundaries) > 2:
-            changed = False
-            durs = [(boundaries[i+1]-boundaries[i]) / sr for i in range(len(boundaries)-1)]
-            for i, d in enumerate(durs):
-                if d < seg_min and len(boundaries) > 2:
-                    rm_idx = i+1 if i+1 < len(boundaries)-1 else i
-                    logger.info(f"[FinalizeV2] 合并短段(最终): 移除边界索引 {rm_idx}，片段时长 {d:.3f}s < {seg_min:.3f}s")
-                    del boundaries[rm_idx]
-                    changed = True
-                    break
-        if insert_pass >= max_insert_pass:
-            logger.warning(f"[FinalizeV2] 强拆循环达到上限 {max_insert_pass} 次，提前退出")
         logger.info(f"[FinalizeV2] 最终边界数: {len(boundaries)}")
         return boundaries
 

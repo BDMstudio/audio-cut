@@ -11,6 +11,7 @@ import torch
 
 project_root = Path(__file__).parent
 sys.path.insert(0, str(project_root))
+sys.path.insert(0, str(project_root / 'src'))
 
 from src.vocal_smart_splitter.core.seamless_splitter import SeamlessSplitter
 from src.vocal_smart_splitter.utils.config_manager import get_config
@@ -51,26 +52,21 @@ def select_processing_mode():
     print("\n" + "=" * 60)
     print("选择处理模式")
     print("=" * 60)
-    print("  1. 智能分割 (Smart Split)")
-    print("     - 在原始混音上识别人声停顿并分割。")
-    print("  2. 纯人声分离 (Vocal Separation Only)")
-    print("     - 仅分离人声和伴奏，不分割。")
-    print("  3. [推荐] 纯人声检测v2.1 (Pure Vocal v2.1)")
-    print("     - 先分离再检测，使用统计学动态裁决，适合快歌。")
-    print("  4. [最新] MDD增强纯人声检测v2.2 (Pure Vocal v2.2 MDD)")
-    print("     - 在v2.1基础上，集成音乐动态密度(MDD)识别主副歌。")
+    print("  1. 纯人声分离 (Vocal Separation Only)")
+    print("     - 仅分离人声和伴奏，不执行切割")
+    print("  2. [最新] MDD增强纯人声检测v2.2 (Pure Vocal v2.2 MDD)")
+    print("     - 先分离再检测，集成音乐动态密度识别主副歌")
     print()
-    
+
     try:
-        choice = int(input("请选择 (1-4): ").strip())
-        modes = {1: 'smart_split', 2: 'vocal_separation', 3: 'v2.1', 4: 'v2.2_mdd'}
+        choice = int(input("请选择 (1-2): ").strip())
+        modes = {1: 'vocal_separation', 2: 'v2.2_mdd'}
         mode = modes.get(choice, 'v2.2_mdd')
         print(f"[SELECT] 已选择模式: {mode}")
         return mode
     except ValueError:
         print("[ERROR] 输入无效，使用默认MDD v2.2模式")
         return 'v2.2_mdd'
-
 def main():
     """主函数 - 重构为纯传令兵模式"""
     # 轻量日志配置：让核心模块的INFO日志在控制台可见

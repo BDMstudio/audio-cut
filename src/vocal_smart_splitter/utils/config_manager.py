@@ -50,9 +50,8 @@ class ConfigManager:
     def _validate_config(self):
         """验证配置参数的有效性"""
         required_sections = [
-            'audio', 'vocal_separation', 'breath_detection',
-            'content_analysis', 'smart_splitting', 'quality_control',
-            'output', 'logging'
+            'audio', 'pure_vocal_detection', 'musical_dynamic_density',
+            'quality_control', 'vocal_separation', 'output', 'logging'
         ]
         
         for section in required_sections:
@@ -61,7 +60,6 @@ class ConfigManager:
         
         # 验证关键参数
         self._validate_audio_config()
-        self._validate_splitting_config()
         self._validate_quality_config()
         
         logger.info("配置参数验证通过")
@@ -75,20 +73,6 @@ class ConfigManager:
         
         if audio_config['channels'] not in [1, 2]:
             raise ValueError(f"不支持的声道数: {audio_config['channels']}")
-    
-    def _validate_splitting_config(self):
-        """验证分割配置"""
-        split_config = self.config['smart_splitting']
-        
-        min_len = split_config['min_segment_length']
-        max_len = split_config['max_segment_length']
-        target_len = split_config['target_segment_length']
-        
-        if not (min_len <= target_len <= max_len):
-            raise ValueError(f"分割长度配置错误: min={min_len}, target={target_len}, max={max_len}")
-        
-        if min_len < 3 or max_len > 30:
-            raise ValueError(f"分割长度超出合理范围: min={min_len}, max={max_len}")
     
     def _validate_quality_config(self):
         """验证质量控制配置"""
@@ -175,33 +159,6 @@ class ConfigManager:
         except Exception as e:
             logger.error(f"配置文件保存失败: {e}")
             raise
-    
-    def update_from_args(self, args: Dict[str, Any]):
-        """从命令行参数更新配置
-        
-        Args:
-            args: 命令行参数字典
-        """
-        # 映射命令行参数到配置路径
-        arg_mapping = {
-            'min_length': 'smart_splitting.min_segment_length',
-            'max_length': 'smart_splitting.max_segment_length',
-            'target_length': 'smart_splitting.target_segment_length',
-            'output_dir': 'output.directory',
-            'sample_rate': 'audio.sample_rate',
-            'quality': 'audio.quality',
-            'verbose': 'logging.level'
-        }
-        
-        for arg_key, config_path in arg_mapping.items():
-            if arg_key in args and args[arg_key] is not None:
-                # 特殊处理verbose参数
-                if arg_key == 'verbose' and args[arg_key]:
-                    self.set(config_path, 'DEBUG')
-                else:
-                    self.set(config_path, args[arg_key])
-        
-        logger.info("配置已从命令行参数更新")
     
     def get_logging_config(self) -> Dict[str, Any]:
         """获取日志配置"""

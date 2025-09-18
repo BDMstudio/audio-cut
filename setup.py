@@ -22,7 +22,7 @@ def read_requirements():
 
 setup(
     name="vocal-smart-splitter",
-    version="1.0.2",
+    version="2.3.0",
     description="智能人声分割器 - 基于人声内容和换气停顿的智能音频分割工具",
     long_description=read_readme(),
     long_description_content_type="text/markdown",
@@ -61,11 +61,6 @@ setup(
         "Topic :: Multimedia :: Sound/Audio :: Analysis",
         "Topic :: Scientific/Engineering :: Artificial Intelligence",
     ],
-    entry_points={
-        "console_scripts": [
-            "vocal-splitter=vocal_smart_splitter.main:main",
-        ],
-    },
     keywords="audio, voice, splitting, AI, machine learning, signal processing",
     project_urls={
         "Documentation": "https://github.com/bdm/vocal-smart-splitter/blob/main/README.md",

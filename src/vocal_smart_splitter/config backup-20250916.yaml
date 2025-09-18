@@ -10,7 +10,7 @@ audio:
 pure_vocal_detection:
   enable: true
   # Base detection
-  min_pause_duration: 0.5
+  min_pause_duration: 0.4
   breath_duration_range: [0.1, 0.3]
   f0_weight: 0.30
   formant_weight: 0.25
@@ -41,7 +41,7 @@ pure_vocal_detection:
   pause_stats_adaptation:
     enable: true
     delta_db: 3.0               # voice_active = floor_db + delta_db
-    morph_close_ms: 150         # close then open (run-length morphology)
+    morph_close_ms: 300         # close then open (run-length morphology)
     morph_open_ms: 50
     sing_block_min_s: 2.0
     interlude_min_s: 4.0
@@ -60,8 +60,8 @@ pure_vocal_detection:
   # Candidate scoring and NMS preferences
   valley_scoring:
     # 强化“长谷优先”，保持安静度为次要因子
-    w_len: 0.7
-    w_quiet: 0.3
+    w_len: 0.6
+    w_quiet: 0.4
     w_flat: 0.1
     use_weighted_nms: true
     merge_close_ms: 300           # 合并更近的碎谷，提升候选质量
@@ -118,6 +118,17 @@ quality_control:
   # Pure-music splitting: min duration threshold (seconds). 0 = disabled (default).
   pure_music_min_duration: 6.0
 
+  # Instrumental segment secondary split (for over-long pure music segments)
+  enable_instrumental_secondary_split: true
+  instrumental_split_config:
+    search_start_ratio: 0.25      # Start searching from 25% of segment (1/4)
+    search_end_ratio: 0.75        # Stop searching at 75% of segment (3/4)
+    quietness_weight: 1.0         # Weight for quietness score (100% focus on quietness)
+    search_window_ms: 100         # Search window in milliseconds for local minima
+    min_quiet_duration: 0.3       # Minimum quiet duration in seconds
+    vad_threshold: 0.3            # VAD threshold for quiet detection
+    energy_smoothing_ms: 50       # Energy envelope smoothing window
+
   # Quiet guard override (optional)
   enforce_quiet_cut:
     win_ms: 80
@@ -125,6 +136,13 @@ quality_control:
     guard_db: 2.5
     search_right_ms: 150
     floor_percentile: 5
+
+smart_splitting:
+  use_pause_priority_algorithm: false
+  use_precise_voice_algorithm: false
+  min_segment_length: 4
+  max_segment_length: 18
+  target_segment_length: 8
 
 vocal_separation:
   hpss_margin: 2.0
@@ -137,6 +155,27 @@ vocal_separation:
   vocal_core_max: 1000
   min_vocal_ratio: 0.15
   max_noise_ratio: 0.3
+
+breath_detection:
+  energy_window: 0.04
+  energy_hop: 0.005
+  energy_threshold: 0.018
+  spectral_window: 0.08
+  spectral_threshold: 0.2
+  min_pause_duration: 0.8
+  max_pause_duration: 3.0
+  pause_merge_threshold: 0.06
+  breath_energy_drop: 0.6
+  breath_duration_min: 0.8
+  breath_duration_max: 1.2
+
+content_analysis:
+  min_vocal_segment: 3.0
+  max_vocal_segment: 30.0
+  continuity_threshold: 0.5
+  semantic_gap_max: 1.0
+  vocal_clarity_min: 0.6
+  content_completeness: 0.8
 
 output:
   directory: './output'

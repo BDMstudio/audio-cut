@@ -8,7 +8,7 @@
 - 终筛改造V2：
   - 采纳“零交叉吸附 + 安静守卫右推校正”的切点时间；
   - 简化治理：仅“合并短段”，不再二次插点/强拆，充分尊重一次检测的优选切点；
-  - v2.1/v2.2 使用纯人声轨进行守卫校正，切割在原混音上执行。
+  - v2.2 使用纯人声轨进行守卫校正，切割在原混音上执行。
 - 守卫参数可配置化：`win_ms / guard_db / search_right_ms / floor_percentile` 可在配置中覆盖。
 - 样本级无缝拼接：输出WAV/FLAC零处理，拼接差异 0.00e+00。
 
@@ -18,11 +18,15 @@
 ```bash
 python quick_start.py
 ```
-选择推荐的 `Pure Vocal v2.2 MDD` 模式。
+在菜单中可选择：
+- `1` 纯人声分离 (仅输出人声/伴奏)
+- `2` Pure Vocal v2.2 MDD（默认推荐）
+
+推荐选择 `Pure Vocal v2.2 MDD` 模式完成无缝分割。
 
 或使用命令行：
 ```bash
-python run_splitter.py input/your_song.mp3 --seamless-vocal
+python run_splitter.py input/your_song.mp3 --mode v2.2_mdd
 ```
 分割结果保存在 `output/` 的时间戳目录内。
 
@@ -104,10 +108,8 @@ quality_control:
 终筛仅“合并短段”兜底，避免反复打补丁破坏首次优选切点。
 
 ## 运行模式
-- `smart_split`：原混音上进行传统检测（向后兼容）。
-- `v2.1`：VocalPrime（RMS/EMA/动态地板/滞回/平台验证）。
-- `v2.2_mdd`：在 v2.1 基础上加入 MDD 动态密度增强（推荐）。
 - `vocal_separation`：仅做人声/伴奏分离并导出。
+- `v2.2_mdd`：纯人声检测 + MDD 动态密度增强（默认/推荐）。
 
 ## 更新日志
 ### 2025‑09‑14

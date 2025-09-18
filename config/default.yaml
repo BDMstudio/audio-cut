@@ -29,65 +29,8 @@ vocal_separation:
   max_noise_ratio: 0.3   # 最大噪声占比
 
 # 换气和停顿检测
-breath_detection:
-  # 能量分析
-  energy_window: 0.05      # 分析窗口 (秒)
-  energy_hop: 0.01         # 跳跃步长 (秒)
-  energy_threshold: 0.02   # 能量阈值
-
-  # 频谱分析
-  spectral_window: 0.1     # 频谱分析窗口
-  spectral_threshold: 0.3  # 频谱变化阈值
-
-  # 停顿检测
-  min_pause_duration: 0.15 # 最小停顿时长 (秒)
-  max_pause_duration: 2.0  # 最大停顿时长 (秒)
-  pause_merge_threshold: 0.1 # 停顿合并阈值
-
-  # 换气检测
-  breath_energy_drop: 0.7  # 换气时能量下降比例
-  breath_duration_min: 0.1 # 最小换气时长
-  breath_duration_max: 0.8 # 最大换气时长
-
 # 内容分析
-content_analysis:
-  # 人声片段分析
-  min_vocal_segment: 1.0   # 最小人声片段长度 (秒)
-  max_vocal_segment: 8.0   # 最大人声片段长度 (秒)
-
-  # 内容连续性
-  continuity_threshold: 0.5 # 内容连续性阈值
-  semantic_gap_max: 1.0     # 最大语义间隔 (秒)
-
-  # 质量评估
-  vocal_clarity_min: 0.6   # 最小人声清晰度
-  content_completeness: 0.8 # 内容完整性要求
-
 # 智能分割
-smart_splitting:
-  # 算法选择
-  use_pause_priority_algorithm: false  # 使用停顿优先级算法
-  use_precise_voice_algorithm: true    # 使用精确人声分割算法（推荐）
-
-  # 时长控制
-  min_segment_length: 5    # 最小片段长度 (秒)
-  max_segment_length: 15   # 最大片段长度 (秒)
-  target_segment_length: 8  # 目标片段长度 (秒)（降低以产出更多片段）
-
-  # 分割策略
-  prefer_natural_breaks: true    # 优先自然停顿
-  allow_content_extension: false # 不允许内容延伸（确保更多分割）
-  strict_time_limit: true        # 启用严格时间限制
-
-  # 分割点选择
-  split_point_buffer: 0.1   # 分割点缓冲区 (秒)
-  split_quality_threshold: 0.5  # 分割质量阈值（进一步下调以产出更多片段）
-
-  # 内容优先级
-  complete_phrase_priority: 0.9  # 完整短语优先级
-  natural_pause_priority: 0.8    # 自然停顿优先级
-  time_constraint_priority: 0.6  # 时间约束优先级
-
 # 质量控制
 quality_control:
   # 分割点验证

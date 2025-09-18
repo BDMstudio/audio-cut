@@ -1,55 +1,43 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 # vocal_smart_splitter/__init__.py
-# AI-SUMMARY: 智能人声分割器包初始化文件
-
+# AI-SUMMARY: 包初始化 - 暴露无缝分割核心组件
 """
-智能人声分割器 (Vocal Smart Splitter)
+Vocal Smart Splitter
+====================
 
-一个基于人声内容和换气停顿的智能音频分割工具，专门针对歌曲进行优化。
+精简后的智能人声分割工具，聚焦两条主线：
+- 纯人声分离 (vocal_separation)
+- v2.2 MDD 增强的纯人声停顿分割
 
-主要特性:
-- 高质量人声分离
-- 精确的换气和停顿检测
-- 基于内容的智能分割决策
-- 严格的质量控制
-- 模块化架构设计
+典型用法::
 
-使用示例:
-    from vocal_smart_splitter import VocalSmartSplitter
-    
-    splitter = VocalSmartSplitter()
-    result = splitter.split_audio('input.mp3', 'output_dir')
+    from vocal_smart_splitter.core import SeamlessSplitter
+
+    splitter = SeamlessSplitter(sample_rate=44100)
+    splitter.split_audio_seamlessly('input.wav', 'output_dir', mode='v2.2_mdd')
 """
 
-__version__ = "1.0.0"
+__version__ = "2.3.0"
 __author__ = "AI Assistant"
-__description__ = "智能人声分割器 - 基于人声内容和换气停顿的智能音频分割工具"
+__description__ = "智能人声分割器 - 纯人声分离与 v2.2 MDD 无缝分割"
 
-# 导入主要类
-from .main import VocalSmartSplitter
-
-# 导入核心模块
-from .core.vocal_separator import VocalSeparator
-from .core.breath_detector import BreathDetector
-from .core.content_analyzer import ContentAnalyzer
-from .core.smart_splitter import SmartSplitter
+from .core.seamless_splitter import SeamlessSplitter
+from .core.enhanced_vocal_separator import EnhancedVocalSeparator
+from .core.pure_vocal_pause_detector import PureVocalPauseDetector
 from .core.quality_controller import QualityController
 
-# 导入工具模块
 from .utils.config_manager import ConfigManager, get_config_manager
 from .utils.audio_processor import AudioProcessor
 from .utils.feature_extractor import FeatureExtractor
 
 __all__ = [
-    'VocalSmartSplitter',
-    'VocalSeparator',
-    'BreathDetector', 
-    'ContentAnalyzer',
-    'SmartSplitter',
+    'SeamlessSplitter',
+    'EnhancedVocalSeparator',
+    'PureVocalPauseDetector',
     'QualityController',
     'ConfigManager',
     'get_config_manager',
     'AudioProcessor',
-    'FeatureExtractor'
+    'FeatureExtractor',
 ]

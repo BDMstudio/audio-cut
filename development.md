@@ -20,7 +20,7 @@
   - `split_audio_seamlessly(...)`：入口
   - `_finalize_and_filter_cuts_v2(...)`：终筛改造V2（采纳守卫校正时间 + 时长治理）
 - `core/pure_vocal_pause_detector.py`：纯人声多维特征检测
-- `core/vocal_pause_detector.py`：传统路径（统计学动态裁决、两遍扫描）
+- `core/vocal_pause_detector.py`：能量谷与 BPM 自适应工具（供纯人声检测内部调用）
 - `core/enhanced_vocal_separator.py`：分离后端（MDX23/Demucs）选择与质量评估
 - `core/quality_controller.py`：质量控制/零交叉/安静守卫/过滤
 - `core/adaptive_vad_enhancer.py`：BPM/复杂度自适应增强
@@ -30,7 +30,7 @@
 ## 3. 数据流
 1) 加载原音频（必要时重采样至 `44100Hz`）；
 2) 人声分离（MDX23 优先，失败降级 Demucs/HPSS）；
-3) 检测停顿：纯人声路径（v2.1/v2.2/MDD）或传统路径（smart_split）；
+3) 检测停顿：纯人声路径（v2.2 MDD 一次检测）；
 4) 终筛（VPP 一次判定）：采纳守卫校正时间 → 过滤最小间隔 → 合并短段（不再二次插点/强拆）；
 5) 样本级切割与保存；
 6)（可选）拼接完整性验证（误差 0）。

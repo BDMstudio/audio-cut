@@ -1,237 +1,130 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 # run_splitter.py
-# AI-SUMMARY: 智能人声分割器运行脚本，自动创建时间戳输出目录
+# AI-SUMMARY: 简化的运行脚本，仅支持纯人声分离与 v2.2 MDD 无缝分割
 
 """
-智能人声分割器运行脚本
+智能人声分割器运行脚本（精简版）
 
-自动创建按时间命名的输出目录，运行人声分割任务。
-
-使用方法:
-    python run_splitter.py [input_file] [options]
-    
-示例:
-    python run_splitter.py input/01.mp3
-    python run_splitter.py input/01.mp3 --min-length 8 --max-length 12
+- 支持两种模式：
+  1. `vocal_separation` —— 仅输出人声/伴奏轨
+  2. `v2.2_mdd` —— 启用纯人声检测 + MDD 增强的无缝分割
 """
 
-import os
 import sys
 import argparse
 import logging
 from datetime import datetime
 from pathlib import Path
 
-# 添加项目根目录到Python路径
 project_root = Path(__file__).parent
 sys.path.insert(0, str(project_root))
+sys.path.insert(0, str(project_root / 'src'))
 
-from src.vocal_smart_splitter.main import VocalSmartSplitter
 from src.vocal_smart_splitter.core.seamless_splitter import SeamlessSplitter
 from src.vocal_smart_splitter.utils.config_manager import get_config
 
-def setup_logging():
-    """设置日志"""
+
+def setup_logging(verbose: bool = False) -> None:
+    """配置日志输出"""
+    level = logging.DEBUG if verbose else logging.INFO
     logging.basicConfig(
-        level=logging.INFO,
+        level=level,
         format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-        handlers=[
-            logging.StreamHandler(sys.stdout)
-        ]
+        handlers=[logging.StreamHandler(sys.stdout)],
     )
 
-def create_timestamped_output_dir():
+
+def create_timestamped_output_dir() -> str:
     """创建时间戳命名的输出目录"""
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    output_dir = project_root / "output" / f"test_{timestamp}"
+    output_dir = project_root / "output" / f"job_{timestamp}"
     output_dir.mkdir(parents=True, exist_ok=True)
     return str(output_dir)
 
-def main():
-    """主函数"""
+
+def main() -> None:
     parser = argparse.ArgumentParser(
-        description="智能人声分割器 - 自动在换气/停顿处分割音频",
+        description="智能人声分割器 - 纯人声分离 / v2.2 MDD 无缝分割",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 示例:
-  python run_splitter.py input/01.mp3
-  python run_splitter.py input/01.mp3 --min-length 8 --max-length 12
-  python run_splitter.py input/01.mp3 --target-length 10 --verbose
-        """
+  python run_splitter.py input/song.mp3 --mode vocal_separation
+  python run_splitter.py input/song.mp3 --mode v2.2_mdd --validate-reconstruction
+        """,
     )
-    
+
+    parser.add_argument('input_file', help='输入音频文件路径')
     parser.add_argument(
-        'input_file',
-        help='输入音频文件路径'
+        '--mode',
+        choices=['vocal_separation', 'v2.2_mdd'],
+        default='v2.2_mdd',
+        help='运行模式 (默认: v2.2_mdd)',
     )
-    
-    parser.add_argument(
-        '--min-length',
-        type=float,
-        default=5,
-        help='最小片段长度（秒），默认: 5'
-    )
-    
-    parser.add_argument(
-        '--max-length', 
-        type=float,
-        default=15,
-        help='最大片段长度（秒），默认: 15'
-    )
-    
-    parser.add_argument(
-        '--target-length',
-        type=float,
-        default=10,
-        help='目标片段长度（秒），默认: 10'
-    )
-    
-    parser.add_argument(
-        '--verbose', '-v',
-        action='store_true',
-        help='显示详细日志'
-    )
-    
-    parser.add_argument(
-        '--seamless-vocal',
-        action='store_true',
-        help='使用无缝人声停顿分割模式（基于人声停顿的精确分割，确保完美拼接）'
-    )
-    
     parser.add_argument(
         '--validate-reconstruction',
         action='store_true',
-        help='验证拼接完整性（仅在--seamless-vocal模式下有效）'
+        help='验证拼接完整性 (仅在 v2.2_mdd 模式下有效)',
     )
-    
+    parser.add_argument(
+        '--verbose', '-v',
+        action='store_true',
+        help='输出调试日志',
+    )
+
     args = parser.parse_args()
-    
-    # 设置日志
-    setup_logging()
+    setup_logging(verbose=args.verbose)
     logger = logging.getLogger(__name__)
-    
-    # 检查输入文件
+
     input_path = Path(args.input_file)
     if not input_path.exists():
         logger.error(f"输入文件不存在: {input_path}")
         sys.exit(1)
-    
-    # 创建时间戳输出目录
+
     output_dir = create_timestamped_output_dir()
-    logger.info(f"创建输出目录: {output_dir}")
-    
-    try:
-        if args.seamless_vocal:
-            # 无缝人声停顿分割模式
-            logger.info("使用无缝人声停顿分割模式...")
-            
-            # 从配置文件读取采样率
-            sample_rate = get_config('audio.sample_rate', 44100)
-            logger.info(f"使用采样率: {sample_rate}Hz")
-            splitter = SeamlessSplitter(sample_rate=sample_rate)
-            
-            logger.info(f"开始无缝分割: {input_path}")
-            logger.info(f"输出目录: {output_dir}")
-            logger.info("分割策略: 基于人声停顿的精确分割")
-            logger.info("输出格式: 无损WAV/FLAC，零音频处理")
-            
-            result = splitter.split_audio_seamlessly(str(input_path), output_dir)
-            
-        else:
-            # 传统智能分割模式
-            logger.info("初始化传统智能人声分割器...")
-            splitter = VocalSmartSplitter()
-            
-            # 更新配置
-            if args.verbose:
-                splitter.config_manager.set('logging.level', 'DEBUG')
-            
-            splitter.config_manager.set('smart_splitting.min_segment_length', args.min_length)
-            splitter.config_manager.set('smart_splitting.max_segment_length', args.max_length)
-            splitter.config_manager.set('smart_splitting.target_segment_length', args.target_length)
-            
-            # 运行分割
-            logger.info(f"开始处理音频文件: {input_path}")
-            logger.info(f"输出目录: {output_dir}")
-            logger.info(f"片段长度范围: {args.min_length}-{args.max_length}秒，目标: {args.target_length}秒")
-            
-            result = splitter.split_audio(str(input_path), output_dir)
-        
-        # 显示结果
-        logger.info("=" * 50)
-        logger.info("分割完成！")
-        logger.info(f"输出目录: {output_dir}")
-        
-        if args.seamless_vocal:
-            # 无缝分割结果显示（失败分支保护 + 轻量诊断日志）
-            if not result.get('success'):
-                logger.error(f"无缝分割失败: {result.get('error', '未知错误')}")
-                # 轻量提示当前解释器与后端强制变量，便于定位环境问题
-                import sys, os
-                logger.info(f"Python可执行文件: {sys.executable}")
-                logger.info(f"VIRTUAL_ENV: {os.environ.get('VIRTUAL_ENV', '')}")
-                logger.info(f"FORCE_SEPARATION_BACKEND: {os.environ.get('FORCE_SEPARATION_BACKEND', '')}")
-            logger.info(f"生成片段数: {result.get('num_segments', 0)}")
-            logger.info(f"处理模式: {result.get('processing_type', 'seamless_vocal_pause_splitting')}")
-            
-            # 显示人声停顿分析
-            pause_analysis = result.get('vocal_pause_analysis', {})
-            if pause_analysis:
-                logger.info(f"检测到人声停顿: {pause_analysis.get('total_pauses', 0)} 个")
-                logger.info(f"平均置信度: {pause_analysis.get('avg_confidence', 0):.3f}")
-            
-            # 显示拼接验证结果
-            validation = result.get('seamless_validation', {})
-            if validation:
-                logger.info(f"拼接验证: {'完美重构' if validation.get('perfect_reconstruction') else '存在差异'}")
-                if 'max_difference' in validation:
-                    logger.info(f"最大差异: {validation['max_difference']:.2e}")
-                    
-            # 运行额外验证（如果请求）
-            if args.validate_reconstruction and result.get('success'):
-                logger.info("运行拼接完整性验证...")
-                try:
-                    from tests.test_seamless_reconstruction import SeamlessReconstructionTester
-                    tester = SeamlessReconstructionTester(44100)
-                    validation_passed = tester.test_perfect_reconstruction(str(input_path), output_dir)
-                    logger.info(f"详细验证结果: {'PASS' if validation_passed else 'FAIL'}")
-                except ImportError:
-                    logger.warning("验证模块未找到，跳过详细验证")
-            
-        else:
-            # 传统分割结果显示
-            output_files_key = 'saved_files' if 'saved_files' in result else 'output_files'
-            logger.info(f"生成片段数: {len(result[output_files_key])}")
-            if 'quality_report' in result:
-                logger.info(f"总体质量评分: {result['quality_report']['overall_quality']:.3f}")
-        
-        # 显示生成的文件
-        saved_files = result.get('saved_files', result.get('output_files', []))
-        if saved_files:
-            logger.info("生成的片段文件:")
-            for i, file_path in enumerate(saved_files, 1):
-                file_name = Path(file_path).name
-                logger.info(f"  {i}. {file_name}")
-        
-        # 显示分析报告路径
-        report_path = Path(output_dir) / "analysis_report.json"
-        if report_path.exists():
-            logger.info(f"详细分析报告: {report_path}")
-            
-        if args.seamless_vocal:
-            # 无缝分割专用报告
-            validation_report_path = Path(output_dir) / "seamless_validation_report.json"
-            if validation_report_path.exists():
-                logger.info(f"拼接验证报告: {validation_report_path}")
-        
-        logger.info("=" * 50)
-        
-    except Exception as e:
-        logger.error(f"处理失败: {e}")
-        import traceback
-        logger.error(traceback.format_exc())
+    logger.info(f"输出目录: {output_dir}")
+
+    sample_rate = get_config('audio.sample_rate', 44100)
+    logger.info(f"使用采样率: {sample_rate}Hz")
+
+    splitter = SeamlessSplitter(sample_rate=sample_rate)
+
+    logger.info(f"运行模式: {args.mode}")
+    result = splitter.split_audio_seamlessly(str(input_path), output_dir, mode=args.mode)
+
+    if not result.get('success'):
+        logger.error(f"处理失败: {result.get('error', '未知错误')}")
         sys.exit(1)
+
+    logger.info("=" * 50)
+    if args.mode == 'vocal_separation':
+        logger.info("纯人声分离完成")
+    else:
+        logger.info("无缝分割完成")
+        logger.info(f"生成片段数: {result.get('num_segments', 0)}")
+        logger.info(f"使用后端: {result.get('backend_used', 'unknown')}")
+        if 'processing_time' in result:
+            logger.info(f"处理耗时: {result['processing_time']:.1f}s")
+
+        if args.validate_reconstruction:
+            logger.info("运行拼接完整性验证...")
+            try:
+                from tests.test_seamless_reconstruction import SeamlessReconstructionTester
+
+                tester = SeamlessReconstructionTester(sample_rate)
+                passed = tester.test_perfect_reconstruction(str(input_path), output_dir)
+                logger.info(f"拼接验证: {'PASS' if passed else 'FAIL'}")
+            except ImportError:
+                logger.warning("未找到拼接验证模块，跳过")
+
+    saved_files = result.get('saved_files', [])
+    if saved_files:
+        logger.info("生成的文件:")
+        for idx, file_path in enumerate(saved_files, 1):
+            logger.info(f"  {idx}. {Path(file_path).name}")
+
+    logger.info("=" * 50)
+
 
 if __name__ == "__main__":
     main()
