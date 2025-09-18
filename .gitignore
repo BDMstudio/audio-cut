@@ -61,4 +61,6 @@ mdx23_config.txt
 
 # Claude settings (local only)
 .claude/settings.local.json
-
+.claude/
+CLAUDE.md
+AGENTS.md
