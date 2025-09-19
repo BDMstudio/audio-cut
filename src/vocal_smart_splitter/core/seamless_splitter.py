@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-# vocal_smart_splitter/core/seamless_splitter.py
+# File: src/vocal_smart_splitter/core/seamless_splitter.py
 
 import os
 import numpy as np
 import librosa
 import logging
-from typing import List, Dict, Optional, Tuple
+from typing import List, Dict, Optional, Tuple, Any
 from pathlib import Path
 import time
 import tempfile
@@ -32,6 +32,7 @@ class SeamlessSplitter:
         self.pure_vocal_detector = PureVocalPauseDetector(sample_rate)  # 用于v2.2模式
         self.quality_controller = QualityController(sample_rate)
         self.separator = EnhancedVocalSeparator(sample_rate)
+        self._last_segment_classification_debug: List[Dict[str, Any]] = []
         logger.info(f"无缝分割器统一指挥中心初始化完成 (SR: {self.sample_rate}) - 已加载纯人声检测器")
 
     def split_audio_seamlessly(self, input_path: str, output_dir: str, mode: str = 'v2.2_mdd') -> Dict:
@@ -108,6 +109,13 @@ class SeamlessSplitter:
         logger.info(f"[{mode.upper()}-STEP3] 生成{len(cut_points_samples)}个候选分割点")
         # 将样本点转换为(time, score)形式，暂以score=confidence占位（若有）
         cut_candidates = []
+        markers = getattr(separation_result, 'quality_metrics', {}) or {}
+        marker_times = []
+        try:
+            marker_times = [float(t) for t in markers.get('vocal_presence_cut_points_sec', []) if t is not None]
+        except Exception:
+            marker_times = []
+        protected_marker_samples = set()
         for p in vocal_pauses:
             t = float(getattr(p, 'cut_point', (p.start_time + p.end_time)/2))
             s = float(getattr(p, 'confidence', 1.0))
@@ -135,6 +143,12 @@ class SeamlessSplitter:
                 cut_candidates.append((float(b), 1.0))
         else:
             logger.info(f"[{mode.upper()}-STEP3] 纯音乐无人声检测未启用 (quality_control.pure_music_min_duration<=0)")
+        audio_duration = len(original_audio) / self.sample_rate
+        for t in marker_times:
+            if t <= 0.0 or t >= audio_duration:
+                continue
+            cut_candidates.append((t, 1.0))
+            protected_marker_samples.add(int(round(t * self.sample_rate)))
 
         final_cut_points = self._finalize_and_filter_cuts_v2(
             cut_candidates,
@@ -142,8 +156,35 @@ class SeamlessSplitter:
             pure_vocal_audio=vocal_track
         )
 
-        # 使用最终确定的分割点来切割原始音频
-        segment_vocal_flags = self._classify_segments_vocal_presence(vocal_track, final_cut_points)
+        if protected_marker_samples:
+            total_samples = len(original_audio)
+            augmented = set(int(point) for point in final_cut_points)
+            for sample_idx in protected_marker_samples:
+                sample_idx = int(min(max(sample_idx, 0), total_samples))
+                if sample_idx not in (0, total_samples):
+                    augmented.add(sample_idx)
+            final_cut_points = sorted(augmented)
+
+        instrumental_audio = separation_result.instrumental_track
+        if isinstance(instrumental_audio, np.ndarray):
+            if len(instrumental_audio) != len(vocal_track):
+                min_len = min(len(instrumental_audio), len(vocal_track))
+                if min_len > 0:
+                    instrumental_audio = instrumental_audio[:min_len]
+                    if len(vocal_track) > min_len:
+                        instrumental_audio = np.pad(instrumental_audio, (0, len(vocal_track) - min_len))
+                else:
+                    instrumental_audio = None
+        else:
+            instrumental_audio = None
+        segment_vocal_flags = self._classify_segments_vocal_presence(
+            vocal_track,
+            final_cut_points,
+            marker_segments=markers.get('vocal_presence_segments'),
+            pure_music_segments=markers.get('pure_music_segments'),
+            instrumental_audio=instrumental_audio,
+            original_audio=original_audio
+        )
         segments = self._split_at_sample_level(original_audio, final_cut_points)
         saved_files = self._save_segments(segments, output_dir, segment_is_vocal=segment_vocal_flags)
 
@@ -166,6 +207,7 @@ class SeamlessSplitter:
             'separation_confidence': separation_result.separation_confidence, 'processing_time': total_time,
             'segment_vocal_flags': segment_vocal_flags,
             'segment_labels': ['human' if flag else 'music' for flag in segment_vocal_flags],
+            'segment_classification_debug': getattr(self, '_last_segment_classification_debug', []),
             'input_file': input_path, 'output_dir': output_dir
         }
 
@@ -497,27 +539,258 @@ class SeamlessSplitter:
                 logger.info(f"[Split] 跳过过短片段 idx={i} len_samples={end-start}")
         return segments
 
-    def _classify_segments_vocal_presence(self, vocal_audio: np.ndarray, cut_points: List[int]) -> List[bool]:
-        """根据人声轨能量判断每个片段是否包含人声"""
+
+    
+
+
+
+    def _classify_segments_vocal_presence(
+        self,
+        vocal_audio: np.ndarray,
+        cut_points: List[int],
+        marker_segments: Optional[List[Dict]] = None,
+        pure_music_segments: Optional[List[Dict]] = None,
+        instrumental_audio: Optional[np.ndarray] = None,
+        original_audio: Optional[np.ndarray] = None,
+    ) -> List[bool]:
+        """综合 MDX23 分离结果与能量占比判断片段是否包含人声"""
         num_segments = max(len(cut_points) - 1, 0)
-        if vocal_audio is None or getattr(vocal_audio, 'size', 0) == 0:
-            return [True] * num_segments
+        self._last_segment_classification_debug = []
+        if num_segments == 0:
+            return []
+
         sr = self.sample_rate
+        if sr <= 0 or vocal_audio is None or getattr(vocal_audio, 'size', 0) == 0:
+            flags = [True] * num_segments
+            for idx in range(num_segments):
+                self._last_segment_classification_debug.append({
+                    'index': idx,
+                    'reason': 'fallback_invalid_input',
+                    'decision': True,
+                })
+            return flags
+
+        overlap_vocal_ratio = float(get_config('quality_control.segment_vocal_overlap_ratio', 0.35))
+        overlap_music_ratio = float(get_config('quality_control.segment_music_overlap_ratio', 0.55))
+        energy_vocal_ratio = float(get_config('quality_control.segment_vocal_energy_ratio', 0.6))
+        energy_music_ratio = float(get_config('quality_control.segment_music_energy_ratio', 0.4))
+        presence_vocal_ratio = float(get_config('quality_control.segment_vocal_presence_ratio', 0.35))
+        presence_music_ratio = float(get_config('quality_control.segment_music_presence_ratio', 0.15))
+        noise_margin_db = float(get_config('quality_control.segment_noise_margin_db', 6.0))
         threshold_db = float(get_config('quality_control.segment_vocal_threshold_db', -50.0))
         min_samples = max(1, int(0.02 * sr))
-        flags: List[bool] = []
-        for i in range(num_segments):
-            start = max(0, min(int(cut_points[i]), len(vocal_audio)))
-            end = max(start, min(int(cut_points[i + 1]), len(vocal_audio)))
-            if end - start < min_samples:
-                flags.append(False)
-                continue
-            segment = vocal_audio[start:end]
-            rms = float(np.sqrt(np.mean(np.square(segment)) + 1e-12))
-            rms_db = 20.0 * np.log10(rms)
-            flags.append(rms_db > threshold_db)
-        return flags
+        energy_floor = 1e-10
 
+        def _normalize_segments(raw_segments, fallback_state=None):
+            normalized = []
+            if not raw_segments:
+                return normalized
+            for seg in raw_segments:
+                try:
+                    start = float(seg.get('start', 0.0))
+                    end = float(seg.get('end', start))
+                    is_vocal = bool(seg.get('is_vocal', fallback_state)) if fallback_state is not None else bool(seg.get('is_vocal', False))
+                except Exception:
+                    continue
+                if end <= start:
+                    continue
+                normalized.append((start, end, is_vocal))
+            return normalized
+
+        def _slice_audio(array: Optional[np.ndarray], start_idx: int, end_idx: int) -> Optional[np.ndarray]:
+            if array is None or not isinstance(array, np.ndarray):
+                return None
+            n = len(array)
+            if n == 0:
+                return None
+            start_i = max(0, min(start_idx, n))
+            end_i = max(start_i, min(end_idx, n))
+            if end_i <= start_i:
+                return None
+            return array[start_i:end_i]
+
+        marker_segments = _normalize_segments(marker_segments or [], fallback_state=True)
+        music_segments = [(start, end) for start, end, is_vocal in marker_segments if not is_vocal]
+        if pure_music_segments:
+            for seg in pure_music_segments:
+                try:
+                    start = float(seg.get('start', 0.0))
+                    end = float(seg.get('end', start))
+                except Exception:
+                    continue
+                if end > start:
+                    music_segments.append((start, end))
+        vocal_segments = [(start, end) for start, end, is_vocal in marker_segments if is_vocal]
+
+        def _total_overlap(seg_start: float, seg_end: float, segments: List[tuple]) -> float:
+            total = 0.0
+            for s_start, s_end in segments:
+                overlap = min(seg_end, s_end) - max(seg_start, s_start)
+                if overlap > 0:
+                    total += overlap
+            return total
+
+        def _to_index(time_sec: float) -> int:
+            return int(max(0, min(round(time_sec * sr), len(vocal_audio))))
+
+        noise_floor_db = None
+        if music_segments:
+            noise_samples = []
+            for start, end in music_segments:
+                start_idx = _to_index(start)
+                end_idx = _to_index(end)
+                segment = _slice_audio(vocal_audio, start_idx, end_idx)
+                if segment is None or len(segment) < min_samples:
+                    continue
+                noise_rms = float(np.sqrt(np.mean(np.square(segment)) + 1e-12))
+                noise_samples.append(20.0 * np.log10(noise_rms))
+            if noise_samples:
+                noise_floor_db = float(np.median(noise_samples))
+
+        flags: List[bool] = []
+        debug_entries: List[Dict[str, Any]] = []
+
+        hop = max(1, int(0.02 * sr))
+        frame_length = max(hop * 2, int(0.05 * sr))
+
+        for i in range(num_segments):
+            start_idx = max(0, min(int(cut_points[i]), len(vocal_audio)))
+            end_idx = max(start_idx, min(int(cut_points[i + 1]), len(vocal_audio)))
+            seg_start_s = start_idx / sr
+            seg_end_s = end_idx / sr
+            seg_duration = max(seg_end_s - seg_start_s, 1e-6)
+
+            vocal_segment = _slice_audio(vocal_audio, start_idx, end_idx)
+            instrumental_segment = _slice_audio(instrumental_audio, start_idx, end_idx)
+            original_segment = _slice_audio(original_audio, start_idx, end_idx)
+
+            vocal_energy = float(np.mean(np.square(vocal_segment)) + 1e-12) if vocal_segment is not None else 0.0
+            inst_energy = float(np.mean(np.square(instrumental_segment)) + 1e-12) if instrumental_segment is not None else None
+            orig_energy = float(np.mean(np.square(original_segment)) + 1e-12) if original_segment is not None else None
+            if inst_energy is None and orig_energy is not None:
+                inst_energy = max(orig_energy - vocal_energy, 0.0)
+
+            total_energy = None
+            if inst_energy is not None:
+                total_energy = vocal_energy + inst_energy
+            elif orig_energy is not None:
+                total_energy = orig_energy
+
+            marker_vote = None
+            marker_reason = None
+            vocal_overlap = music_overlap = None
+            vocal_ratio = music_ratio = None
+            if vocal_segments or music_segments:
+                vocal_overlap = _total_overlap(seg_start_s, seg_end_s, vocal_segments)
+                music_overlap = _total_overlap(seg_start_s, seg_end_s, music_segments)
+                vocal_ratio = vocal_overlap / seg_duration if seg_duration > 0 else 0.0
+                music_ratio = music_overlap / seg_duration if seg_duration > 0 else 0.0
+                if vocal_ratio >= overlap_vocal_ratio:
+                    marker_vote = True
+                    marker_reason = 'marker_vocal_overlap'
+                elif music_ratio >= overlap_music_ratio:
+                    marker_vote = False
+                    marker_reason = 'marker_music_overlap'
+
+            energy_ratio = None
+            energy_vote = None
+            energy_reason = None
+            if total_energy is not None and total_energy > energy_floor:
+                energy_ratio = float(vocal_energy / (total_energy + 1e-12))
+                if energy_ratio >= energy_vocal_ratio:
+                    energy_vote = True
+                    energy_reason = 'energy_vocal_ratio'
+                elif energy_ratio <= energy_music_ratio:
+                    energy_vote = False
+                    energy_reason = 'energy_music_ratio'
+
+            presence_ratio = None
+            presence_vote = None
+            presence_reason = None
+            if vocal_segment is not None and len(vocal_segment) >= frame_length:
+                try:
+                    rms_frames = librosa.feature.rms(y=vocal_segment, frame_length=frame_length, hop_length=hop)[0]
+                except Exception:
+                    rms_frames = np.sqrt(np.mean(np.square(vocal_segment) + 1e-12)) * np.ones(max(1, len(vocal_segment) // hop + 1))
+                rms_db_frames = 20.0 * np.log10(rms_frames + 1e-12)
+                baseline_db = noise_floor_db
+                if baseline_db is None:
+                    baseline_db = float(np.percentile(rms_db_frames, 25))
+                presence_threshold_db = baseline_db + noise_margin_db
+                presence_ratio = float(np.mean(rms_db_frames > presence_threshold_db))
+                if presence_ratio >= presence_vocal_ratio:
+                    presence_vote = True
+                    presence_reason = 'presence_vocal_ratio'
+                elif presence_ratio <= presence_music_ratio:
+                    presence_vote = False
+                    presence_reason = 'presence_music_ratio'
+
+            segment = vocal_segment
+            rms_db = None
+            rms_vote = None
+            rms_reason = None
+            decision_threshold = threshold_db
+            threshold_source = 'static_threshold'
+            if segment is None or len(segment) < min_samples:
+                rms_vote = False
+                rms_reason = 'segment_insufficient_samples'
+            else:
+                rms = float(np.sqrt(np.mean(np.square(segment)) + 1e-12))
+                rms_db = 20.0 * np.log10(rms)
+                if noise_floor_db is not None:
+                    decision_threshold = noise_floor_db + noise_margin_db
+                    threshold_source = 'noise_floor'
+                rms_vote = rms_db > decision_threshold
+                rms_reason = 'rms_vs_threshold'
+
+            decision = None
+            decision_reason = 'unset'
+
+            if energy_vote is not None:
+                decision = energy_vote
+                decision_reason = energy_reason
+            elif presence_vote is not None:
+                decision = presence_vote
+                decision_reason = presence_reason
+            elif marker_vote is not None:
+                decision = marker_vote
+                decision_reason = marker_reason
+            elif rms_vote is not None:
+                decision = rms_vote
+                decision_reason = rms_reason
+            else:
+                decision = False
+                decision_reason = 'default_music'
+
+            debug_entries.append({
+                'index': i,
+                'start_s': seg_start_s,
+                'end_s': seg_end_s,
+                'duration_s': seg_duration,
+                'vocal_overlap_s': vocal_overlap,
+                'music_overlap_s': music_overlap,
+                'vocal_ratio': vocal_ratio,
+                'music_ratio': music_ratio,
+                'marker_vote': marker_vote,
+                'energy_ratio': energy_ratio,
+                'energy_vote': energy_vote,
+                'presence_ratio': presence_ratio,
+                'presence_vote': presence_vote,
+                'vocal_energy': vocal_energy,
+                'instrumental_energy': inst_energy,
+                'total_energy': total_energy,
+                'rms_db': rms_db,
+                'rms_vote': rms_vote,
+                'decision': decision,
+                'reason': decision_reason,
+                'decision_threshold_db': decision_threshold,
+                'threshold_source': threshold_source,
+                'noise_floor_db': noise_floor_db,
+            })
+            flags.append(bool(decision))
+
+        self._last_segment_classification_debug = debug_entries
+        return flags
     def _estimate_vocal_presence(self, vocal_audio: np.ndarray) -> bool:
         """估算给定人声轨整体是否包含人声"""
         if vocal_audio is None or getattr(vocal_audio, 'size', 0) == 0:
@@ -546,5 +819,6 @@ class SeamlessSplitter:
             'success': True, 'num_segments': 1, 'saved_files': saved_files,
             'segment_vocal_flags': [is_vocal],
             'segment_labels': ['human' if is_vocal else 'music'],
+            'segment_classification_debug': getattr(self, '_last_segment_classification_debug', []),
             'note': reason, 'input_file': input_path, 'output_dir': output_dir
         }

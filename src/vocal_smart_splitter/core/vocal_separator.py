@@ -6,7 +6,7 @@
 import numpy as np
 import librosa
 import logging
-from typing import Tuple, Dict, Optional
+from typing import Tuple, Dict, Optional, List
 from scipy.ndimage import median_filter, gaussian_filter1d
 from scipy import signal
 
@@ -70,7 +70,11 @@ class VocalSeparator:
             # 4. 质量评估
             quality_info = self._evaluate_separation_quality(vocal_track, accompaniment_track, audio)
             
+            markers = self._compute_vocal_presence_markers(vocal_track)
+            quality_info.update(markers)
+
             logger.info(f"人声分离完成，质量评分: {quality_info['overall_score']:.3f}")
+
             
             return vocal_track, accompaniment_track, quality_info
             
@@ -453,3 +457,74 @@ class VocalSeparator:
                 'vocal_clarity': 0.0,
                 'overall_score': 0.0
             }
+    def _compute_vocal_presence_markers(self, vocal_audio: np.ndarray) -> Dict:
+        """计算人声出现/消失的关键切点信息"""
+        sr = self.sample_rate
+        if sr <= 0 or vocal_audio is None:
+            return {
+                'vocal_presence_cut_points_sec': [],
+                'vocal_presence_cut_points_samples': [],
+                'vocal_presence_segments': [],
+                'pure_music_segments': []
+            }
+        duration = float(len(vocal_audio)) / sr if len(vocal_audio) > 0 else 0.0
+        threshold_db = float(get_config('quality_control.segment_vocal_threshold_db', -50.0))
+        pure_music_min = float(get_config('quality_control.pure_music_min_duration', 0.0))
+        hop = max(1, int(0.02 * sr))
+        frame_length = max(hop * 2, int(0.05 * sr))
+        if len(vocal_audio) == 0:
+            return {
+                'vocal_presence_cut_points_sec': [],
+                'vocal_presence_cut_points_samples': [],
+                'vocal_presence_segments': [],
+                'pure_music_segments': []
+            }
+        try:
+            rms = librosa.feature.rms(y=vocal_audio, frame_length=frame_length, hop_length=hop)[0]
+        except Exception:
+            rms = np.sqrt(np.mean(np.square(vocal_audio) + 1e-12)) * np.ones(max(1, len(vocal_audio) // hop + 1))
+        rms_db = 20.0 * np.log10(rms + 1e-12)
+        vocal_mask = rms_db > threshold_db
+        if vocal_mask.size == 0:
+            return {
+                'vocal_presence_cut_points_sec': [],
+                'vocal_presence_cut_points_samples': [],
+                'vocal_presence_segments': [],
+                'pure_music_segments': []
+            }
+        times = librosa.frames_to_time(np.arange(len(vocal_mask)), sr=sr, hop_length=hop)
+        segments: List[Dict] = []
+        current_state = bool(vocal_mask[0])
+        current_start = 0.0
+        for idx in range(1, len(vocal_mask)):
+            state = bool(vocal_mask[idx])
+            if state != current_state:
+                end_time = float(times[idx])
+                segments.append({'start': current_start, 'end': end_time, 'is_vocal': current_state})
+                current_start = float(times[idx])
+                current_state = state
+        segments.append({'start': current_start, 'end': duration, 'is_vocal': current_state})
+        def clamp_time(value: float) -> float:
+            return float(min(max(value, 0.0), duration))
+        cut_points = set()
+        first_vocal = next((seg for seg in segments if seg['is_vocal'] and seg['end'] > seg['start']), None)
+        if first_vocal is not None:
+            cut_points.add(clamp_time(first_vocal['start'] - 1.0))
+        for prev, nxt in zip(segments, segments[1:]):
+            if not prev['is_vocal'] and nxt['is_vocal']:
+                if (prev['end'] - prev['start']) >= pure_music_min:
+                    candidate = clamp_time(nxt['start'] - 1.0)
+                    if candidate >= prev['start']:
+                        cut_points.add(candidate)
+        last_vocal = next((seg for seg in reversed(segments) if seg['is_vocal'] and seg['end'] > seg['start']), None)
+        if last_vocal is not None:
+            cut_points.add(clamp_time(last_vocal['end'] + 1.0))
+        cut_points_sec = sorted({cp for cp in cut_points if 0.0 <= cp <= duration})
+        cut_points_samples = [int(round(cp * sr)) for cp in cut_points_sec]
+        return {
+            'vocal_presence_cut_points_sec': cut_points_sec,
+            'vocal_presence_cut_points_samples': cut_points_samples,
+            'vocal_presence_segments': segments,
+            'pure_music_segments': [seg for seg in segments if not seg['is_vocal'] and seg['end'] > seg['start']]
+        }
+

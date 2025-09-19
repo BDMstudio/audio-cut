@@ -49,6 +49,7 @@ class EnhancedVocalSeparator:
             sample_rate: 音频采样率
         """
         self.sample_rate = sample_rate
+        self._marker_helper = VocalSeparator(sample_rate)
         
         # 从配置加载参数，但优先使用环境变量强制设置
         import os
@@ -248,9 +249,21 @@ class EnhancedVocalSeparator:
         # 质量评估
         result.separation_confidence = self._assess_separation_quality(audio, result.vocal_track)
         
+        self._attach_vocal_presence_markers(result)
         logger.debug(f"分离完成 - 后端: {result.backend_used}, 置信度: {result.separation_confidence:.3f}")
         return result
     
+    def _attach_vocal_presence_markers(self, result: SeparationResult) -> None:
+        try:
+            if result.vocal_track is None:
+                return
+            markers = self._marker_helper._compute_vocal_presence_markers(result.vocal_track)
+            if result.quality_metrics is None:
+                result.quality_metrics = {}
+            result.quality_metrics.update(markers)
+        except Exception as exc:
+            logger.warning(f'[Markers] 提取人声标记失败: {exc}')
+
     def _select_optimal_backend(self) -> str:
         """选择最优可用分离后端"""
         import os
