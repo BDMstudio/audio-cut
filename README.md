@@ -28,7 +28,7 @@ python quick_start.py
 ```bash
 python run_splitter.py input/your_song.mp3 --mode v2.2_mdd
 ```
-分割结果保存在 `output/` 的时间戳目录内。
+分割结果保存在 `output/` 的时间戳目录内。目录下的 `segment_***_*.wav` 为原混音切片，同时会在 `segments_vocal/` 生成相同切点的纯人声切片。
 
 ## 关键配置（摘自 src/vocal_smart_splitter/config.yaml）
 - 分离后端：`enhanced_separation.backend: mdx23 | demucs_v4 | auto`

@@ -9,6 +9,15 @@ from pathlib import Path
 from datetime import datetime
 import torch
 
+def _fmt_float(value):
+    if value is None:
+        return 'N/A'
+    try:
+        return f'{float(value):.3f}'
+    except (TypeError, ValueError):
+        return str(value)
+
+
 project_root = Path(__file__).parent
 sys.path.insert(0, str(project_root))
 sys.path.insert(0, str(project_root / 'src'))
@@ -127,6 +136,18 @@ def main():
             print(f"  文件保存在: {output_dir}")
             if 'backend_used' in result: print(f"  使用后端: {result['backend_used']}")
             if 'processing_time' in result: print(f"  总耗时: {result['processing_time']:.1f}秒")
+            debug = result.get('segment_classification_debug', [])
+            for idx, info in enumerate(debug, 1):
+                print(
+                    f"Segment {idx:02d}: label={result['segment_labels'][idx-1]} "
+                    f"energy_ratio={_fmt_float(info.get('energy_ratio'))} "
+                    f"presence_ratio={_fmt_float(info.get('presence_ratio'))} "
+                    f"presence_baseline={_fmt_float(info.get('presence_baseline_db'))} "
+                    f"marker_vote={info.get('marker_vote')} "
+                    f"energy_vote={info.get('energy_vote')} "
+                    f"presence_vote={info.get('presence_vote')} "
+                    f"reason={info.get('decision_reason') or 'N/A'}"
+                )
         else:
             print(f"\n[ERROR] 处理失败: {result.get('error', '未知错误')}")
             # 输出最小诊断信息

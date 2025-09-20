@@ -186,7 +186,18 @@ class SeamlessSplitter:
             original_audio=original_audio
         )
         segments = self._split_at_sample_level(original_audio, final_cut_points)
-        saved_files = self._save_segments(segments, output_dir, segment_is_vocal=segment_vocal_flags)
+        mix_segment_files = self._save_segments(segments, output_dir, segment_is_vocal=segment_vocal_flags)
+
+        vocal_segments = self._split_at_sample_level(vocal_track, final_cut_points)
+        vocal_segment_files = self._save_segments(
+            vocal_segments,
+            output_dir,
+            segment_is_vocal=segment_vocal_flags,
+            subdir='segments_vocal',
+            file_suffix='_vocal'
+        )
+
+        saved_files = mix_segment_files + vocal_segment_files
 
         # 5. 保存完整的分离文件
         input_name = Path(input_path).stem
@@ -203,7 +214,8 @@ class SeamlessSplitter:
 
         return {
             'success': True, 'method': f'pure_vocal_split_{mode}', 'num_segments': len(segments),
-            'saved_files': saved_files, 'backend_used': separation_result.backend_used,
+            'saved_files': saved_files, 'mix_segment_files': mix_segment_files, 'vocal_segment_files': vocal_segment_files,
+            'backend_used': separation_result.backend_used,
             'separation_confidence': separation_result.separation_confidence, 'processing_time': total_time,
             'segment_vocal_flags': segment_vocal_flags,
             'segment_labels': ['human' if flag else 'music' for flag in segment_vocal_flags],
@@ -399,32 +411,51 @@ class SeamlessSplitter:
 
         # 守卫右推与零交叉吸附
         logger.info(f"[FinalizeV2] 守卫校正开始: {len(times)} 个候选")
-        def _fallback_local_min(t0: float) -> float:
+        guard_primary = pure_vocal_audio if pure_vocal_audio is not None else audio_for_split
+        mix_guard = audio_for_split
+
+        def _fallback_local_min(source_audio: Optional[np.ndarray], t0: float) -> float:
+            if source_audio is None:
+                return t0
             search_ms = get_config('quality_control.enforce_quiet_cut.search_right_ms', 300)
             win = int(sr * (search_ms / 1000.0))
             c = int(t0 * sr)
             a = c
-            b = min(len(x_guard), c + max(win, int(0.05 * sr)))
+            b = min(len(source_audio), c + max(win, int(0.05 * sr)))
             if b <= a + 1:
                 return t0
-            seg = np.abs(x_guard[a:b])
+            seg = np.abs(source_audio[a:b])
             idx = int(np.argmin(seg))
             return (a + idx) / sr
 
         corrected: List[float] = []
         for idx_t, t in enumerate(times):
+            t_adj = float(t)
             try:
-                t_adj = self.quality_controller.safe_zero_crossing_align(x_guard, sr, t, window_ms=10)
-                if t_adj is None or t_adj < 0:
-                    t_adj = self.quality_controller.enforce_quiet_cut_fast(x_guard, sr, t)
-                if t_adj is None or t_adj < 0:
-                    t_adj = _fallback_local_min(t)
+                if guard_primary is not None:
+                    candidate = self.quality_controller.safe_zero_crossing_align(guard_primary, sr, t_adj, window_ms=10)
+                    if candidate is None or candidate < 0:
+                        candidate = self.quality_controller.enforce_quiet_cut_fast(guard_primary, sr, t_adj)
+                    if candidate is None or candidate < 0:
+                        candidate = _fallback_local_min(guard_primary, t_adj)
+                    if candidate is not None and candidate >= 0:
+                        t_adj = float(candidate)
+                if mix_guard is not None:
+                    mix_candidate = self.quality_controller.enforce_quiet_cut_fast(mix_guard, sr, t_adj)
+                    if mix_candidate is None or mix_candidate < 0:
+                        mix_candidate = _fallback_local_min(mix_guard, t_adj)
+                    else:
+                        zc_candidate = self.quality_controller.safe_zero_crossing_align(mix_guard, sr, mix_candidate, window_ms=10)
+                        if zc_candidate is not None and zc_candidate >= 0:
+                            mix_candidate = float(zc_candidate)
+                    if mix_candidate is not None and mix_candidate >= 0:
+                        t_adj = float(mix_candidate)
                 t_adj = float(np.clip(t_adj, 0.0 + 1e-3, duration_s - 1e-3))
                 corrected.append(t_adj)
                 if idx_t % 5 == 0:
                     logger.info(f"[FinalizeV2] 守卫校正进度 {idx_t+1}/{len(times)}: {t:.3f}s -> {t_adj:.3f}s")
             except Exception:
-                corrected.append(t)
+                corrected.append(float(np.clip(t, 0.0 + 1e-3, duration_s - 1e-3)))
 
         # 最小间隔过滤（再次稳固）
         min_interval = get_config('quality_control.min_split_gap', 1.0)
@@ -707,6 +738,7 @@ class SeamlessSplitter:
             presence_ratio = None
             presence_vote = None
             presence_reason = None
+            presence_baseline_db = None
             if vocal_segment is not None and len(vocal_segment) >= frame_length:
                 try:
                     rms_frames = librosa.feature.rms(y=vocal_segment, frame_length=frame_length, hop_length=hop)[0]
@@ -714,9 +746,23 @@ class SeamlessSplitter:
                     rms_frames = np.sqrt(np.mean(np.square(vocal_segment) + 1e-12)) * np.ones(max(1, len(vocal_segment) // hop + 1))
                 rms_db_frames = 20.0 * np.log10(rms_frames + 1e-12)
                 baseline_db = noise_floor_db
+                residual_segment = None
+                if original_segment is not None and vocal_segment is not None and len(original_segment) == len(vocal_segment):
+                    residual_segment = original_segment - vocal_segment
                 if baseline_db is None:
-                    baseline_db = float(np.percentile(rms_db_frames, 25))
-                presence_threshold_db = baseline_db + noise_margin_db
+                    candidate_levels: List[float] = []
+                    if instrumental_segment is not None and len(instrumental_segment) >= min_samples:
+                        inst_rms = float(np.sqrt(np.mean(np.square(instrumental_segment)) + 1e-12))
+                        candidate_levels.append(20.0 * np.log10(inst_rms))
+                    if residual_segment is not None and len(residual_segment) >= min_samples:
+                        res_rms = float(np.sqrt(np.mean(np.square(residual_segment)) + 1e-12))
+                        candidate_levels.append(20.0 * np.log10(res_rms))
+                    if candidate_levels:
+                        baseline_db = float(np.median(candidate_levels))
+                    else:
+                        baseline_db = float(np.percentile(rms_db_frames, 25))
+                presence_baseline_db = float(baseline_db) if baseline_db is not None else None
+                presence_threshold_db = presence_baseline_db + noise_margin_db if presence_baseline_db is not None else noise_margin_db
                 presence_ratio = float(np.mean(rms_db_frames > presence_threshold_db))
                 if presence_ratio >= presence_vocal_ratio:
                     presence_vote = True
@@ -762,6 +808,14 @@ class SeamlessSplitter:
                 decision = False
                 decision_reason = 'default_music'
 
+            if decision is False and energy_vote is False:
+                if marker_vote is True:
+                    decision = True
+                    decision_reason = 'marker_override_energy'
+                elif presence_vote is True and (energy_ratio is None or energy_ratio >= presence_music_ratio):
+                    decision = True
+                    decision_reason = 'presence_override_energy'
+
             debug_entries.append({
                 'index': i,
                 'start_s': seg_start_s,
@@ -776,6 +830,7 @@ class SeamlessSplitter:
                 'energy_vote': energy_vote,
                 'presence_ratio': presence_ratio,
                 'presence_vote': presence_vote,
+                'presence_baseline_db': presence_baseline_db,
                 'vocal_energy': vocal_energy,
                 'instrumental_energy': inst_energy,
                 'total_energy': total_energy,
@@ -798,15 +853,19 @@ class SeamlessSplitter:
         flags = self._classify_segments_vocal_presence(vocal_audio, [0, len(vocal_audio)])
         return bool(flags[0]) if flags else False
 
-    def _save_segments(self, segments: List[np.ndarray], output_dir: str, segment_is_vocal: Optional[List[bool]] = None) -> List[str]:
+    def _save_segments(self, segments: List[np.ndarray], output_dir: str, segment_is_vocal: Optional[List[bool]] = None, *, subdir: Optional[str] = None, file_suffix: str = '') -> List[str]:
         """保存分割后的片段，并根据人声识别结果命名"""
+        base_dir = Path(output_dir)
+        if subdir:
+            base_dir = base_dir / subdir
+            base_dir.mkdir(parents=True, exist_ok=True)
         saved_files = []
         for i, segment_audio in enumerate(segments):
             is_vocal = True
             if segment_is_vocal is not None and i < len(segment_is_vocal):
                 is_vocal = bool(segment_is_vocal[i])
             label = 'human' if is_vocal else 'music'
-            output_path = Path(output_dir) / f"segment_{i+1:03d}_{label}.wav"
+            output_path = base_dir / f"segment_{i+1:03d}_{label}{file_suffix}.wav"
             sf.write(output_path, segment_audio, self.sample_rate, subtype='PCM_24')
             saved_files.append(str(output_path))
         return saved_files

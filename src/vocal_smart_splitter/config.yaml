@@ -119,6 +119,7 @@ quality_control:
   pure_music_min_duration: 6.0
   segment_vocal_threshold_db: -50.0
   # Segment classification voting thresholds (see SeamlessSplitter._classify_segments_vocal_presence)
+  high_presence_ratio: 0.6 # 建议 0.6~0.7
   segment_vocal_overlap_ratio: 0.35
   segment_music_overlap_ratio: 0.55
   segment_vocal_energy_ratio: 0.6
