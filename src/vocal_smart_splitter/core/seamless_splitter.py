@@ -413,6 +413,7 @@ class SeamlessSplitter:
         logger.info(f"[FinalizeV2] 守卫校正开始: {len(times)} 个候选")
         guard_primary = pure_vocal_audio if pure_vocal_audio is not None else audio_for_split
         mix_guard = audio_for_split
+        quiet_cut_enabled = getattr(self.quality_controller, 'quiet_cut_enabled', True)
 
         def _fallback_local_min(source_audio: Optional[np.ndarray], t0: float) -> float:
             if source_audio is None:
@@ -440,7 +441,7 @@ class SeamlessSplitter:
                         candidate = _fallback_local_min(guard_primary, t_adj)
                     if candidate is not None and candidate >= 0:
                         t_adj = float(candidate)
-                if mix_guard is not None:
+                if quiet_cut_enabled and mix_guard is not None:
                     mix_candidate = self.quality_controller.enforce_quiet_cut_fast(mix_guard, sr, t_adj)
                     if mix_candidate is None or mix_candidate < 0:
                         mix_candidate = _fallback_local_min(mix_guard, t_adj)
@@ -559,21 +560,30 @@ class SeamlessSplitter:
     def _split_at_sample_level(self, audio: np.ndarray, final_cut_points: List[int]) -> List[np.ndarray]:
         """执行样本级分割"""
         segments = []
-        # 避免 0s 片段：至少保持10ms样本长度
+        carry = None
         min_keep_samples = max(1, int(0.01 * self.sample_rate))
         for i in range(len(final_cut_points) - 1):
             start = final_cut_points[i]
             end = final_cut_points[i+1]
+            chunk = audio[start:end]
+            if carry is not None:
+                if chunk.size:
+                    chunk = np.concatenate((carry, chunk))
+                else:
+                    chunk = carry
+                carry = None
             if end - start >= min_keep_samples:
-                segments.append(audio[start:end])
+                if chunk.size:
+                    segments.append(chunk)
             else:
-                logger.info(f"[Split] 跳过过短片段 idx={i} len_samples={end-start}")
+                if chunk.size:
+                    carry = chunk if carry is None else np.concatenate((carry, chunk))
+        if carry is not None:
+            if segments:
+                segments[-1] = np.concatenate((segments[-1], carry))
+            else:
+                segments.append(carry)
         return segments
-
-
-    
-
-
 
     def _classify_segments_vocal_presence(
         self,

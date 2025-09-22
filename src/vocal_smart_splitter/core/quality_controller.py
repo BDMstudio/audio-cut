@@ -46,6 +46,7 @@ class QualityController:
         self.normalize_audio = get_config('quality_control.normalize_audio', True)
         
         self.remove_click_noise = get_config('quality_control.remove_click_noise', True)
+        self.quiet_cut_enabled = bool(get_config('quality_control.enforce_quiet_cut.enable', True))
         self.smooth_transitions = get_config('quality_control.smooth_transitions', True)
         
         logger.info("BPM感知质量控制器初始化完成")
@@ -898,6 +899,8 @@ class QualityController:
         - guard_db: 相对地板的余量（地板+3dB 以内才算安静）
         - search_right_ms: 最多向右搜的距离（保证不提前）
         """
+        if not self.quiet_cut_enabled:
+            return t_sec
         # 允许从配置覆盖守卫参数
         try:
             win_ms = get_config('quality_control.enforce_quiet_cut.win_ms', win_ms)
@@ -970,6 +973,8 @@ class QualityController:
         加速版守卫：使用缓存的能量包络，避免为每个切点重复全曲扫描。
         逻辑与 enforce_quiet_cut 一致。
         """
+        if not self.quiet_cut_enabled:
+            return t_sec
         try:
             win_ms = get_config('quality_control.enforce_quiet_cut.win_ms', win_ms)
             guard_db = get_config('quality_control.enforce_quiet_cut.guard_db', guard_db)
@@ -1121,6 +1126,8 @@ class QualityController:
         t_zc = best_zc / sr
         
         # 2. 验证零交叉对齐后的切点是否安静
+        if not self.quiet_cut_enabled:
+            return t_zc
         t_validated = self.enforce_quiet_cut_fast(x_mono, sr, t_zc)
         
         # 3. 如果验证后偏离太多，说明零交叉对齐把我们拉到了高能量区，回退到原始切点
