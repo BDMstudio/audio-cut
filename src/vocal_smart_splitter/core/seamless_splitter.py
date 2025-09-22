@@ -14,6 +14,7 @@ import soundfile as sf
 
 from ..utils.config_manager import get_config
 from ..utils.audio_processor import AudioProcessor
+from ..utils.signal_ops import rtrim_trailing_zeros
 from .pure_vocal_pause_detector import PureVocalPauseDetector
 from .quality_controller import QualityController
 from .enhanced_vocal_separator import EnhancedVocalSeparator
@@ -122,8 +123,6 @@ class SeamlessSplitter:
             # 过滤疑似间奏的超长静默
             dur = float(getattr(p, 'duration', (p.end_time - p.start_time)))
             interlude_min_s = get_config('pure_vocal_detection.pause_stats_adaptation.interlude_min_s', 4.0)
-            if False and dur >= interlude_min_s:
-                continue
             cut_candidates.append((t, s))
 
 
@@ -702,6 +701,17 @@ class SeamlessSplitter:
             seg_duration = max(seg_end_s - seg_start_s, 1e-6)
 
             vocal_segment = _slice_audio(vocal_audio, start_idx, end_idx)
+            # 与导出一致：在判定前对人声音频片段做严格零尾部修剪（最多100ms），
+            # 使判定素材与输出/segments_vocal 实际保存的内容等价，避免因保存端尾部处理而产生偏差。
+            if vocal_segment is not None and len(vocal_segment) > 0:
+                try:
+                    vocal_segment = rtrim_trailing_zeros(
+                        np.ascontiguousarray(vocal_segment),
+                        floor=0.0,
+                        max_strip_samples=int(0.1 * sr),
+                    )
+                except Exception:
+                    pass
             instrumental_segment = _slice_audio(instrumental_audio, start_idx, end_idx)
             original_segment = _slice_audio(original_audio, start_idx, end_idx)
 
@@ -870,14 +880,28 @@ class SeamlessSplitter:
             base_dir = base_dir / subdir
             base_dir.mkdir(parents=True, exist_ok=True)
         saved_files = []
+        total_samples = 0
         for i, segment_audio in enumerate(segments):
             is_vocal = True
             if segment_is_vocal is not None and i < len(segment_is_vocal):
                 is_vocal = bool(segment_is_vocal[i])
             label = 'human' if is_vocal else 'music'
             output_path = base_dir / f"segment_{i+1:03d}_{label}{file_suffix}.wav"
-            sf.write(output_path, segment_audio, self.sample_rate, subtype='PCM_24')
+
+            # 防御式修复：去除片段尾部被错误补上的 0（最多 100ms）
+            trimmed = rtrim_trailing_zeros(
+                np.ascontiguousarray(segment_audio),
+                floor=0.0,
+                max_strip_samples=int(0.1 * self.sample_rate),
+            )
+            total_samples += len(trimmed)
+
+            sf.write(output_path, trimmed, self.sample_rate, subtype='PCM_24')
             saved_files.append(str(output_path))
+        try:
+            logger.info(f"[Integrity] sum(segment_len)={total_samples} samples @{self.sample_rate}Hz")
+        except Exception:
+            pass
         return saved_files
 
     def _create_single_segment_result(self, audio: np.ndarray, input_path: str, output_dir: str, reason: str, is_vocal: bool = True) -> Dict:

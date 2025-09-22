@@ -130,11 +130,11 @@ quality_control:
 
   # Quiet guard override (optional)
   enforce_quiet_cut:
-    enable: false
+    enable: true
     win_ms: 80
-    # 略微放宽守卫余量并缩短右推距离，减少被推到边界导致的长段残留
-    guard_db: 2.5
-    search_right_ms: 150
+    # 放宽守卫余量并显著缩短右推距离，减少右推导致的尾部“近零尾巴”
+    guard_db: 6.0
+    search_right_ms: 100
     floor_percentile: 5
 
 vocal_separation:
