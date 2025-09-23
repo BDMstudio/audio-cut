@@ -1,3 +1,6 @@
+<!-- File: README.md -->
+<!-- AI-SUMMARY: Vocal Smart Splitter 使用纯人声检测与 MDD/VPP 策略实现歌曲级无缝切分的指南。 -->
+
 # 智能人声分割器（Vocal Smart Splitter）
 
 高质量的人声停顿检测与无缝分割工具，面向歌曲场景优化。支持分离增强（MDX23/Demucs）、BPM自适应、VPP一次判定（能量谷）与样本级零交叉切割，输出可实现“完美重构”。
@@ -10,7 +13,7 @@
   - 简化治理：仅“合并短段”，不再二次插点/强拆，充分尊重一次检测的优选切点；
   - v2.2 使用纯人声轨进行守卫校正，切割在原混音上执行。
 - 守卫参数可配置化：`win_ms / guard_db / search_right_ms / floor_percentile` 可在配置中覆盖。
-- 样本级无缝拼接：输出WAV/FLAC零处理，拼接差异 0.00e+00。
+- 样本级无缝拼接：输出 24-bit WAV（原混音 + 纯人声）零处理，拼接误差 0.00e+00。
 
 ## 快速开始
 1) 将待处理音频放到 `input/`。
@@ -29,12 +32,13 @@ python quick_start.py
 python run_splitter.py input/your_song.mp3 --mode v2.2_mdd
 ```
 分割结果保存在 `output/` 的时间戳目录内。目录下的 `segment_***_*.wav` 为原混音切片，同时会在 `segments_vocal/` 生成相同切点的纯人声切片。
+同一目录会额外导出整轨 `*_v2.2_mdd_vocal_full.wav`（纯人声）以及在分离成功时附带的 `*_v2.2_mdd_instrumental.wav`（伴奏）。
 
 ## 关键配置（摘自 src/vocal_smart_splitter/config.yaml）
-- 分离后端：`enhanced_separation.backend: mdx23 | demucs_v4 | auto`
-- BPM增强：`vocal_pause_splitting.enable_bpm_adaptation: true`
-- 无平台谷值兜底：`vocal_pause_splitting.enable_valley_mode/auto_valley_fallback`
-- 守卫参数（可覆盖）：
+- 分离后端：`enhanced_separation.backend: mdx23 | demucs_v4`（可配合 `enhanced_separation.enable_fallback` 开启自动降级）。
+- BPM/MDD 自适应：`pure_vocal_detection.relative_threshold_adaptation` + `pure_vocal_detection.pause_stats_adaptation`；节拍约束覆盖使用 `bpm_adaptive_core.*`。
+- 能量谷评分：`pure_vocal_detection.valley_scoring.*` 调整长谷偏好、近邻合并与 NMS 上限。
+- 守卫参数（默认关闭，需先设 `quality_control.enforce_quiet_cut.enable: true` 才读取覆盖）：
 ```yaml
 quality_control:
   min_split_gap: 1.0                 # 最小切点间隔（秒）
@@ -43,12 +47,13 @@ quality_control:
   pure_music_min_duration: 6.0       # 无人声区间的最小检测窗口
   segment_vocal_threshold_db: -50.0  # 片段人声判定阈值（dB）
   enforce_quiet_cut:
+    enable: true                     # 样例设置，默认为 false
     win_ms: 80
     guard_db: 2.5
     search_right_ms: 150
     floor_percentile: 5
 ```
-说明：若未显式配置，程序会使用内建默认值。
+说明：若未显式配置，程序会使用内建默认值；守卫需显式开启 `enable: true`。
 
 ## 调参口诀（VPP + BPM）
 - 总体思路：一次检测（VPP 为主，BPM 轻度自适应）、仅合并短段，不做二次插点/强拆。
