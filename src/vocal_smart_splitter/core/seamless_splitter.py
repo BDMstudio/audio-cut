@@ -185,10 +185,22 @@ class SeamlessSplitter:
             instrumental_audio=instrumental_audio,
             original_audio=original_audio
         )
-        segments = self._split_at_sample_level(original_audio, final_cut_points)
+        classification_debug = list(getattr(self, '_last_segment_classification_debug', []))
+        segments, segment_vocal_flags, merged_debug = self._split_at_sample_level(
+            original_audio,
+            final_cut_points,
+            segment_flags=segment_vocal_flags,
+            debug_entries=classification_debug,
+        )
+        if merged_debug is not None:
+            classification_debug = merged_debug
+            self._last_segment_classification_debug = merged_debug
+        else:
+            self._last_segment_classification_debug = classification_debug
+
         mix_segment_files = self._save_segments(segments, output_dir, segment_is_vocal=segment_vocal_flags)
 
-        vocal_segments = self._split_at_sample_level(vocal_track, final_cut_points)
+        vocal_segments, _, _ = self._split_at_sample_level(vocal_track, final_cut_points)
         vocal_segment_files = self._save_segments(
             vocal_segments,
             output_dir,
@@ -557,34 +569,142 @@ class SeamlessSplitter:
         final_samples = [0] + [int(t * self.sample_rate) for t in final_times] + [len(audio)]
         return sorted(list(set(final_samples)))
 
-    def _split_at_sample_level(self, audio: np.ndarray, final_cut_points: List[int]) -> List[np.ndarray]:
-        """执行样本级分割"""
-        segments = []
-        carry = None
-        min_keep_samples = max(1, int(0.01 * self.sample_rate))
-        for i in range(len(final_cut_points) - 1):
-            start = final_cut_points[i]
-            end = final_cut_points[i+1]
-            chunk = audio[start:end]
-            if carry is not None:
-                if chunk.size:
-                    chunk = np.concatenate((carry, chunk))
-                else:
-                    chunk = carry
-                carry = None
-            if end - start >= min_keep_samples:
-                if chunk.size:
-                    segments.append(chunk)
-            else:
-                if chunk.size:
-                    carry = chunk if carry is None else np.concatenate((carry, chunk))
-        if carry is not None:
-            if segments:
-                segments[-1] = np.concatenate((segments[-1], carry))
-            else:
-                segments.append(carry)
-        return segments
+    def _split_at_sample_level(
+        self,
+        audio: np.ndarray,
+        final_cut_points: List[int],
+        *,
+        segment_flags: Optional[List[bool]] = None,
+        debug_entries: Optional[List[Dict[str, Any]]] = None,
+    ) -> Tuple[List[np.ndarray], Optional[List[bool]], Optional[List[Dict[str, Any]]]]:
+        """????????????????????????"""
+        segments: List[np.ndarray] = []
+        merged_flags: Optional[List[bool]] = [] if segment_flags is not None else None
+        merged_debug: Optional[List[Dict[str, Any]]] = [] if debug_entries is not None else None
 
+        min_keep_samples = max(1, int(0.01 * self.sample_rate))
+        carry_audio: Optional[np.ndarray] = None
+        carry_flag: Optional[bool] = None
+        carry_debug: Optional[Dict[str, Any]] = None
+
+        def _flag_at(index: int) -> bool:
+            if segment_flags is not None and index < len(segment_flags):
+                return bool(segment_flags[index])
+            return True
+
+        def _debug_at(index: int) -> Optional[Dict[str, Any]]:
+            if debug_entries is not None and index < len(debug_entries):
+                entry = dict(debug_entries[index])
+                entry.setdefault('merged_from_segments', [index])
+                entry.setdefault('decision_reason', entry.get('decision_reason', entry.get('reason')))
+                return entry
+            return None
+
+        def _merge_debug(base: Optional[Dict[str, Any]], extra: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+            if base is None:
+                return extra
+            if extra is None:
+                return base
+            merged = dict(base)
+            merged['start_s'] = min(base.get('start_s', merged.get('start_s')), extra.get('start_s', merged.get('start_s')))
+            merged['end_s'] = max(base.get('end_s', merged.get('end_s')), extra.get('end_s', merged.get('end_s')))
+            merged_duration = float(base.get('duration_s', 0.0)) + float(extra.get('duration_s', 0.0))
+            merged_seconds = float(base.get('vocal_activity_seconds', 0.0)) + float(extra.get('vocal_activity_seconds', 0.0))
+            merged['duration_s'] = merged_duration
+            merged['vocal_activity_seconds'] = merged_seconds
+            merged['vocal_activity_ratio'] = merged_seconds / merged_duration if merged_duration > 0 else 0.0
+            merged['decision'] = bool(base.get('decision')) or bool(extra.get('decision'))
+            reason = extra.get('decision_reason') or base.get('decision_reason') or extra.get('reason') or base.get('reason')
+            if reason:
+                merged['reason'] = reason
+                merged['decision_reason'] = reason
+            merged_from = list(base.get('merged_from_segments', []))
+            merged_from += list(extra.get('merged_from_segments', []))
+            merged['merged_from_segments'] = sorted({seg for seg in merged_from if seg is not None})
+            merged['activity_ratio_threshold'] = extra.get('activity_ratio_threshold', base.get('activity_ratio_threshold'))
+            merged['activity_threshold_db'] = extra.get('activity_threshold_db', base.get('activity_threshold_db'))
+            return merged
+
+        for idx in range(len(final_cut_points) - 1):
+            start = final_cut_points[idx]
+            end = final_cut_points[idx + 1]
+            chunk = audio[start:end]
+            flag = _flag_at(idx)
+            entry = _debug_at(idx)
+
+            if carry_audio is not None:
+                if chunk.size:
+                    chunk = np.concatenate((carry_audio, chunk))
+                else:
+                    chunk = carry_audio
+                flag = bool(carry_flag) or bool(flag)
+                entry = _merge_debug(carry_debug, entry)
+                carry_audio = None
+                carry_flag = None
+                carry_debug = None
+
+            if end - start >= min_keep_samples and chunk.size:
+                segments.append(chunk)
+                if merged_flags is not None:
+                    merged_flags.append(flag)
+                if merged_debug is not None:
+                    if entry is None:
+                        entry = {
+                            'start_s': start / self.sample_rate,
+                            'end_s': end / self.sample_rate,
+                            'duration_s': (end - start) / self.sample_rate,
+                            'vocal_activity_ratio': 1.0 if flag else 0.0,
+                            'vocal_activity_seconds': ((end - start) / self.sample_rate) if flag else 0.0,
+                            'activity_ratio_threshold': None,
+                            'activity_threshold_db': None,
+                            'decision': flag,
+                            'decision_reason': 'inferred_flag',
+                            'reason': 'inferred_flag',
+                            'merged_from_segments': [idx],
+                        }
+                    merged_debug.append(entry)
+            else:
+                if chunk.size:
+                    carry_audio = chunk if carry_audio is None else np.concatenate((carry_audio, chunk))
+                    carry_flag = flag if carry_flag is None else (bool(carry_flag) or bool(flag))
+                    if merged_debug is not None:
+                        carry_debug = _merge_debug(carry_debug, entry)
+                else:
+                    if merged_debug is not None:
+                        carry_debug = _merge_debug(carry_debug, entry)
+
+        if carry_audio is not None:
+            if segments:
+                segments[-1] = np.concatenate((segments[-1], carry_audio))
+                if merged_flags is not None:
+                    merged_flags[-1] = bool(merged_flags[-1]) or bool(carry_flag)
+                if merged_debug is not None:
+                    merged_debug[-1] = _merge_debug(merged_debug[-1], carry_debug)
+            else:
+                segments.append(carry_audio)
+                if merged_flags is not None:
+                    merged_flags.append(bool(carry_flag))
+                if merged_debug is not None:
+                    entry = carry_debug or {
+                        'start_s': 0.0,
+                        'end_s': len(carry_audio) / self.sample_rate,
+                        'duration_s': len(carry_audio) / self.sample_rate,
+                        'vocal_activity_ratio': 1.0 if carry_flag else 0.0,
+                        'vocal_activity_seconds': (len(carry_audio) / self.sample_rate) if carry_flag else 0.0,
+                        'activity_ratio_threshold': None,
+                        'activity_threshold_db': None,
+                        'decision': bool(carry_flag),
+                        'decision_reason': 'merged_trailing_segment',
+                        'reason': 'merged_trailing_segment',
+                        'merged_from_segments': [],
+                    }
+                    merged_debug.append(entry)
+
+        if merged_debug is not None:
+            for new_idx, entry in enumerate(merged_debug):
+                entry['index'] = new_idx
+
+        return segments, merged_flags, merged_debug
     def _classify_segments_vocal_presence(
         self,
         vocal_audio: np.ndarray,
@@ -594,7 +714,7 @@ class SeamlessSplitter:
         instrumental_audio: Optional[np.ndarray] = None,
         original_audio: Optional[np.ndarray] = None,
     ) -> List[bool]:
-        """综合 MDX23 分离结果与能量占比判断片段是否包含人声"""
+        """Classify segments via pure vocal occupancy for _human/_music suffixes."""
         num_segments = max(len(cut_points) - 1, 0)
         self._last_segment_classification_debug = []
         if num_segments == 0:
@@ -611,32 +731,18 @@ class SeamlessSplitter:
                 })
             return flags
 
-        overlap_vocal_ratio = float(get_config('quality_control.segment_vocal_overlap_ratio', 0.35))
-        overlap_music_ratio = float(get_config('quality_control.segment_music_overlap_ratio', 0.55))
-        energy_vocal_ratio = float(get_config('quality_control.segment_vocal_energy_ratio', 0.6))
-        energy_music_ratio = float(get_config('quality_control.segment_music_energy_ratio', 0.4))
-        presence_vocal_ratio = float(get_config('quality_control.segment_vocal_presence_ratio', 0.35))
-        presence_music_ratio = float(get_config('quality_control.segment_music_presence_ratio', 0.15))
-        noise_margin_db = float(get_config('quality_control.segment_noise_margin_db', 6.0))
+        try:
+            legacy_ratio = get_config('quality_control.vocal_presence_ratio_threshold')
+        except KeyError:
+            legacy_ratio = None
+        if legacy_ratio is not None:
+            activity_ratio_threshold = float(legacy_ratio)
+        else:
+            activity_ratio_threshold = float(get_config('quality_control.segment_vocal_activity_ratio', 0.10))
         threshold_db = float(get_config('quality_control.segment_vocal_threshold_db', -50.0))
+        hop = max(1, int(0.02 * sr))
+        frame_length = max(hop * 2, int(0.05 * sr))
         min_samples = max(1, int(0.02 * sr))
-        energy_floor = 1e-10
-
-        def _normalize_segments(raw_segments, fallback_state=None):
-            normalized = []
-            if not raw_segments:
-                return normalized
-            for seg in raw_segments:
-                try:
-                    start = float(seg.get('start', 0.0))
-                    end = float(seg.get('end', start))
-                    is_vocal = bool(seg.get('is_vocal', fallback_state)) if fallback_state is not None else bool(seg.get('is_vocal', False))
-                except Exception:
-                    continue
-                if end <= start:
-                    continue
-                normalized.append((start, end, is_vocal))
-            return normalized
 
         def _slice_audio(array: Optional[np.ndarray], start_idx: int, end_idx: int) -> Optional[np.ndarray]:
             if array is None or not isinstance(array, np.ndarray):
@@ -650,49 +756,8 @@ class SeamlessSplitter:
                 return None
             return array[start_i:end_i]
 
-        marker_segments = _normalize_segments(marker_segments or [], fallback_state=True)
-        music_segments = [(start, end) for start, end, is_vocal in marker_segments if not is_vocal]
-        if pure_music_segments:
-            for seg in pure_music_segments:
-                try:
-                    start = float(seg.get('start', 0.0))
-                    end = float(seg.get('end', start))
-                except Exception:
-                    continue
-                if end > start:
-                    music_segments.append((start, end))
-        vocal_segments = [(start, end) for start, end, is_vocal in marker_segments if is_vocal]
-
-        def _total_overlap(seg_start: float, seg_end: float, segments: List[tuple]) -> float:
-            total = 0.0
-            for s_start, s_end in segments:
-                overlap = min(seg_end, s_end) - max(seg_start, s_start)
-                if overlap > 0:
-                    total += overlap
-            return total
-
-        def _to_index(time_sec: float) -> int:
-            return int(max(0, min(round(time_sec * sr), len(vocal_audio))))
-
-        noise_floor_db = None
-        if music_segments:
-            noise_samples = []
-            for start, end in music_segments:
-                start_idx = _to_index(start)
-                end_idx = _to_index(end)
-                segment = _slice_audio(vocal_audio, start_idx, end_idx)
-                if segment is None or len(segment) < min_samples:
-                    continue
-                noise_rms = float(np.sqrt(np.mean(np.square(segment)) + 1e-12))
-                noise_samples.append(20.0 * np.log10(noise_rms))
-            if noise_samples:
-                noise_floor_db = float(np.median(noise_samples))
-
         flags: List[bool] = []
         debug_entries: List[Dict[str, Any]] = []
-
-        hop = max(1, int(0.02 * sr))
-        frame_length = max(hop * 2, int(0.05 * sr))
 
         for i in range(num_segments):
             start_idx = max(0, min(int(cut_points[i]), len(vocal_audio)))
@@ -702,155 +767,74 @@ class SeamlessSplitter:
             seg_duration = max(seg_end_s - seg_start_s, 1e-6)
 
             vocal_segment = _slice_audio(vocal_audio, start_idx, end_idx)
-            instrumental_segment = _slice_audio(instrumental_audio, start_idx, end_idx)
-            original_segment = _slice_audio(original_audio, start_idx, end_idx)
 
-            vocal_energy = float(np.mean(np.square(vocal_segment)) + 1e-12) if vocal_segment is not None else 0.0
-            inst_energy = float(np.mean(np.square(instrumental_segment)) + 1e-12) if instrumental_segment is not None else None
-            orig_energy = float(np.mean(np.square(original_segment)) + 1e-12) if original_segment is not None else None
-            if inst_energy is None and orig_energy is not None:
-                inst_energy = max(orig_energy - vocal_energy, 0.0)
+            vocal_activity_ratio = 0.0
+            vocal_activity_seconds = 0.0
+            segment_rms_db = None
 
-            total_energy = None
-            if inst_energy is not None:
-                total_energy = vocal_energy + inst_energy
-            elif orig_energy is not None:
-                total_energy = orig_energy
-
-            marker_vote = None
-            marker_reason = None
-            vocal_overlap = music_overlap = None
-            vocal_ratio = music_ratio = None
-            if vocal_segments or music_segments:
-                vocal_overlap = _total_overlap(seg_start_s, seg_end_s, vocal_segments)
-                music_overlap = _total_overlap(seg_start_s, seg_end_s, music_segments)
-                vocal_ratio = vocal_overlap / seg_duration if seg_duration > 0 else 0.0
-                music_ratio = music_overlap / seg_duration if seg_duration > 0 else 0.0
-                if vocal_ratio >= overlap_vocal_ratio:
-                    marker_vote = True
-                    marker_reason = 'marker_vocal_overlap'
-                elif music_ratio >= overlap_music_ratio:
-                    marker_vote = False
-                    marker_reason = 'marker_music_overlap'
-
-            energy_ratio = None
-            energy_vote = None
-            energy_reason = None
-            if total_energy is not None and total_energy > energy_floor:
-                energy_ratio = float(vocal_energy / (total_energy + 1e-12))
-                if energy_ratio >= energy_vocal_ratio:
-                    energy_vote = True
-                    energy_reason = 'energy_vocal_ratio'
-                elif energy_ratio <= energy_music_ratio:
-                    energy_vote = False
-                    energy_reason = 'energy_music_ratio'
-
-            presence_ratio = None
-            presence_vote = None
-            presence_reason = None
-            presence_baseline_db = None
             if vocal_segment is not None and len(vocal_segment) >= frame_length:
                 try:
                     rms_frames = librosa.feature.rms(y=vocal_segment, frame_length=frame_length, hop_length=hop)[0]
                 except Exception:
-                    rms_frames = np.sqrt(np.mean(np.square(vocal_segment) + 1e-12)) * np.ones(max(1, len(vocal_segment) // hop + 1))
+                    rms_scalar = float(np.sqrt(np.mean(np.square(vocal_segment)) + 1e-12))
+                    rms_frames = np.full(max(1, len(vocal_segment) // hop + 1), rms_scalar, dtype=np.float32)
                 rms_db_frames = 20.0 * np.log10(rms_frames + 1e-12)
-                baseline_db = noise_floor_db
-                residual_segment = None
-                if original_segment is not None and vocal_segment is not None and len(original_segment) == len(vocal_segment):
-                    residual_segment = original_segment - vocal_segment
-                if baseline_db is None:
-                    candidate_levels: List[float] = []
-                    if instrumental_segment is not None and len(instrumental_segment) >= min_samples:
-                        inst_rms = float(np.sqrt(np.mean(np.square(instrumental_segment)) + 1e-12))
-                        candidate_levels.append(20.0 * np.log10(inst_rms))
-                    if residual_segment is not None and len(residual_segment) >= min_samples:
-                        res_rms = float(np.sqrt(np.mean(np.square(residual_segment)) + 1e-12))
-                        candidate_levels.append(20.0 * np.log10(res_rms))
-                    if candidate_levels:
-                        baseline_db = float(np.median(candidate_levels))
-                    else:
-                        baseline_db = float(np.percentile(rms_db_frames, 25))
-                presence_baseline_db = float(baseline_db) if baseline_db is not None else None
-                presence_threshold_db = presence_baseline_db + noise_margin_db if presence_baseline_db is not None else noise_margin_db
-                presence_ratio = float(np.mean(rms_db_frames > presence_threshold_db))
-                if presence_ratio >= presence_vocal_ratio:
-                    presence_vote = True
-                    presence_reason = 'presence_vocal_ratio'
-                elif presence_ratio <= presence_music_ratio:
-                    presence_vote = False
-                    presence_reason = 'presence_music_ratio'
+                active_mask = rms_db_frames > threshold_db
+                if active_mask.size > 0:
+                    vocal_activity_ratio = float(np.mean(active_mask))
+                    active_seconds = float(active_mask.sum()) * (hop / sr)
+                    vocal_activity_seconds = float(min(seg_duration, active_seconds))
+            elif vocal_segment is not None and len(vocal_segment) > 0:
+                rms_scalar = float(np.sqrt(np.mean(np.square(vocal_segment)) + 1e-12))
+                segment_rms_db = 20.0 * np.log10(rms_scalar)
+                if segment_rms_db > threshold_db:
+                    vocal_activity_ratio = 1.0
+                    vocal_activity_seconds = seg_duration
 
-            segment = vocal_segment
-            rms_db = None
-            rms_vote = None
-            rms_reason = None
-            decision_threshold = threshold_db
-            threshold_source = 'static_threshold'
-            if segment is None or len(segment) < min_samples:
-                rms_vote = False
-                rms_reason = 'segment_insufficient_samples'
-            else:
-                rms = float(np.sqrt(np.mean(np.square(segment)) + 1e-12))
-                rms_db = 20.0 * np.log10(rms)
-                if noise_floor_db is not None:
-                    decision_threshold = noise_floor_db + noise_margin_db
-                    threshold_source = 'noise_floor'
-                rms_vote = rms_db > decision_threshold
-                rms_reason = 'rms_vs_threshold'
+            if vocal_segment is not None and segment_rms_db is None and len(vocal_segment) > 0:
+                rms_scalar = float(np.sqrt(np.mean(np.square(vocal_segment)) + 1e-12))
+                segment_rms_db = 20.0 * np.log10(rms_scalar)
 
-            decision = None
-            decision_reason = 'unset'
+            decision = vocal_activity_ratio >= activity_ratio_threshold
+            decision_reason = 'vocal_activity_ratio_gte_threshold' if decision else 'vocal_activity_ratio_lt_threshold'
 
-            if energy_vote is not None:
-                decision = energy_vote
-                decision_reason = energy_reason
-            elif presence_vote is not None:
-                decision = presence_vote
-                decision_reason = presence_reason
-            elif marker_vote is not None:
-                decision = marker_vote
-                decision_reason = marker_reason
-            elif rms_vote is not None:
-                decision = rms_vote
-                decision_reason = rms_reason
-            else:
-                decision = False
-                decision_reason = 'default_music'
-
-            if decision is False and energy_vote is False:
-                if marker_vote is True:
-                    decision = True
-                    decision_reason = 'marker_override_energy'
-                elif presence_vote is True and (energy_ratio is None or energy_ratio >= presence_music_ratio):
-                    decision = True
-                    decision_reason = 'presence_override_energy'
+            # Energy ratio vote temporarily disabled; keep placeholders for future reinstatement.
+            energy_ratio = None
+            energy_vote = None
+            energy_reason = None
 
             debug_entries.append({
                 'index': i,
                 'start_s': seg_start_s,
                 'end_s': seg_end_s,
                 'duration_s': seg_duration,
-                'vocal_overlap_s': vocal_overlap,
-                'music_overlap_s': music_overlap,
-                'vocal_ratio': vocal_ratio,
-                'music_ratio': music_ratio,
-                'marker_vote': marker_vote,
+                'vocal_activity_ratio': vocal_activity_ratio,
+                'vocal_activity_seconds': vocal_activity_seconds,
+                'activity_ratio_threshold': activity_ratio_threshold,
+                'activity_threshold_db': threshold_db,
+                'marker_vote': None,
+                'marker_reason': None,
+                'vocal_overlap_s': None,
+                'music_overlap_s': None,
+                'vocal_ratio': None,
+                'music_ratio': None,
                 'energy_ratio': energy_ratio,
                 'energy_vote': energy_vote,
-                'presence_ratio': presence_ratio,
-                'presence_vote': presence_vote,
-                'presence_baseline_db': presence_baseline_db,
-                'vocal_energy': vocal_energy,
-                'instrumental_energy': inst_energy,
-                'total_energy': total_energy,
-                'rms_db': rms_db,
-                'rms_vote': rms_vote,
+                'presence_ratio': None,
+                'presence_vote': None,
+                'presence_baseline_db': None,
+                'vocal_energy': None,
+                'instrumental_energy': None,
+                'total_energy': None,
+                'rms_db': segment_rms_db,
+                'rms_vote': None,
                 'decision': decision,
+                'decision_reason': decision_reason,
                 'reason': decision_reason,
-                'decision_threshold_db': decision_threshold,
-                'threshold_source': threshold_source,
-                'noise_floor_db': noise_floor_db,
+                'decision_threshold_db': threshold_db,
+                'threshold_source': 'vocal_activity_ratio',
+                'noise_floor_db': None,
+                'energy_reason': energy_reason,
             })
             flags.append(bool(decision))
 

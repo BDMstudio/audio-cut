@@ -1,3 +1,5 @@
+# File: src/vocal_smart_splitter/config.yaml
+# AI-SUMMARY: Global config for audio IO, pause detection thresholds, and quality gates
 # Normalized configuration for Vocal Smart Splitter (v2.x)
 # Focus: Pure vocal detection with BPM/MDD/VPP adaptation and weighted NMS
 
@@ -112,12 +114,14 @@ quality_control:
   remove_click_noise: false
   smooth_transitions: false
   # Length governance (V2 finalize)
-  # 仅用于“合并短段”下限；上限不在终筛强制，建议作为目标范围调参
+  # segment_min_duration 负责合并短段；segment_max_duration 超限时自动执行能量谷补刀
   segment_min_duration: 5.0
   segment_max_duration: 18.0
   # Pure-music splitting: min duration threshold (seconds). 0 = disabled (default).
   pure_music_min_duration: 6.0
   segment_vocal_threshold_db: -50.0
+  # Pure-vocal occupancy ratio used for _human/_music suffix selection
+  segment_vocal_activity_ratio: 0.1
   # Segment classification voting thresholds (see SeamlessSplitter._classify_segments_vocal_presence)
   high_presence_ratio: 0.6 # 建议 0.6~0.7
   segment_vocal_overlap_ratio: 0.35

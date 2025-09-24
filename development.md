@@ -41,8 +41,10 @@
 ## 4. 切点与守卫策略
 - 零交叉吸附 + 安静守卫（右推搜索“相对地板+余量”的安静点），必要时局部最小兜底；
 - BPM 轻度自适应（可选）：按 BPM/VPP 轻微调整阈值与分割间隙；
-- 长短段治理：仅 `segment_min_duration` 合并短段；`segment_max_duration` 作为目标参考，不强行打断；
-- 过滤最小间隔：`min_split_gap`。
+- 长短段治理：仅 `segment_min_duration` 合并短段；`segment_max_duration` 超限时通过能量谷再分刀（守住上限）；
+- è¿æ»¤æå°é´éï¼`min_split_gap`ã
+- åç¼æºè½ï¼ä»
+ç»è®¡çº¯äººå£°è½¨æ´»è·å æ¯ï¼>= `segment_vocal_activity_ratio` å¤å® `_human`ï¼å¦å `_music`ã
 
 ## 5. MDD（v2.2）概要
 综合能量（RMS）、频谱平坦度、起始率三维指标，动态调整阈值并识别主/副歌，减少副歌段过切、提升自然度。
@@ -61,7 +63,8 @@
 quality_control:
   min_split_gap: 0.9–1.2
   segment_min_duration: 4–6
-  segment_max_duration: 15–20   # 目标参考，不强制打断
+  segment_max_duration: 15–20   # 超限会触发能量谷再切分，守住上限
+  segment_vocal_activity_ratio: 0.10   # çº¯äººå£°æ´»è·å æ¯ç¨äºåç¼å¤å®
   enforce_quiet_cut:
     win_ms: 80
     guard_db: 2.0–3.0
