@@ -350,23 +350,17 @@ class SeamlessSplitter:
             pass
         return spans
 
-    def _finalize_and_filter_cuts_v2(self,
-                                     cut_candidates,
-                                     audio_for_split: np.ndarray,
-                                     pure_vocal_audio: Optional[np.ndarray] = None) -> List[int]:
-        """
-        方案2：带评分候选的加权NMS + 守卫校正 + 长短段治理（直接在此函数内完成）。
-
-        - 输入可为：
-          1) [(time_sec, score), ...]
-          2) 样本点列表（int）
-          3) 时间列表（float，单位秒）
-        """
+    def _finalize_and_filter_cuts_v2(
+        self,
+        cut_candidates,
+        audio_for_split: np.ndarray,
+        pure_vocal_audio: Optional[np.ndarray] = None
+    ) -> List[int]:
+        """Refined candidate filtering: weighted NMS + guard alignment + min gap."""
         sr = self.sample_rate
         x_guard = pure_vocal_audio if pure_vocal_audio is not None else audio_for_split
         duration_s = len(audio_for_split) / sr
 
-        # 解析候选为 time, score
         times: List[float] = []
         scores: List[float] = []
         if isinstance(cut_candidates, list) and cut_candidates:
@@ -382,67 +376,51 @@ class SeamlessSplitter:
                 times = [float(p) for p in cut_candidates]
                 scores = [1.0] * len(times)
 
-        # 加权NMS（可控开关）
         use_weighted_nms = get_config('pure_vocal_detection.valley_scoring.use_weighted_nms', True)
         if times and use_weighted_nms:
-            logger.info(f"[FinalizeV2] 加权NMS准备: candidates={len(times)}")
             pairs: List[Tuple[float, float]] = list(zip(times, scores))
             try:
                 pairs.sort(key=lambda x: x[1], reverse=True)
             except Exception:
                 pairs = [(t, 1.0) for t in times]
-            min_gap = get_config('quality_control.min_split_gap', 1.0)
+            min_gap = float(get_config('quality_control.min_split_gap', 1.0))
             kept: List[Tuple[float, float]] = []
-            before_n = len(pairs)
             for t, s in pairs:
                 if all(abs(t - kt) >= min_gap for kt, _ in kept):
                     kept.append((t, s))
-            # 安全上限：防止极端情况下候选仍然过多导致后续计算量爆炸
             try:
                 max_kept = int(get_config('pure_vocal_detection.valley_scoring.max_kept_after_nms', 150))
             except Exception:
                 max_kept = 150
             if len(kept) > max_kept:
                 kept = kept[:max_kept]
-            after_n = len(kept)
-            top_score = kept[0][1] if kept else (pairs[0][1] if pairs else None)
-            try:
-                if top_score is not None:
-                    logger.info(f"[NMS] candidates={before_n} -> kept={after_n}, top_score={float(top_score):.3f}")
-                else:
-                    logger.info(f"[NMS] candidates={before_n} -> kept={after_n}")
-            except Exception:
-                pass
-            times = sorted([t for t, _ in kept])
+            times = sorted(t for t, _ in kept)
         elif times:
-            # 基础去重
             times = sorted(set(times))
 
         if not times:
             return [0, len(audio_for_split)]
 
-        # 守卫右推与零交叉吸附
-        logger.info(f"[FinalizeV2] 守卫校正开始: {len(times)} 个候选")
         guard_primary = pure_vocal_audio if pure_vocal_audio is not None else audio_for_split
         mix_guard = audio_for_split
-        quiet_cut_enabled = getattr(self.quality_controller, 'quiet_cut_enabled', True)
+        quiet_cut_enabled = bool(getattr(self.quality_controller, 'quiet_cut_enabled', True))
 
         def _fallback_local_min(source_audio: Optional[np.ndarray], t0: float) -> float:
             if source_audio is None:
                 return t0
-            search_ms = get_config('quality_control.enforce_quiet_cut.search_right_ms', 300)
+            search_ms = float(get_config('quality_control.enforce_quiet_cut.search_right_ms', 300))
             win = int(sr * (search_ms / 1000.0))
             c = int(t0 * sr)
             a = c
             b = min(len(source_audio), c + max(win, int(0.05 * sr)))
             if b <= a + 1:
                 return t0
-            seg = np.abs(source_audio[a:b])
-            idx = int(np.argmin(seg))
+            segment = np.abs(source_audio[a:b])
+            idx = int(np.argmin(segment))
             return (a + idx) / sr
 
         corrected: List[float] = []
-        for idx_t, t in enumerate(times):
+        for t in times:
             t_adj = float(t)
             try:
                 if guard_primary is not None:
@@ -463,98 +441,24 @@ class SeamlessSplitter:
                             mix_candidate = float(zc_candidate)
                     if mix_candidate is not None and mix_candidate >= 0:
                         t_adj = float(mix_candidate)
-                t_adj = float(np.clip(t_adj, 0.0 + 1e-3, duration_s - 1e-3))
-                corrected.append(t_adj)
-                if idx_t % 5 == 0:
-                    logger.info(f"[FinalizeV2] 守卫校正进度 {idx_t+1}/{len(times)}: {t:.3f}s -> {t_adj:.3f}s")
+                t_adj = float(np.clip(t_adj, 1e-3, duration_s - 1e-3))
             except Exception:
-                corrected.append(float(np.clip(t, 0.0 + 1e-3, duration_s - 1e-3)))
+                t_adj = float(np.clip(t, 1e-3, duration_s - 1e-3))
+            corrected.append(t_adj)
 
-        # 最小间隔过滤（再次稳固）
-        min_interval = get_config('quality_control.min_split_gap', 1.0)
+        min_interval = float(get_config('quality_control.min_split_gap', 1.0))
         filtered_times = self.quality_controller.pure_filter_cut_points(
             corrected, duration_s, min_interval=min_interval
         )
-        logger.info(f"[FinalizeV2] 最小间隔过滤: {len(corrected)} -> {len(filtered_times)}")
 
-        # 构建边界
-        boundaries: List[int] = [0] + [int(t * sr) for t in filtered_times] + [len(audio_for_split)]
-        boundaries = sorted(set(boundaries))
-        logger.info(f"[FinalizeV2] 初始边界数: {len(boundaries)}")
-        seg_max = float(get_config('quality_control.segment_max_duration', 18.0))
-        min_gap_samples = max(1, int(get_config('quality_control.min_split_gap', 1.0) * sr))
-
-        def _find_energy_min_cut(start_idx: int, end_idx: int, source_audio: np.ndarray) -> Optional[int]:
-            span = end_idx - start_idx
-            if span <= min_gap_samples * 2:
-                return None
-            search_start = start_idx + span // 4
-            search_end = start_idx + (3 * span) // 4
-            if search_end - search_start <= min_gap_samples:
-                return None
-            sub = source_audio[search_start:search_end]
-            if sub.size == 0:
-                return None
-            win = max(1, int(0.02 * sr))
-            sq = np.square(sub)
-            if sub.size >= win > 1:
-                kernel = np.ones(win, dtype=sq.dtype) / float(win)
-                energy = np.convolve(sq, kernel, mode='same')
-            else:
-                energy = sq
-            min_offset = int(np.argmin(energy))
-            return search_start + min_offset
-
-        def _split_long_segments(bounds: List[int]) -> List[int]:
-            if seg_max <= 0:
-                return bounds
-            updated = sorted(set(bounds))
-            target_audio = x_guard if x_guard is not None else audio_for_split
-            max_passes = 8
-            passes = 0
-            changed = True
-            while changed and passes < max_passes:
-                changed = False
-                passes += 1
-                new_points: List[int] = []
-                for i in range(len(updated) - 1):
-                    start_idx = updated[i]
-                    end_idx = updated[i + 1]
-                    if (end_idx - start_idx) / sr <= seg_max:
-                        continue
-                    cut_idx = _find_energy_min_cut(start_idx, end_idx, target_audio)
-                    if cut_idx is None:
-                        cut_idx = start_idx + (end_idx - start_idx) // 2
-                    cut_idx = int(np.clip(cut_idx, start_idx + min_gap_samples, end_idx - min_gap_samples))
-                    if cut_idx <= start_idx or cut_idx >= end_idx:
-                        continue
-                    if all(abs(cut_idx - existing) >= min_gap_samples for existing in updated):
-                        new_points.append(cut_idx)
-                if new_points:
-                    updated.extend(new_points)
-                    updated = sorted(set(updated))
-                    changed = True
-            if passes >= max_passes and changed:
-                logger.warning(f'[FinalizeV2] long-segment splitting reached max passes {max_passes}; segments may still exceed {seg_max:.3f}s')
-            return updated
-
-        boundaries = _split_long_segments(boundaries)
-
-        # VPP一次判定：仅做“合并短段”，不再做任何二次插点/强拆，避免破坏首次优选切点
-        seg_min = float(get_config('quality_control.segment_min_duration', 4.0))
-        changed_local = True
-        while changed_local and len(boundaries) > 2:
-            changed_local = False
-            durs_local = [(boundaries[i+1]-boundaries[i]) / sr for i in range(len(boundaries)-1)]
-            for i, d in enumerate(durs_local):
-                if d < seg_min:
-                    rm_idx = i+1 if i+1 < len(boundaries)-1 else i
-                    logger.info(f"[FinalizeV2] 合并短段: 移除边界索引 {rm_idx}，片段时长 {d:.3f}s < {seg_min:.3f}s")
-                    del boundaries[rm_idx]
-                    changed_local = True
-                    break
-        logger.info(f"[FinalizeV2] 最终边界数: {len(boundaries)}")
-        return boundaries
+        boundary_samples = [0]
+        boundary_samples.extend(
+            int(round(t * sr))
+            for t in filtered_times
+            if 0.0 < t < duration_s
+        )
+        boundary_samples.append(len(audio_for_split))
+        return sorted(set(boundary_samples))
 
     def _finalize_and_filter_cuts(self, cut_points_samples: List[int], audio: np.ndarray) -> List[int]:
         """对切割点进行最终的排序、去重和安全校验"""

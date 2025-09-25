@@ -113,15 +113,15 @@ quality_control:
   normalize_audio: false
   remove_click_noise: false
   smooth_transitions: false
-  # Length governance (V2 finalize)
-  # segment_min_duration 负责合并短段；segment_max_duration 超限时自动执行能量谷补刀
-  segment_min_duration: 5.0
-  segment_max_duration: 18.0
+  # Length strategy: 终筛阶段仅依赖 min_split_gap 过滤；segment_min_duration 用于 VPP 候选上限，segment_max_duration 目前未启用
+  segment_min_duration: 6.0     # VPP 候选上限参考值 (s)
+  segment_max_duration: 18.0    # 预留参数，暂未启用自动切分
   # Pure-music splitting: min duration threshold (seconds). 0 = disabled (default).
   pure_music_min_duration: 6.0
   segment_vocal_threshold_db: -50.0
   # Pure-vocal occupancy ratio used for _human/_music suffix selection
   segment_vocal_activity_ratio: 0.1
+  segment_min_mix_pace: 2.0        # 最小合并参考数值 (s)
   # Segment classification voting thresholds (see SeamlessSplitter._classify_segments_vocal_presence)
   high_presence_ratio: 0.6 # 建议 0.6~0.7
   segment_vocal_overlap_ratio: 0.35
