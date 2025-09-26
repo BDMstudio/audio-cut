@@ -1,3 +1,6 @@
+<!-- File: todo.md -->
+<!-- AI-SUMMARY: 项目任务状态跟踪，记录无缝分割器的完成项、进行项与待办。 -->
+
 # todo.md · 项目开发进展与任务清单（更新于 2025-09-19）
 
 ## 0. 说明
@@ -10,14 +13,15 @@
   - `quality_control.enforce_quiet_cut.{win_ms, guard_db, search_right_ms, floor_percentile}` 支持覆盖默认值
 - README 增补“调参口诀（VPP + BPM）”，规范一次检测调参方法
 - 清理冗余：关闭旧版“强制二次检测”路径；日志最小诊断（解释 venv/后端）
+- 纯人声片段独立导出：segments_vocal/ 子目录输出 24-bit 纯人声切片，与伴奏版保持同切点
+
 
 ## 2. 进行中（Doing）
-- [x] 文档对齐（README/development/PRD 小节精炼与截图补充）
+- [/] 文档对齐（README/development/PRD 小节精炼与截图补充）
 - [/] 典型样本集回归（多风格：民谣/流行/电子/摇滚/说唱）
 
 ## 3. 待办（Backlog）
 - [ ] 收集 `segment_classification_debug` 样本，评估 presence/energy 阈值在不同曲风的适配性
-- [x] 增加以MDX23分离的纯人声音频分割片段输出，并以单独文件夹保存，与含有伴奏的音频区分开
 - [ ] VPP 权重与相对阈值的数据集标定（自动调参脚本；验证不同风格分布）
 - [ ] 一致性测试集（快歌和声、慢歌、电子、摇滚、说唱）与指标面板（片段数/时长分布/超长率）
 - [ ] BPM 自适应因子再收敛（clamp/multipliers 的自动搜索与曲线拟合）

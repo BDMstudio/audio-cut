@@ -33,6 +33,7 @@ class SeamlessSplitter:
         self.quality_controller = QualityController(sample_rate)
         self.separator = EnhancedVocalSeparator(sample_rate)
         self._last_segment_classification_debug: List[Dict[str, Any]] = []
+        self._last_guard_shift_stats: Dict[str, float] = self._blank_guard_stats()
         logger.info(f"无缝分割器统一指挥中心初始化完成 (SR: {self.sample_rate}) - 已加载纯人声检测器")
 
     def split_audio_seamlessly(self, input_path: str, output_dir: str, mode: str = 'v2.2_mdd') -> Dict:
@@ -192,6 +193,7 @@ class SeamlessSplitter:
             segment_flags=segment_vocal_flags,
             debug_entries=classification_debug,
         )
+        segment_durations = [len(seg) / float(self.sample_rate) for seg in segments]
         if merged_debug is not None:
             classification_debug = merged_debug
             self._last_segment_classification_debug = merged_debug
@@ -229,9 +231,11 @@ class SeamlessSplitter:
             'saved_files': saved_files, 'mix_segment_files': mix_segment_files, 'vocal_segment_files': vocal_segment_files,
             'backend_used': separation_result.backend_used,
             'separation_confidence': separation_result.separation_confidence, 'processing_time': total_time,
+            'segment_durations': segment_durations,
             'segment_vocal_flags': segment_vocal_flags,
             'segment_labels': ['human' if flag else 'music' for flag in segment_vocal_flags],
             'segment_classification_debug': getattr(self, '_last_segment_classification_debug', []),
+            'guard_shift_stats': self._get_guard_shift_stats(),
             'input_file': input_path, 'output_dir': output_dir
         }
 
@@ -261,7 +265,8 @@ class SeamlessSplitter:
         return {
             'success': True, 'method': 'vocal_separation_only', 'num_segments': 0, 'saved_files': saved_files,
             'backend_used': separation_result.backend_used, 'separation_confidence': separation_result.separation_confidence,
-            'processing_time': processing_time, 'input_file': input_path, 'output_dir': output_dir
+            'processing_time': processing_time, 'segment_durations': [],
+            'guard_shift_stats': self._get_guard_shift_stats(), 'input_file': input_path, 'output_dir': output_dir
         }
 
     def _find_no_vocal_runs(self, vocal_audio: np.ndarray, min_duration: float):
@@ -358,19 +363,24 @@ class SeamlessSplitter:
     ) -> List[int]:
         """Refined candidate filtering: weighted NMS + guard alignment + min gap."""
         sr = self.sample_rate
-        x_guard = pure_vocal_audio if pure_vocal_audio is not None else audio_for_split
-        duration_s = len(audio_for_split) / sr
+        duration_s = len(audio_for_split) / float(sr) if sr > 0 else 0.0
 
         times: List[float] = []
         scores: List[float] = []
+
         if isinstance(cut_candidates, list) and cut_candidates:
             first = cut_candidates[0]
             if isinstance(first, tuple) and len(first) >= 2:
-                for t, s in cut_candidates:
-                    times.append(float(t))
+                for candidate in cut_candidates:
+                    t, s = candidate[:2]
+                    ft = float(t)
+                    times.append(ft)
                     scores.append(float(s))
             elif isinstance(first, int):
-                times = [float(p) / sr for p in cut_candidates]
+                if sr > 0:
+                    times = [float(p) / float(sr) for p in cut_candidates]
+                else:
+                    times = [0.0 for _ in cut_candidates]
                 scores = [1.0] * len(times)
             else:
                 times = [float(p) for p in cut_candidates]
@@ -380,13 +390,13 @@ class SeamlessSplitter:
         if times and use_weighted_nms:
             pairs: List[Tuple[float, float]] = list(zip(times, scores))
             try:
-                pairs.sort(key=lambda x: x[1], reverse=True)
+                pairs.sort(key=lambda item: item[1], reverse=True)
             except Exception:
                 pairs = [(t, 1.0) for t in times]
             min_gap = float(get_config('quality_control.min_split_gap', 1.0))
             kept: List[Tuple[float, float]] = []
             for t, s in pairs:
-                if all(abs(t - kt) >= min_gap for kt, _ in kept):
+                if all(abs(t - existing) >= min_gap for existing, _ in kept):
                     kept.append((t, s))
             try:
                 max_kept = int(get_config('pure_vocal_detection.valley_scoring.max_kept_after_nms', 150))
@@ -398,7 +408,8 @@ class SeamlessSplitter:
         elif times:
             times = sorted(set(times))
 
-        if not times:
+        if not times or duration_s <= 0.0:
+            self._last_guard_shift_stats = self._blank_guard_stats()
             return [0, len(audio_for_split)]
 
         guard_primary = pure_vocal_audio if pure_vocal_audio is not None else audio_for_split
@@ -409,47 +420,99 @@ class SeamlessSplitter:
             if source_audio is None:
                 return t0
             search_ms = float(get_config('quality_control.enforce_quiet_cut.search_right_ms', 300))
-            win = int(sr * (search_ms / 1000.0))
-            c = int(t0 * sr)
+            win = int(sr * (search_ms / 1000.0)) if sr > 0 else 0
+            c = int(t0 * sr) if sr > 0 else 0
             a = c
             b = min(len(source_audio), c + max(win, int(0.05 * sr)))
             if b <= a + 1:
                 return t0
             segment = np.abs(source_audio[a:b])
             idx = int(np.argmin(segment))
-            return (a + idx) / sr
+            return (a + idx) / float(sr) if sr > 0 else t0
 
         corrected: List[float] = []
-        for t in times:
-            t_adj = float(t)
+        shift_records: List[Tuple[float, float, float, float]] = []
+
+        lower_bound = 1e-3
+        upper_bound_base = max(duration_s - 1e-3, lower_bound)
+
+        for raw_t in times:
+            raw_t = float(raw_t)
+            guard_stage_time = raw_t
+            mix_stage_time = raw_t
+            final_time = raw_t
             try:
+                candidate_time = raw_t
                 if guard_primary is not None:
-                    candidate = self.quality_controller.safe_zero_crossing_align(guard_primary, sr, t_adj, window_ms=10)
+                    candidate = self.quality_controller.safe_zero_crossing_align(guard_primary, sr, candidate_time, window_ms=10)
                     if candidate is None or candidate < 0:
-                        candidate = self.quality_controller.enforce_quiet_cut_fast(guard_primary, sr, t_adj)
+                        candidate = self.quality_controller.enforce_quiet_cut_fast(guard_primary, sr, candidate_time)
                     if candidate is None or candidate < 0:
-                        candidate = _fallback_local_min(guard_primary, t_adj)
+                        candidate = _fallback_local_min(guard_primary, candidate_time)
                     if candidate is not None and candidate >= 0:
-                        t_adj = float(candidate)
+                        guard_stage_time = float(candidate)
+                        candidate_time = guard_stage_time
+                mix_stage_time = guard_stage_time
                 if quiet_cut_enabled and mix_guard is not None:
-                    mix_candidate = self.quality_controller.enforce_quiet_cut_fast(mix_guard, sr, t_adj)
+                    mix_candidate = self.quality_controller.enforce_quiet_cut_fast(mix_guard, sr, candidate_time)
                     if mix_candidate is None or mix_candidate < 0:
-                        mix_candidate = _fallback_local_min(mix_guard, t_adj)
+                        mix_candidate = _fallback_local_min(mix_guard, candidate_time)
                     else:
                         zc_candidate = self.quality_controller.safe_zero_crossing_align(mix_guard, sr, mix_candidate, window_ms=10)
                         if zc_candidate is not None and zc_candidate >= 0:
                             mix_candidate = float(zc_candidate)
                     if mix_candidate is not None and mix_candidate >= 0:
-                        t_adj = float(mix_candidate)
-                t_adj = float(np.clip(t_adj, 1e-3, duration_s - 1e-3))
+                        mix_stage_time = float(mix_candidate)
+                        candidate_time = mix_stage_time
+                final_time = float(np.clip(candidate_time, lower_bound, upper_bound_base))
             except Exception:
-                t_adj = float(np.clip(t, 1e-3, duration_s - 1e-3))
-            corrected.append(t_adj)
+                guard_stage_time = raw_t
+                mix_stage_time = raw_t
+                final_time = float(np.clip(raw_t, lower_bound, upper_bound_base))
+            total_shift = (final_time - raw_t) * 1000.0
+            vocal_guard_shift = (guard_stage_time - raw_t) * 1000.0
+            mix_guard_shift = (mix_stage_time - guard_stage_time) * 1000.0
+            corrected.append(final_time)
+            shift_records.append((final_time, total_shift, vocal_guard_shift, mix_guard_shift))
 
         min_interval = float(get_config('quality_control.min_split_gap', 1.0))
         filtered_times = self.quality_controller.pure_filter_cut_points(
             corrected, duration_s, min_interval=min_interval
         )
+
+        def _time_key(val: float) -> float:
+            return round(val, 6)
+
+        record_map: Dict[float, Tuple[float, float, float, float]] = {}
+        for rec in shift_records:
+            record_map.setdefault(_time_key(rec[0]), rec)
+        kept_records = [record_map[_time_key(t)] for t in filtered_times if _time_key(t) in record_map]
+
+        if kept_records:
+            total_shifts = [rec[1] for rec in kept_records]
+            vocal_shifts = [rec[2] for rec in kept_records]
+            mix_shifts = [rec[3] for rec in kept_records]
+        else:
+            total_shifts = []
+            vocal_shifts = []
+            mix_shifts = []
+
+        def _avg_abs(values: List[float]) -> float:
+            return float(sum(abs(v) for v in values) / len(values)) if values else 0.0
+
+        def _avg_positive(values: List[float]) -> float:
+            positives = [v for v in values if v > 0]
+            return float(sum(positives) / len(positives)) if positives else 0.0
+
+        max_shift = float(max((abs(v) for v in total_shifts), default=0.0))
+        self._last_guard_shift_stats = {
+            'avg_shift_ms': _avg_abs(total_shifts),
+            'max_shift_ms': max_shift,
+            'avg_guard_only_shift_ms': _avg_positive(total_shifts),
+            'avg_vocal_guard_shift_ms': _avg_positive(vocal_shifts),
+            'avg_mix_guard_shift_ms': _avg_positive(mix_shifts),
+            'count': len(total_shifts),
+        }
 
         boundary_samples = [0]
         boundary_samples.extend(
@@ -459,7 +522,6 @@ class SeamlessSplitter:
         )
         boundary_samples.append(len(audio_for_split))
         return sorted(set(boundary_samples))
-
     def _finalize_and_filter_cuts(self, cut_points_samples: List[int], audio: np.ndarray) -> List[int]:
         """对切割点进行最终的排序、去重和安全校验"""
         audio_duration_s = len(audio) / self.sample_rate
@@ -768,14 +830,36 @@ class SeamlessSplitter:
             saved_files.append(str(output_path))
         return saved_files
 
+    @staticmethod
+    def _blank_guard_stats() -> Dict[str, float]:
+        return {
+            'avg_shift_ms': 0.0,
+            'max_shift_ms': 0.0,
+            'avg_guard_only_shift_ms': 0.0,
+            'avg_vocal_guard_shift_ms': 0.0,
+            'avg_mix_guard_shift_ms': 0.0,
+            'count': 0,
+        }
+
+    def _get_guard_shift_stats(self) -> Dict[str, float]:
+        stats = getattr(self, '_last_guard_shift_stats', None)
+        if not stats:
+            return self._blank_guard_stats()
+        return dict(stats)
+
     def _create_single_segment_result(self, audio: np.ndarray, input_path: str, output_dir: str, reason: str, is_vocal: bool = True) -> Dict:
         """当无法分割时，创建单个片段的结果"""
         logger.warning(f"{reason}，将输出为单个文件。")
+        self._last_guard_shift_stats = self._blank_guard_stats()
+        sample_count = audio.shape[-1] if hasattr(audio, 'shape') else len(audio)
+        duration_s = float(sample_count) / float(self.sample_rate) if self.sample_rate > 0 else 0.0
         saved_files = self._save_segments([audio], output_dir, segment_is_vocal=[is_vocal])
         return {
             'success': True, 'num_segments': 1, 'saved_files': saved_files,
+            'segment_durations': [duration_s],
             'segment_vocal_flags': [is_vocal],
             'segment_labels': ['human' if is_vocal else 'music'],
             'segment_classification_debug': getattr(self, '_last_segment_classification_debug', []),
+            'guard_shift_stats': self._get_guard_shift_stats(),
             'note': reason, 'input_file': input_path, 'output_dir': output_dir
         }
