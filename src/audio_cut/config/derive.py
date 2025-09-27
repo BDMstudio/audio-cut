@@ -280,11 +280,24 @@ def _default_vocal_separation() -> Dict[str, Any]:
 
 def _advanced_vad_defaults() -> Dict[str, Any]:
     return {
+        'use_silero': True,
         'silero_prob_threshold_down': 0.35,
         'silero_min_speech_ms': 250,
         'silero_min_silence_ms': 700,
         'silero_window_size_samples': 512,
         'silero_speech_pad_ms': 150,
+        'silero_min_consecutive_silence_frames': 3,
+        'energy_gate': {
+            'frame_ms': 20.0,
+            'hop_ms': 10.0,
+            'floor_percentile': 15.0,
+            'threshold_db': -45.0,
+            'boost_db': 6.0,
+            'min_speech_ms': 200.0,
+            'min_silence_ms': 120.0,
+            'hang_ms': 120.0,
+            'smoothing_frames': 3,
+        },
     }
 
 

@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from ..utils.config_manager import get_config
 from ..utils.adaptive_parameter_calculator import create_adaptive_calculator, AdaptiveParameters
 
+from audio_cut.detectors.energy_gate import detect_activity_segments
 logger = logging.getLogger(__name__)
 
 try:
@@ -47,19 +48,36 @@ class VocalPauseDetectorV2:
             self.adaptive_enhancer = None
             logger.info("BPM自适应已禁用或不可用，将使用固定阈值模式")
 
-        self._init_silero_vad()
+        self.use_silero = bool(get_config('advanced_vad.use_silero', False))
+        self.energy_gate_config = get_config('advanced_vad.energy_gate', {}) or {}
+        self.vad_model = None
+        self.get_speech_timestamps = None
+
+        if self.use_silero:
+            self._init_silero_vad()
+        else:
+            logger.info('Silero VAD disabled, using energy gate fallback')
         logger.info(f"VocalPauseDetectorV2 初始化完成 (SR: {sample_rate})")
 
     def _init_silero_vad(self):
         try:
             import torch
+
             torch.set_num_threads(1)
-            self.vad_model, self.vad_utils = torch.hub.load(repo_or_dir='snakers4/silero-vad', model='silero_vad', force_reload=False, onnx=False)
+            self.vad_model, self.vad_utils = torch.hub.load(
+                repo_or_dir='snakers4/silero-vad',
+                model='silero_vad',
+                force_reload=False,
+                onnx=False,
+            )
             (self.get_speech_timestamps, _, _, _, _) = self.vad_utils
-            logger.info("Silero VAD模型加载成功")
+            logger.info('Silero VAD model initialized')
         except Exception as e:
             self.vad_model = None
-            logger.error(f"Silero VAD初始化失败: {e}")
+            self.vad_utils = None
+            self.get_speech_timestamps = None
+            self.use_silero = False
+            logger.warning(f'Silero VAD init failed, falling back to energy gate: {e}')
 
     def detect_vocal_pauses(self, detection_target_audio: np.ndarray, context_audio: Optional[np.ndarray] = None) -> List[VocalPause]:
         """
@@ -70,9 +88,8 @@ class VocalPauseDetectorV2:
             context_audio: 用于音乐背景分析的音频 (如: original_audio)
         """
         logger.info("开始BPM感知的人声停顿检测...")
-        if self.vad_model is None:
-            logger.error("Silero VAD模型未加载，无法继续")
-            return []
+        if self.use_silero and self.vad_model is None:
+            logger.warning('Silero VAD unavailable, falling back to energy gate')
 
         # 如果没有提供背景音频，则使用目标音频进行分析（兼容旧的smart_split模式）
         if context_audio is None:
@@ -92,7 +109,8 @@ class VocalPauseDetectorV2:
                         float(bpm_features.main_bpm), float(instrument_complexity.get('overall_complexity', 0.5)), int(instrument_complexity.get('instrument_count', 3))
                     )
         
-        logger.info("步骤 2/5: 在[目标音频]上使用自适应参数进行VAD语音检测...")
+        backend_name = 'silero' if self.use_silero and self.vad_model is not None else 'energy_gate'
+        logger.info(f'步骤 2/5: 在[目标音频]上使用 {backend_name} VAD 检测语音...')
         speech_timestamps = self._detect_speech_timestamps(detection_target_audio)
 
         logger.info("步骤 3/5: 计算语音间的停顿区域...")
@@ -112,45 +130,79 @@ class VocalPauseDetectorV2:
     # ... 它们的内容保持不变 ...
 
     def _detect_speech_timestamps(self, audio: np.ndarray) -> List[Dict]:
-        """使用Silero VAD检测语音时间戳，参数由self.current_adaptive_params动态提供"""
+        if audio is None or getattr(audio, 'size', 0) == 0:
+            return []
+
+        if self.use_silero and self.vad_model is not None and self.get_speech_timestamps is not None:
+            silero_segments = self._detect_with_silero(audio)
+            if silero_segments:
+                return silero_segments
+            logger.warning('Silero VAD returned no segments, fallback to energy gate')
+
+        return self._detect_with_energy_gate(audio)
+
+    def _detect_with_silero(self, audio: np.ndarray) -> List[Dict]:
         try:
             import torch
             import librosa
+
             target_sr = 16000
             audio_16k = librosa.resample(audio, orig_sr=self.sample_rate, target_sr=target_sr)
             audio_tensor = torch.from_numpy(audio_16k).float()
-            
-            # 动态获取VAD参数
-            if self.current_adaptive_params:
-                params = self.current_adaptive_params
+
+            vad_params: Dict[str, float] = {}
+            if self.current_adaptive_params is not None:
                 vad_params = {
-                    'threshold': params.vad_threshold,
-                    'min_speech_duration_ms': get_config('advanced_vad.silero_min_speech_ms', 250),
-                    'min_silence_duration_ms': int(params.min_pause_duration * 1000),
-                    'window_size_samples': get_config('advanced_vad.silero_window_size_samples', 512),
-                    'speech_pad_ms': int(params.speech_pad_ms)
+                    'threshold': float(min(0.7, max(0.2, getattr(self.current_adaptive_params, 'vad_threshold', 0.5)))),
+                    'min_speech_duration_ms': int(max(120, getattr(self.current_adaptive_params, 'min_pause_duration', 0.5) * 800.0)),
+                    'min_silence_duration_ms': int(max(200, getattr(self.current_adaptive_params, 'min_pause_duration', 0.5) * 1000.0)),
+                    'window_size_samples': int(get_config('advanced_vad.silero_window_size_samples', 512)),
+                    'speech_pad_ms': int(max(80, getattr(self.current_adaptive_params, 'speech_pad_ms', 150.0))),
                 }
-                logger.info(f"应用动态VAD参数: {vad_params}")
-            else: # 回退到静态配置
+                logger.info(f"Apply adaptive VAD params: {vad_params}")
+            else:
                 vad_params = {
-                    'threshold': get_config('advanced_vad.silero_prob_threshold_down', 0.35),
-                    'min_speech_duration_ms': get_config('advanced_vad.silero_min_speech_ms', 250),
-                    'min_silence_duration_ms': get_config('advanced_vad.silero_min_silence_ms', 700),
-                    'window_size_samples': get_config('advanced_vad.silero_window_size_samples', 512),
-                    'speech_pad_ms': get_config('advanced_vad.silero_speech_pad_ms', 150)
+                    'threshold': float(get_config('advanced_vad.silero_prob_threshold_down', 0.35)),
+                    'min_speech_duration_ms': int(get_config('advanced_vad.silero_min_speech_ms', 250)),
+                    'min_silence_duration_ms': int(get_config('advanced_vad.silero_min_silence_ms', 700)),
+                    'window_size_samples': int(get_config('advanced_vad.silero_window_size_samples', 512)),
+                    'speech_pad_ms': int(get_config('advanced_vad.silero_speech_pad_ms', 150)),
                 }
-                logger.info(f"应用静态VAD参数: {vad_params}")
-            
-            speech_timestamps_16k = self.get_speech_timestamps(audio_tensor, self.vad_model, sampling_rate=target_sr, **vad_params)
-            
-            scale_factor = self.sample_rate / target_sr
+                logger.info(f"Apply default VAD params: {vad_params}")
+
+            speech_timestamps_16k = self.get_speech_timestamps(
+                audio_tensor,
+                self.vad_model,
+                sampling_rate=target_sr,
+                **vad_params,
+            )
+
+            scale_factor = self.sample_rate / float(target_sr)
             for ts in speech_timestamps_16k:
                 ts['start'] = int(ts['start'] * scale_factor)
                 ts['end'] = int(ts['end'] * scale_factor)
             return speech_timestamps_16k
         except Exception as e:
-            logger.error(f"Silero VAD检测失败: {e}", exc_info=True)
+            logger.error(f'Silero VAD detection failed: {e}', exc_info=True)
             return []
+
+    def _detect_with_energy_gate(self, audio: np.ndarray) -> List[Dict]:
+        cfg = self.energy_gate_config
+        segments = detect_activity_segments(
+            audio,
+            self.sample_rate,
+            frame_ms=float(cfg.get('frame_ms', 20.0)),
+            hop_ms=float(cfg.get('hop_ms', 10.0)),
+            floor_percentile=float(cfg.get('floor_percentile', 15.0)),
+            threshold_db=float(cfg.get('threshold_db', -45.0)),
+            boost_db=float(cfg.get('boost_db', 6.0)),
+            min_speech_ms=float(cfg.get('min_speech_ms', 200.0)),
+            min_silence_ms=float(cfg.get('min_silence_ms', 120.0)),
+            hang_ms=float(cfg.get('hang_ms', 120.0)),
+            smoothing_frames=int(cfg.get('smoothing_frames', 3)),
+        )
+        logger.info(f'Energy gate VAD produced {len(segments)} speech segments')
+        return segments
 
     def _calculate_pause_segments(self, speech_timestamps: List[Dict], audio_length: int) -> List[Dict]:
         pause_segments = []

@@ -27,8 +27,11 @@ defaults:
   separation:
     backend: "mdx23"
     enable_fallback: true
-    mdx23_chunk_size: 256000
+    mdx23_chunk_size: 1000000
     mdx23_timeout: 600
+    overlap_large: 0.6
+    overlap_small: 0.5
+    large_gpu: true
   detection:
     min_pause_s: 0.50
     min_gap_s: 1.00
