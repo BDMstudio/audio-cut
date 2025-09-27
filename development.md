@@ -39,10 +39,10 @@
 - audio_cut.cutting/refine：NMS + 过零 + 静音守卫的割点库，已托管 `_finalize_and_filter_cuts_v2` 的主要实现，便于复用与测试。
 
 ## 5. 配置与参数策略
-- `config_manager.get_config` 直接读取 YAML；如需覆盖需调用 `set_runtime_config` 或注入自定义 ConfigManager。
-- 相对能量阈值默认 0.26/0.32，并通过 BPM/MDD/VPP clamp 在 0.85–1.15 范围。
-- 守卫默认关闭；当项目需要零爆音保障时，应同步开启 `quality_control.enforce_quiet_cut.enable` 与 `save_analysis_report` 便于验收。
-- `segment_vocal_activity_ratio` 设 0.10，若测试集中出现误判，应通过单元测试验证新的阈值后再调整。
+- config_manager 读取 v3 schema → 派生旧结构 → 叠加 external / explicit YAML → 环境变量 → 运行时覆盖，保证向后兼容。
+- 核心旋钮：min_pause_s、min_gap_s、guard.*、threshold.base_ratio、threshold.rms_offset、adapt.{bpm_strength,mdd_strength}、nms.topk、segment_vocal_ratio、pure_music_min_duration。
+- 旧键仍可通过 get_config 访问，派生公式集中在 audio_cut/config/derive.py；专家级微调可直接调用 set_runtime_config。
+- profile (ballad / pop / edm / rap) 用于一键切换风格基线，再配合 1~2 个参数完成精细调节。
 
 ## 6. 测试矩阵
 - unit：`test_cut_alignment`, `test_segment_labeling`, `test_pre_vocal_split`, `test_cpu_baseline_perfect_reconstruction` 等，保证算法细节。

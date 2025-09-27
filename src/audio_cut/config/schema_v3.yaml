@@ -1,0 +1,86 @@
+# File: src/audio_cut/config/schema_v3.yaml
+# AI-SUMMARY: 定义 v3 精简参数与预设 Profile，用于生成全量兼容配置。
+
+version: 3
+profile: default
+
+defaults:
+  audio:
+    sample_rate: 44100
+    channels: 1
+    format: wav
+    quality: 320
+  output:
+    directory: "./output"
+    naming_pattern: "segment_{index:03d}"
+    include_metadata: true
+    save_debug_info: true
+    save_separated_vocal: false
+    save_breath_map: false
+    save_analysis_report: true
+  logging:
+    level: "INFO"
+    file: "smart_splitter.log"
+    format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+    max_file_size: "10MB"
+    backup_count: 3
+  separation:
+    backend: "mdx23"
+    enable_fallback: true
+    mdx23_chunk_size: 256000
+    mdx23_timeout: 600
+  detection:
+    min_pause_s: 0.50
+    min_gap_s: 1.00
+    pure_music_min_duration: 6.0
+    segment_vocal_ratio: 0.10
+    guard:
+      enable: false
+      max_shift_ms: 150.0
+      win_ms: 80.0
+      guard_db: 2.5
+      floor_db: -60.0
+    threshold:
+      base_ratio: 0.26
+      rms_offset: 0.06
+    adapt:
+      bpm_strength: 0.60
+      mdd_strength: 0.40
+    nms:
+      topk: 180
+      zero_cross_win_ms: 8.0
+
+profiles:
+  ballad:
+    detection:
+      min_pause_s: 0.60
+      min_gap_s: 1.10
+      adapt:
+        bpm_strength: 0.50
+        mdd_strength: 0.55
+  pop:
+    detection:
+      min_pause_s: 0.48
+      min_gap_s: 0.95
+      adapt:
+        bpm_strength: 0.70
+        mdd_strength: 0.40
+  edm:
+    detection:
+      min_pause_s: 0.45
+      min_gap_s: 0.80
+      guard:
+        enable: true
+        guard_db: 3.0
+        max_shift_ms: 120.0
+      adapt:
+        bpm_strength: 0.85
+        mdd_strength: 0.35
+  rap:
+    detection:
+      min_pause_s: 0.40
+      segment_vocal_ratio: 0.08
+      min_gap_s: 0.90
+      adapt:
+        bpm_strength: 0.50
+        mdd_strength: 0.30

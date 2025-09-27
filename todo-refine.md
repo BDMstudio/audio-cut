@@ -26,8 +26,8 @@
   * `PureVocalPauseDetector` 仅做候选上限控制，去重/最小间隔过滤统一由 `audio_cut.cutting.refine.finalize_cut_points` 执行，消除重复 min-gap 逻辑。
 
 **Milestone 2：瘦身与简化（P1）**
-4. [ ] **清理老模式与冗余配置**（保留兼容层，逐步下线）。
-5. [ ] **参数集约化**（去重叠参数、保留少量关键超参+派生规则+预设 Profile）。
+4. [x] **清理老模式与冗余配置**（保留兼容层，逐步下线）。
+5. [x] **参数集约化**（去重叠参数、保留少量关键超参+派生规则+预设 Profile）。
 
 **Milestone 3：依赖裁剪与收尾（P1）**
 6. [ ] **移除 Silero 依赖**（先 Feature-Flag 关闭，完成 A/B 验证后彻底剔除）。
@@ -199,44 +199,31 @@
 
 ### 4) 参数配置集约化（去重叠，保留少量关键超参 + 派生规则 + 预设 Profile）（P1）
 
-**问题**：阈值比例、倍率、时长门限过多，且有**作用重叠**（如 `relative_threshold_adaptation` 与 `pause_stats_adaptation` 都对阈值生效）。
+**问题**：阈值比例、倍率、时长门限过多，且存在作用重叠（例如 relative_threshold_adaptation 与 pause_stats_adaptation 同时调整阈值）。
 
 **方案**
 
-* 新配置文件：`src/audio_cut/config/schema_v3.yaml`
-
-  * **核心可调（5~8 个）**：
-
-    * `min_pause_s`（最小停顿判定时长）
-    * `min_gap_s`（最终切点最小间隔）
-    * `guard.max_shift_ms`（守卫最大右推）
-    * `guard.floor_db`（守卫噪声地板）
-    * `threshold.base_ratio`（能量谷相对阈值基线）
-    * `adapt.bpm_strength`（BPM 影响强度 0~1）
-    * `adapt.mdd_strength`（MDD 影响强度 0~1）
-    * `nms.topk`（可选，上限切点数）
-  * **派生量**（代码里算，不进配置）：
-
-    * `threshold.effective = base_ratio * f(bpm, mdd)`
-    * `min_pause_effective = g(bpm)`（快歌略降，慢歌略升）
-* 预设 Profile：`profiles: {ballad, pop, edm, rap}` 仅覆盖 `bpm_strength/mdd_strength/min_pause_s` 三五项。
+* 新配置文件：src/audio_cut/config/schema_v3.yaml
+  * 核心旋钮：min_pause_s、min_gap_s、guard.*、threshold.base_ratio、threshold.rms_offset、adapt.{bpm_strength,mdd_strength}、nms.topk、segment_vocal_ratio、pure_music_min_duration。
+  * 派生逻辑集中在 audio_cut/config/derive.py，旧键通过函数映射自动生成。
+* Profile：ballad / pop / edm / rap 对应慢歌、流行、电子、说唱四种基线。
 
 **实施步骤**
 
-* [ ] 写 `src/audio_cut/config/derive.py`：集中把**所有派生逻辑**实现于此（BPM/MDD→阈值与门限转化）。
-* [ ] 清理旧键：把多层倍率/比例**并入**上述核心可调项；迁移脚本见第 2 点。
-* [ ] 文档：在 `docs/tuning.md` 用“少即是多”的表格说明**每一项**对切割的单调影响。
+* [x] 写 src/audio_cut/config/derive.py 与 settings.py，集中派生 BPM/MDD/守卫/阈值等旧键。
+* [x] 更新 ConfigManager：schema→legacy 映射、external/env/explicit 分层合并、旧键兼容。
+* [x] 文档：docs/tuning.md，README / development 说明核心旋钮与覆盖顺序。
 
 **验收标准**
 
-* 配置键数量**腰斩**（例如从 30+ → ≤ 12）；
-* 新/旧配置跑同一数据集，结果在护栏内；
-* 新使用者仅通过 1–2 个参数+一个 Profile 即可达到接近最佳效果。
+* 主配置减少到 schema + 核心旋钮；
+* get_config 依旧返回旧键，单曲运行结果保持在原护栏内；
+* 新用户仅需 profile + 1~2 个参数即可调出目标效果。
 
 **风险&回滚**
 
-* 风险：极端风格下缺少某细粒度开关。
-* 回滚：在 `derive.py` 保留 `advanced_overrides: dict` 注入钩子，供专家用户补充细调。
+* 极端风格若需细粒度开关，可通过 set_runtime_config 注入旧键覆盖；
+* 保留 derive.py 中的扩展钩子以便专家调试。
 
 ---
 

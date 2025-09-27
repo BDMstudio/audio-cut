@@ -75,7 +75,7 @@
   pytest -m "not slow and not gpu" --cov=src --cov-report=term-missing
   ```
 - 关键用例：
-  - `tests/unit/test_seamless_reconstruction.py`：拼接零损耗基线。
+  - `tests/test_seamless_reconstruction.py`：拼接零损耗基线。
   - `tests/unit/test_cut_alignment.py`：守卫与过零逻辑。
   - `tests/integration/test_pipeline_v2_valley.py`：v2.2 管线集成。
   - `tests/contracts/test_config_contracts.py`：配置兼容契约。
