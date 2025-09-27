@@ -403,6 +403,11 @@ class SeamlessSplitter:
             self._last_guard_shift_stats = self._blank_guard_stats()
             return [0, len(audio_for_split)]
 
+        if os.environ.get('CUT_REFINER_LEGACY') == '1':
+            legacy_samples = [int(round(p.t * self.sample_rate)) for p in points]
+            logger.warning('CUT_REFINER_LEGACY=1，使用旧版切点精炼路径')
+            return self._finalize_and_filter_cuts_legacy(legacy_samples, audio_for_split)
+
         min_gap_s = float(get_config('quality_control.min_split_gap', 1.0))
         try:
             max_keep = int(get_config('pure_vocal_detection.valley_scoring.max_kept_after_nms', 150))
@@ -471,8 +476,8 @@ class SeamlessSplitter:
 
         boundaries = result.sample_boundaries or [0, len(audio_for_split)]
         return sorted(set(boundaries))
-    def _finalize_and_filter_cuts(self, cut_points_samples: List[int], audio: np.ndarray) -> List[int]:
-        """对切割点进行最终的排序、去重和安全校验"""
+    def _finalize_and_filter_cuts_legacy(self, cut_points_samples: List[int], audio: np.ndarray) -> List[int]:
+        """Legacy 切点精炼路径：保留旧守卫/NMS 逻辑，供 CUT_REFINER_LEGACY 回退使用。"""
         audio_duration_s = len(audio) / self.sample_rate
         cut_times = sorted(list(set([p / self.sample_rate for p in cut_points_samples])))
         validated_times = [t for t in cut_times if self.quality_controller.enforce_quiet_cut(audio, self.sample_rate, t) >= 0]

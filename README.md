@@ -8,8 +8,8 @@
 ## 核心能力
 - **双通道分离**：默认使用 MDX23 ONNX 模型输出人声/伴奏；失败时自动回退 Demucs v4（可禁用）。
 - **纯人声检测**：PureVocalPauseDetector 结合 F0、共振峰、RMS 能量与 MDD/BPM 自适应，标定可切分区间。
-- **守卫与补偿**：QualityController 在纯人声与混音轨分别执行过零吸附+静音守卫，确保不引入爆音并输出守卫位移统计。
-- **片段标注**：每个片段在 `segment_classification_debug` 中记录活跃度、能量票及判决原因，同时落盘 `_human/_music` 标签。
+- **守卫与补偿**：`audio_cut.cutting.refine.finalize_cut_points` 先在人声轨执行过零吸附+静音守卫，再在混音轨复用同一逻辑；SeamlessSplitter 汇总位移统计为 `guard_shift_stats`。
+- **片段标注**：SeamlessSplitter 以 `segment_{###}_{human|music}` 命名片段，并在结果字典的 `segment_classification_debug` 中记录活跃度与判决原因。
 - **高精度输出**：24-bit WAV，无损复原测试 `tests/test_seamless_reconstruction.py` 保证拼接误差 < 1e-8。
 - **特征缓存复用**：`audio_cut.analysis.TrackFeatureCache` 在分离后构建一次，供 PureVocalPauseDetector、MDD 增强与守卫流程共享 BPM/MDD/RMS 序列。
 
@@ -34,11 +34,11 @@
 - `segment_###_{human|music}.wav`：混音片段。
 - `segments_vocal/segment_###_{human|music}_vocal.wav`：对应人声片段。
 - `<stem>_v2.2_mdd_vocal_full.wav` / `<stem>_v2.2_mdd_instrumental.wav`：全长人声与伴奏。
-- `segment_classification_debug.json`（当 `output.save_analysis_report` 为 true 时）保留判决详情。
+- `segment_classification_debug` 以列表形式返回给调用者；CLI 如需 JSON 可自行落盘（当前脚本默认仅打印）。
 - 控制台输出 `guard_shift_stats` 合并统计守卫位移情况。
 
 ## 配置总览
-主配置：`src/vocal_smart_splitter/config.yaml`，通过 `config_manager` 按「默认 → 环境变量 → CLI 参数」合并。
+主配置：`src/vocal_smart_splitter/config.yaml`；ConfigManager 直接加载该 YAML，若需动态覆盖需通过 `set_runtime_config` 或自定义入口传参。
 
 - `audio.*`：采样率（默认 44.1 kHz）、单声道入参。
 - `pure_vocal_detection.*`
