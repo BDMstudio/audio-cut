@@ -4,9 +4,12 @@
 
 import numpy as np
 import logging
-from typing import List, Dict, Tuple, Optional
+from typing import List, Dict, Tuple, Optional, TYPE_CHECKING
 from dataclasses import dataclass
 from ..utils.config_manager import get_config
+
+if TYPE_CHECKING:
+    from audio_cut.analysis import TrackFeatureCache
 from ..utils.adaptive_parameter_calculator import create_adaptive_calculator, AdaptiveParameters
 
 logger = logging.getLogger(__name__)
@@ -61,7 +64,13 @@ class VocalPauseDetectorV2:
             self.vad_model = None
             logger.error(f"Silero VAD初始化失败: {e}")
 
-    def detect_vocal_pauses(self, detection_target_audio: np.ndarray, context_audio: Optional[np.ndarray] = None) -> List[VocalPause]:
+    def detect_vocal_pauses(
+        self,
+        detection_target_audio: np.ndarray,
+        context_audio: Optional[np.ndarray] = None,
+        *,
+        feature_cache: Optional['TrackFeatureCache'] = None,
+    ) -> List[VocalPause]:
         """
         主检测流程，同时使用背景音频和目标音频。
         
@@ -82,7 +91,10 @@ class VocalPauseDetectorV2:
         bpm_features = None
         if self.enable_bpm_adaptation and self.adaptive_enhancer:
             logger.info("步骤 1/5: 在[背景音频]上执行BPM和编曲复杂度分析...")
-            complexity_segments, bpm_features = self.adaptive_enhancer.analyze_arrangement_complexity(context_audio)
+            complexity_segments, bpm_features = self.adaptive_enhancer.analyze_arrangement_complexity(
+                context_audio,
+                feature_cache=feature_cache,
+            )
             if bpm_features:
                 logger.info(f"🎵 音乐分析完成: {float(bpm_features.main_bpm):.1f} BPM ({bpm_features.bpm_category})")
                 instrument_analyzer = getattr(self.adaptive_enhancer, 'instrument_analyzer', None)

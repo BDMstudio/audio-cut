@@ -6,10 +6,13 @@
 import numpy as np
 import librosa
 import logging
-from typing import List, Dict, Tuple, Optional
+from typing import List, Dict, Tuple, Optional, TYPE_CHECKING
 from dataclasses import dataclass
 from sklearn.cluster import KMeans
 from scipy.signal import find_peaks
+
+if TYPE_CHECKING:
+    from audio_cut.analysis import TrackFeatureCache
 
 logger = logging.getLogger(__name__)
 
@@ -672,7 +675,12 @@ class AdaptiveVADEnhancer:
             'bpm_category': bpm_features.bpm_category
         }
     
-    def analyze_arrangement_complexity(self, audio: np.ndarray) -> Tuple[List[ArrangementComplexitySegment], BPMFeatures]:
+    def analyze_arrangement_complexity(
+        self,
+        audio: np.ndarray,
+        *,
+        feature_cache: Optional['TrackFeatureCache'] = None,
+    ) -> Tuple[List[ArrangementComplexitySegment], BPMFeatures]:
         """分析音频的编曲复杂度变化（集成BPM分析）
         
         Args:
@@ -685,7 +693,10 @@ class AdaptiveVADEnhancer:
         
         try:
             # 1. 首先提取整体BPM特征
-            bpm_features = self.bpm_analyzer.extract_bpm_features(audio)
+            if feature_cache is not None and getattr(feature_cache, 'bpm_features', None) is not None:
+                bpm_features = feature_cache.bpm_features
+            else:
+                bpm_features = self.bpm_analyzer.extract_bpm_features(audio)
             
             # 2. 根据BPM调整分析窗口大小
             analysis_window = bpm_features.adaptive_factors['recommended_window_size']

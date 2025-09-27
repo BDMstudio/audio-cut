@@ -29,6 +29,8 @@ class CutContext:
     sr: int
     mix_wave: np.ndarray
     vocal_wave: Optional[np.ndarray] = None
+    mix_floor_db: Optional[float] = None
+    vocal_floor_db: Optional[float] = None
 
 
 @dataclass
@@ -230,7 +232,7 @@ def finalize_cut_points(
                 max_shift_ms=search_right_ms,
                 guard_db=guard_db,
                 window_ms=guard_win_ms,
-                floor_db=floor_db,
+                floor_db=ctx.vocal_floor_db if ctx.vocal_floor_db is not None else floor_db,
             )
 
         mix_time = align_to_zero_cross(mix, sr, guard_stage_time, win_ms=zero_cross_win_ms)
@@ -242,7 +244,7 @@ def finalize_cut_points(
                 max_shift_ms=search_right_ms,
                 guard_db=guard_db,
                 window_ms=guard_win_ms,
-                floor_db=floor_db,
+                floor_db=ctx.mix_floor_db if ctx.mix_floor_db is not None else floor_db,
             )
 
         mix_time = float(np.clip(mix_time, 0.0, max(duration_s, 0.0)))

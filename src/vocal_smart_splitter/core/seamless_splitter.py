@@ -12,6 +12,9 @@ import time
 import tempfile
 import soundfile as sf
 
+from audio_cut.analysis import build_feature_cache, TrackFeatureCache
+from audio_cut.cutting.refine import CutContext, CutPoint, finalize_cut_points
+
 from ..utils.config_manager import get_config
 from ..utils.audio_processor import AudioProcessor
 from .pure_vocal_pause_detector import PureVocalPauseDetector
@@ -35,6 +38,22 @@ class SeamlessSplitter:
         self._last_segment_classification_debug: List[Dict[str, Any]] = []
         self._last_guard_shift_stats: Dict[str, float] = self._blank_guard_stats()
         logger.info(f"无缝分割器统一指挥中心初始化完成 (SR: {self.sample_rate}) - 已加载纯人声检测器")
+
+    @staticmethod
+    def _estimate_noise_floor_db(wave: Optional[np.ndarray], percentile: float = 5.0) -> Optional[float]:
+        """估算信号的底噪（dB）。"""
+
+        if wave is None or getattr(wave, 'size', 0) == 0:
+            return None
+        abs_wave = np.abs(wave.astype(np.float64))
+        if abs_wave.size == 0:
+            return None
+        try:
+            floor_amp = np.percentile(abs_wave, np.clip(percentile, 0.0, 100.0))
+        except Exception:
+            return None
+        floor_amp = max(floor_amp, 1e-12)
+        return float(20.0 * np.log10(floor_amp))
 
     def split_audio_seamlessly(self, input_path: str, output_dir: str, mode: str = 'v2.2_mdd') -> Dict:
         """执行无缝分割的主入口，支持纯人声分离与 v2.2 MDD 模式"""
@@ -81,6 +100,13 @@ class SeamlessSplitter:
         vocal_track = separation_result.vocal_track
         logger.info(f"[{mode.upper()}-STEP1] 人声分离完成 - 后端: {separation_result.backend_used}, 质量: {separation_result.separation_confidence:.3f}, 耗时: {separation_time:.1f}s")
 
+        feature_cache: Optional[TrackFeatureCache] = None
+        try:
+            feature_cache = build_feature_cache(original_audio, vocal_track, self.sample_rate)
+            logger.info(f"[{mode.upper()}-CACHE] 已构建整轨特征缓存: {feature_cache.frame_count()} 帧")
+        except Exception as cache_err:
+            logger.warning(f"[{mode.upper()}-CACHE] 构建特征缓存失败，继续使用即时计算：{cache_err}")
+
         # 3. 关键修复：使用正确的PureVocalPauseDetector进行停顿检测
         logger.info(f"[{mode.upper()}-STEP2] 使用PureVocalPauseDetector在[纯人声轨道]上进行多维特征检测...")
 
@@ -89,7 +115,8 @@ class SeamlessSplitter:
         vocal_pauses = self.pure_vocal_detector.detect_pure_vocal_pauses(
             vocal_track,
             enable_mdd_enhancement=enable_mdd,
-            original_audio=original_audio  # 提供原始音频用于MDD分析
+            original_audio=original_audio,  # 提供原始音频用于MDD分析
+            feature_cache=feature_cache,
         )
 
         if not vocal_pauses:
@@ -362,136 +389,81 @@ class SeamlessSplitter:
         pure_vocal_audio: Optional[np.ndarray] = None
     ) -> List[int]:
         """Refined candidate filtering: weighted NMS + guard alignment + min gap."""
+
         sr = self.sample_rate
-        duration_s = len(audio_for_split) / float(sr) if sr > 0 else 0.0
+        if sr <= 0 or audio_for_split is None or len(audio_for_split) == 0:
+            self._last_guard_shift_stats = self._blank_guard_stats()
+            return [0, len(audio_for_split) if audio_for_split is not None else 0]
 
-        times: List[float] = []
-        scores: List[float] = []
-
-        if isinstance(cut_candidates, list) and cut_candidates:
-            first = cut_candidates[0]
-            if isinstance(first, tuple) and len(first) >= 2:
-                for candidate in cut_candidates:
-                    t, s = candidate[:2]
-                    ft = float(t)
-                    times.append(ft)
-                    scores.append(float(s))
-            elif isinstance(first, int):
-                if sr > 0:
-                    times = [float(p) / float(sr) for p in cut_candidates]
+        raw_points: List[CutPoint] = []
+        if isinstance(cut_candidates, list):
+            for candidate in cut_candidates:
+                if isinstance(candidate, tuple) and len(candidate) >= 1:
+                    t = float(candidate[0])
+                    score = float(candidate[1]) if len(candidate) >= 2 else 1.0
                 else:
-                    times = [0.0 for _ in cut_candidates]
-                scores = [1.0] * len(times)
-            else:
-                times = [float(p) for p in cut_candidates]
-                scores = [1.0] * len(times)
+                    score = 1.0
+                    if isinstance(candidate, (int, np.integer)):
+                        t = float(candidate) / float(sr)
+                    else:
+                        t = float(candidate)
+                raw_points.append(CutPoint(t=t, score=score))
 
-        use_weighted_nms = get_config('pure_vocal_detection.valley_scoring.use_weighted_nms', True)
-        if times and use_weighted_nms:
-            pairs: List[Tuple[float, float]] = list(zip(times, scores))
-            try:
-                pairs.sort(key=lambda item: item[1], reverse=True)
-            except Exception:
-                pairs = [(t, 1.0) for t in times]
-            min_gap = float(get_config('quality_control.min_split_gap', 1.0))
-            kept: List[Tuple[float, float]] = []
-            for t, s in pairs:
-                if all(abs(t - existing) >= min_gap for existing, _ in kept):
-                    kept.append((t, s))
-            try:
-                max_kept = int(get_config('pure_vocal_detection.valley_scoring.max_kept_after_nms', 150))
-            except Exception:
-                max_kept = 150
-            if len(kept) > max_kept:
-                kept = kept[:max_kept]
-            times = sorted(t for t, _ in kept)
-        elif times:
-            times = sorted(set(times))
-
-        if not times or duration_s <= 0.0:
+        if not raw_points:
             self._last_guard_shift_stats = self._blank_guard_stats()
             return [0, len(audio_for_split)]
 
-        guard_primary = pure_vocal_audio if pure_vocal_audio is not None else audio_for_split
-        mix_guard = audio_for_split
+        min_gap = float(get_config('quality_control.min_split_gap', 1.0))
+        max_kept_cfg = None
+        if get_config('pure_vocal_detection.valley_scoring.use_weighted_nms', True):
+            try:
+                max_kept_cfg = int(get_config('pure_vocal_detection.valley_scoring.max_kept_after_nms', 200))
+            except Exception:
+                max_kept_cfg = 200
+
+        guard_db = float(get_config('quality_control.enforce_quiet_cut.guard_db', 2.5))
+        search_right_ms = float(get_config('quality_control.enforce_quiet_cut.search_right_ms', 150))
+        guard_win_ms = float(get_config('quality_control.enforce_quiet_cut.win_ms', 10))
+        try:
+            zero_cross_ms = float(get_config('quality_control.enforce_quiet_cut.zero_cross_win_ms', 10))
+        except Exception:
+            zero_cross_ms = 10.0
+        floor_pct = float(get_config('quality_control.enforce_quiet_cut.floor_percentile', 5))
+        min_boundary_s = min(0.5, min_gap)
         quiet_cut_enabled = bool(getattr(self.quality_controller, 'quiet_cut_enabled', True))
 
-        def _fallback_local_min(source_audio: Optional[np.ndarray], t0: float) -> float:
-            if source_audio is None:
-                return t0
-            search_ms = float(get_config('quality_control.enforce_quiet_cut.search_right_ms', 300))
-            win = int(sr * (search_ms / 1000.0)) if sr > 0 else 0
-            c = int(t0 * sr) if sr > 0 else 0
-            a = c
-            b = min(len(source_audio), c + max(win, int(0.05 * sr)))
-            if b <= a + 1:
-                return t0
-            segment = np.abs(source_audio[a:b])
-            idx = int(np.argmin(segment))
-            return (a + idx) / float(sr) if sr > 0 else t0
+        mix_floor = self._estimate_noise_floor_db(audio_for_split, floor_pct)
+        vocal_floor = self._estimate_noise_floor_db(pure_vocal_audio, floor_pct) if pure_vocal_audio is not None else None
 
-        corrected: List[float] = []
-        shift_records: List[Tuple[float, float, float, float]] = []
-
-        lower_bound = 1e-3
-        upper_bound_base = max(duration_s - 1e-3, lower_bound)
-
-        for raw_t in times:
-            raw_t = float(raw_t)
-            guard_stage_time = raw_t
-            mix_stage_time = raw_t
-            final_time = raw_t
-            try:
-                candidate_time = raw_t
-                if guard_primary is not None:
-                    candidate = self.quality_controller.safe_zero_crossing_align(guard_primary, sr, candidate_time, window_ms=10)
-                    if candidate is None or candidate < 0:
-                        candidate = self.quality_controller.enforce_quiet_cut_fast(guard_primary, sr, candidate_time)
-                    if candidate is None or candidate < 0:
-                        candidate = _fallback_local_min(guard_primary, candidate_time)
-                    if candidate is not None and candidate >= 0:
-                        guard_stage_time = float(candidate)
-                        candidate_time = guard_stage_time
-                mix_stage_time = guard_stage_time
-                if quiet_cut_enabled and mix_guard is not None:
-                    mix_candidate = self.quality_controller.enforce_quiet_cut_fast(mix_guard, sr, candidate_time)
-                    if mix_candidate is None or mix_candidate < 0:
-                        mix_candidate = _fallback_local_min(mix_guard, candidate_time)
-                    else:
-                        zc_candidate = self.quality_controller.safe_zero_crossing_align(mix_guard, sr, mix_candidate, window_ms=10)
-                        if zc_candidate is not None and zc_candidate >= 0:
-                            mix_candidate = float(zc_candidate)
-                    if mix_candidate is not None and mix_candidate >= 0:
-                        mix_stage_time = float(mix_candidate)
-                        candidate_time = mix_stage_time
-                final_time = float(np.clip(candidate_time, lower_bound, upper_bound_base))
-            except Exception:
-                guard_stage_time = raw_t
-                mix_stage_time = raw_t
-                final_time = float(np.clip(raw_t, lower_bound, upper_bound_base))
-            total_shift = (final_time - raw_t) * 1000.0
-            vocal_guard_shift = (guard_stage_time - raw_t) * 1000.0
-            mix_guard_shift = (mix_stage_time - guard_stage_time) * 1000.0
-            corrected.append(final_time)
-            shift_records.append((final_time, total_shift, vocal_guard_shift, mix_guard_shift))
-
-        min_interval = float(get_config('quality_control.min_split_gap', 1.0))
-        filtered_times = self.quality_controller.pure_filter_cut_points(
-            corrected, duration_s, min_interval=min_interval
+        ctx = CutContext(
+            sr=sr,
+            mix_wave=audio_for_split,
+            vocal_wave=pure_vocal_audio,
+            mix_floor_db=mix_floor,
+            vocal_floor_db=vocal_floor,
         )
 
-        def _time_key(val: float) -> float:
-            return round(val, 6)
+        refine_result = finalize_cut_points(
+            ctx,
+            raw_points,
+            use_vocal_guard_first=pure_vocal_audio is not None,
+            min_gap_s=min_gap,
+            max_keep=max_kept_cfg,
+            guard_db=guard_db,
+            search_right_ms=search_right_ms,
+            guard_win_ms=guard_win_ms,
+            floor_db=float(mix_floor if mix_floor is not None else -60.0),
+            enable_mix_guard=quiet_cut_enabled,
+            enable_vocal_guard=pure_vocal_audio is not None,
+            zero_cross_win_ms=zero_cross_ms,
+            min_boundary_s=min_boundary_s,
+        )
 
-        record_map: Dict[float, Tuple[float, float, float, float]] = {}
-        for rec in shift_records:
-            record_map.setdefault(_time_key(rec[0]), rec)
-        kept_records = [record_map[_time_key(t)] for t in filtered_times if _time_key(t) in record_map]
-
-        if kept_records:
-            total_shifts = [rec[1] for rec in kept_records]
-            vocal_shifts = [rec[2] for rec in kept_records]
-            mix_shifts = [rec[3] for rec in kept_records]
+        adjustments = refine_result.adjustments
+        if adjustments:
+            total_shifts = [adj.final_shift_ms for adj in adjustments]
+            vocal_shifts = [adj.guard_shift_ms for adj in adjustments]
+            mix_shifts = [adj.final_shift_ms - adj.guard_shift_ms for adj in adjustments]
         else:
             total_shifts = []
             vocal_shifts = []
@@ -514,14 +486,10 @@ class SeamlessSplitter:
             'count': len(total_shifts),
         }
 
-        boundary_samples = [0]
-        boundary_samples.extend(
-            int(round(t * sr))
-            for t in filtered_times
-            if 0.0 < t < duration_s
-        )
-        boundary_samples.append(len(audio_for_split))
-        return sorted(set(boundary_samples))
+        boundaries = [int(b) for b in refine_result.sample_boundaries]
+        if not boundaries:
+            boundaries = [0, len(audio_for_split)]
+        return sorted(set(boundaries))
     def _finalize_and_filter_cuts(self, cut_points_samples: List[int], audio: np.ndarray) -> List[int]:
         """对切割点进行最终的排序、去重和安全校验"""
         audio_duration_s = len(audio) / self.sample_rate

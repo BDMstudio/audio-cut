@@ -6,12 +6,15 @@
 import numpy as np
 import librosa
 import logging
-from typing import List, Dict, Tuple, Optional
+from typing import List, Dict, Tuple, Optional, TYPE_CHECKING
 from dataclasses import dataclass
 from scipy import signal
 from scipy.ndimage import gaussian_filter1d
 
 from ..utils.config_manager import get_config
+
+if TYPE_CHECKING:
+    from audio_cut.analysis import TrackFeatureCache
 
 logger = logging.getLogger(__name__)
 
@@ -82,14 +85,16 @@ class PureVocalPauseDetector:
         
         logger.info(f"纯人声停顿检测器初始化完成 (采样率: {sample_rate}) - 已集成能量谷切点计算")
     
-    def detect_pure_vocal_pauses(self, vocal_audio: np.ndarray, 
+    def detect_pure_vocal_pauses(self, vocal_audio: np.ndarray,
                                 enable_mdd_enhancement: bool = False,
-                                original_audio: Optional[np.ndarray] = None) -> List[PureVocalPause]:
+                                original_audio: Optional[np.ndarray] = None,
+                                feature_cache: Optional['TrackFeatureCache'] = None) -> List[PureVocalPause]:
         """检测纯人声中的停顿
         
         Args:
             vocal_audio: 分离后的纯人声音频
             original_audio: 原始混音(可选，用于对比)
+            feature_cache: 共享的整轨特征缓存（可选，用于复用 BPM/MDD）
             
         Returns:
             检测到的停顿列表
@@ -105,12 +110,17 @@ class PureVocalPauseDetector:
             # BPM/MDD 自适应倍率（在相对能量模式下启用）
             if get_config('pure_vocal_detection.relative_threshold_adaptation.enable', True):
                 ref_audio = original_audio if original_audio is not None else vocal_audio
-                try:
-                    tempo_est, _ = librosa.beat.beat_track(y=ref_audio, sr=self.sample_rate)
-                    # 兼容 ndarray/标量，统一为 float
-                    tempo = float(np.squeeze(np.asarray(tempo_est))) if tempo_est is not None else 0.0
-                except Exception:
-                    tempo = 0.0
+                tempo = 0.0
+                bpm_tag = 'unknown'
+                if feature_cache is not None and getattr(feature_cache, 'bpm_features', None) is not None:
+                    tempo = float(getattr(feature_cache.bpm_features, 'main_bpm', 0.0) or 0.0)
+                    bpm_tag = getattr(feature_cache.bpm_features, 'bpm_category', 'unknown') or 'unknown'
+                if tempo <= 0.0:
+                    try:
+                        tempo_est, _ = librosa.beat.beat_track(y=ref_audio, sr=self.sample_rate)
+                        tempo = float(np.squeeze(np.asarray(tempo_est))) if tempo_est is not None else 0.0
+                    except Exception:
+                        tempo = 0.0
                 bpm_cfg = get_config('vocal_pause_splitting.bpm_adaptive_settings', {})
                 slow_thr = bpm_cfg.get('slow_bpm_threshold', 80)
                 fast_thr = bpm_cfg.get('fast_bpm_threshold', 120)
@@ -125,27 +135,44 @@ class PureVocalPauseDetector:
                     else:
                         mul_bpm = bpm_mul_med; bpm_tag = 'medium'
                 else:
-                    mul_bpm = bpm_mul_med; bpm_tag = 'unknown'
+                    category = bpm_tag
+                    category_map = {
+                        'slow': bpm_mul_slow,
+                        'medium': bpm_mul_med,
+                        'fast': bpm_mul_fast,
+                        'very_fast': bpm_mul_fast,
+                        'extreme_fast': bpm_mul_fast,
+                        'very_slow': bpm_mul_slow,
+                    }
+                    mul_bpm = category_map.get(category, bpm_mul_med)
+                    bpm_tag = category
 
                 # 估算全曲 MDD（简化版）
-                def _mdd_score_simple(x, sr):
-                    try:
-                        rms = librosa.feature.rms(y=x, hop_length=512)[0]
-                        flat = librosa.feature.spectral_flatness(y=x)[0]
-                        onset_env = librosa.onset.onset_strength(y=x, sr=sr, hop_length=512)
-                        onsets = librosa.onset.onset_detect(onset_envelope=onset_env, sr=sr, hop_length=512)
-                        dur = max(0.1, len(x)/sr)
-                        onset_rate = len(onsets)/dur
-                        def nz(v):
-                            v = np.asarray(v); q10, q90 = np.quantile(v,0.1), np.quantile(v,0.9)
-                            if q90-q10 < 1e-9: return 0.0
-                            return float(np.clip((np.mean(v)-q10)/(q90-q10), 0, 1))
-                        rms_s, flat_s = nz(rms), nz(flat)
-                        onset_s = float(np.clip(onset_rate/10.0, 0, 1))
-                        return float(np.clip(0.5*rms_s + 0.3*flat_s + 0.2*onset_s, 0, 1))
-                    except Exception:
-                        return 0.5
-                mdd_s = _mdd_score_simple(ref_audio, self.sample_rate)
+                if feature_cache is not None:
+                    mdd_s = float(getattr(feature_cache, 'global_mdd', 0.5) or 0.5)
+                else:
+                    def _mdd_score_simple(x, sr):
+                        try:
+                            rms = librosa.feature.rms(y=x, hop_length=512)[0]
+                            flat = librosa.feature.spectral_flatness(y=x)[0]
+                            onset_env = librosa.onset.onset_strength(y=x, sr=sr, hop_length=512)
+                            onsets = librosa.onset.onset_detect(onset_envelope=onset_env, sr=sr, hop_length=512)
+                            dur = max(0.1, len(x)/sr)
+                            onset_rate = len(onsets)/dur
+
+                            def nz(v):
+                                v = np.asarray(v); q10, q90 = np.quantile(v, 0.1), np.quantile(v, 0.9)
+                                if q90 - q10 < 1e-9:
+                                    return 0.0
+                                return float(np.clip((np.mean(v) - q10) / (q90 - q10), 0, 1))
+
+                            rms_s, flat_s = nz(rms), nz(flat)
+                            onset_s = float(np.clip(onset_rate / 10.0, 0, 1))
+                            return float(np.clip(0.5 * rms_s + 0.3 * flat_s + 0.2 * onset_s, 0, 1))
+                        except Exception:
+                            return 0.5
+
+                    mdd_s = _mdd_score_simple(ref_audio, self.sample_rate)
                 mdd_base = get_config('pure_vocal_detection.relative_threshold_adaptation.mdd.base', 1.0)
                 mdd_gain = get_config('pure_vocal_detection.relative_threshold_adaptation.mdd.gain', 0.2)
                 mul_mdd = mdd_base + (0.1 - mdd_gain*mdd_s)
