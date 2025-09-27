@@ -11,6 +11,8 @@ from dataclasses import dataclass
 from scipy import signal
 from scipy.ndimage import gaussian_filter1d
 
+from audio_cut.analysis import TrackFeatureCache
+
 from ..utils.config_manager import get_config
 
 logger = logging.getLogger(__name__)
@@ -64,6 +66,8 @@ class PureVocalPauseDetector:
         self.formant_weight = get_config('pure_vocal_detection.formant_weight', 0.25)
         self.spectral_weight = get_config('pure_vocal_detection.spectral_weight', 0.25)
         self.duration_weight = get_config('pure_vocal_detection.duration_weight', 0.2)
+
+        self._last_feature_cache: Optional[TrackFeatureCache] = None
         
         # 检测阈值
         self.energy_threshold_db = get_config('pure_vocal_detection.energy_threshold_db', -40)
@@ -82,20 +86,30 @@ class PureVocalPauseDetector:
         
         logger.info(f"纯人声停顿检测器初始化完成 (采样率: {sample_rate}) - 已集成能量谷切点计算")
     
-    def detect_pure_vocal_pauses(self, vocal_audio: np.ndarray, 
+    def detect_pure_vocal_pauses(self, vocal_audio: np.ndarray,
                                 enable_mdd_enhancement: bool = False,
-                                original_audio: Optional[np.ndarray] = None) -> List[PureVocalPause]:
+                                original_audio: Optional[np.ndarray] = None,
+                                feature_cache: Optional[TrackFeatureCache] = None) -> List[PureVocalPause]:
         """检测纯人声中的停顿
         
         Args:
             vocal_audio: 分离后的纯人声音频
             original_audio: 原始混音(可选，用于对比)
+            feature_cache: 轨道特征缓存，可复用BPM/MDD等全局指标
             
         Returns:
             检测到的停顿列表
         """
         logger.info(f"开始纯人声停顿检测... (MDD增强: {enable_mdd_enhancement})")
-        
+
+        if isinstance(feature_cache, TrackFeatureCache) and feature_cache.sr == self.sample_rate and feature_cache.frame_count() > 0:
+            cache = feature_cache
+        else:
+            cache = None
+        if cache is not None:
+            self._last_feature_cache = cache
+        feature_cache = cache
+
         # 🔥 关键修复：启用相对能量谷检测
         enable_relative_mode = get_config('pure_vocal_detection.enable_relative_energy_mode', False)
         if enable_relative_mode:
@@ -105,55 +119,86 @@ class PureVocalPauseDetector:
             # BPM/MDD 自适应倍率（在相对能量模式下启用）
             if get_config('pure_vocal_detection.relative_threshold_adaptation.enable', True):
                 ref_audio = original_audio if original_audio is not None else vocal_audio
-                try:
-                    tempo_est, _ = librosa.beat.beat_track(y=ref_audio, sr=self.sample_rate)
-                    # 兼容 ndarray/标量，统一为 float
-                    tempo = float(np.squeeze(np.asarray(tempo_est))) if tempo_est is not None else 0.0
-                except Exception:
-                    tempo = 0.0
                 bpm_cfg = get_config('vocal_pause_splitting.bpm_adaptive_settings', {})
                 slow_thr = bpm_cfg.get('slow_bpm_threshold', 80)
                 fast_thr = bpm_cfg.get('fast_bpm_threshold', 120)
                 bpm_mul_slow = get_config('pure_vocal_detection.relative_threshold_adaptation.bpm.slow_multiplier', 1.10)
                 bpm_mul_med = get_config('pure_vocal_detection.relative_threshold_adaptation.bpm.medium_multiplier', 1.00)
                 bpm_mul_fast = get_config('pure_vocal_detection.relative_threshold_adaptation.bpm.fast_multiplier', 0.85)
-                if tempo and tempo > 0:
-                    if tempo < slow_thr:
-                        mul_bpm = bpm_mul_slow; bpm_tag = 'slow'
-                    elif tempo > fast_thr:
-                        mul_bpm = bpm_mul_fast; bpm_tag = 'fast'
-                    else:
-                        mul_bpm = bpm_mul_med; bpm_tag = 'medium'
-                else:
-                    mul_bpm = bpm_mul_med; bpm_tag = 'unknown'
 
-                # 估算全曲 MDD（简化版）
+                tempo = 0.0
+                bpm_tag = 'unknown'
+                if feature_cache and feature_cache.bpm_features is not None:
+                    bpm_info = feature_cache.bpm_features
+                    tempo = float(getattr(bpm_info, 'main_bpm', 0.0) or 0.0)
+                    bpm_tag = getattr(bpm_info, 'bpm_category', 'unknown') or 'unknown'
+                else:
+                    try:
+                        tempo_est, _ = librosa.beat.beat_track(y=ref_audio, sr=self.sample_rate)
+                        tempo = float(np.squeeze(np.asarray(tempo_est))) if tempo_est is not None else 0.0
+                    except Exception:
+                        tempo = 0.0
+
+                if tempo > 0:
+                    if tempo < slow_thr:
+                        mul_bpm = bpm_mul_slow
+                        if bpm_tag == 'unknown':
+                            bpm_tag = 'slow'
+                    elif tempo > fast_thr:
+                        mul_bpm = bpm_mul_fast
+                        if bpm_tag == 'unknown':
+                            bpm_tag = 'fast'
+                    else:
+                        mul_bpm = bpm_mul_med
+                        if bpm_tag == 'unknown':
+                            bpm_tag = 'medium'
+                else:
+                    mul_bpm = bpm_mul_med
+
                 def _mdd_score_simple(x, sr):
                     try:
                         rms = librosa.feature.rms(y=x, hop_length=512)[0]
                         flat = librosa.feature.spectral_flatness(y=x)[0]
                         onset_env = librosa.onset.onset_strength(y=x, sr=sr, hop_length=512)
                         onsets = librosa.onset.onset_detect(onset_envelope=onset_env, sr=sr, hop_length=512)
-                        dur = max(0.1, len(x)/sr)
-                        onset_rate = len(onsets)/dur
+                        dur = max(0.1, len(x) / sr)
+                        onset_rate = len(onsets) / dur
+
                         def nz(v):
-                            v = np.asarray(v); q10, q90 = np.quantile(v,0.1), np.quantile(v,0.9)
-                            if q90-q10 < 1e-9: return 0.0
-                            return float(np.clip((np.mean(v)-q10)/(q90-q10), 0, 1))
+                            v = np.asarray(v)
+                            q10, q90 = np.quantile(v, 0.1), np.quantile(v, 0.9)
+                            if q90 - q10 < 1e-9:
+                                return 0.0
+                            return float(np.clip((np.mean(v) - q10) / (q90 - q10), 0, 1))
+
                         rms_s, flat_s = nz(rms), nz(flat)
-                        onset_s = float(np.clip(onset_rate/10.0, 0, 1))
-                        return float(np.clip(0.5*rms_s + 0.3*flat_s + 0.2*onset_s, 0, 1))
+                        onset_s = float(np.clip(onset_rate / 10.0, 0, 1))
+                        return float(np.clip(0.5 * rms_s + 0.3 * flat_s + 0.2 * onset_s, 0, 1))
                     except Exception:
                         return 0.5
-                mdd_s = _mdd_score_simple(ref_audio, self.sample_rate)
+
+                if feature_cache and feature_cache.global_mdd is not None:
+                    mdd_s = float(np.clip(feature_cache.global_mdd, 0.0, 1.0))
+                else:
+                    mdd_s = _mdd_score_simple(ref_audio, self.sample_rate)
+
                 mdd_base = get_config('pure_vocal_detection.relative_threshold_adaptation.mdd.base', 1.0)
                 mdd_gain = get_config('pure_vocal_detection.relative_threshold_adaptation.mdd.gain', 0.2)
-                mul_mdd = mdd_base + (0.1 - mdd_gain*mdd_s)
+                mul_mdd = mdd_base + (0.1 - mdd_gain * mdd_s)
                 clamp_min = get_config('pure_vocal_detection.relative_threshold_adaptation.clamp_min', 0.75)
                 clamp_max = get_config('pure_vocal_detection.relative_threshold_adaptation.clamp_max', 1.25)
-                mul = float(np.clip(mul_bpm*mul_mdd, clamp_min, clamp_max))
-                peak_ratio *= mul; rms_ratio *= mul
-                logger.info(f"相对阈值自适应：BPM={tempo:.1f}({bpm_tag}), MDD={mdd_s:.2f}, mul={mul:.2f} → peak={peak_ratio:.3f}, rms={rms_ratio:.3f}")
+                mul = float(np.clip(mul_bpm * mul_mdd, clamp_min, clamp_max))
+                peak_ratio *= mul
+                rms_ratio *= mul
+                logger.info(
+                    "相对阈值自适应：BPM=%.1f(%s), MDD=%.2f, mul=%.2f → peak=%.3f, rms=%.3f",
+                    tempo,
+                    bpm_tag,
+                    mdd_s,
+                    mul,
+                    peak_ratio,
+                    rms_ratio,
+                )
             
             # 使用相对能量谷检测
             try:
@@ -193,13 +238,13 @@ class PureVocalPauseDetector:
             filtered_pauses = self._classify_and_filter(analyzed_pauses)
             
         # 5. MDD增强处理
-        if enable_mdd_enhancement and original_audio is not None:
+        if enable_mdd_enhancement and (original_audio is not None or feature_cache is not None):
             logger.info("应用MDD增强处理...")
-            filtered_pauses = self._apply_mdd_enhancement(filtered_pauses, original_audio)
+            filtered_pauses = self._apply_mdd_enhancement(filtered_pauses, original_audio, feature_cache=feature_cache)
         
         # 🔥 关键修复：使用VocalPauseDetectorV2计算精确切点
         if filtered_pauses and vocal_audio is not None:
-            filtered_pauses = self._calculate_precise_cut_points(filtered_pauses, vocal_audio)
+            filtered_pauses = self._calculate_precise_cut_points(filtered_pauses, vocal_audio, feature_cache=feature_cache)
         
         logger.info(f"检测完成: {len(filtered_pauses)}个高质量停顿点")
         return filtered_pauses
@@ -806,7 +851,8 @@ class PureVocalPauseDetector:
         return [np.array(track) for track in formant_tracks]
     
     def _calculate_precise_cut_points(self, pure_vocal_pauses: List[PureVocalPause], 
-                                    vocal_audio: np.ndarray) -> List[PureVocalPause]:
+                                    vocal_audio: np.ndarray,
+                                    feature_cache: Optional[TrackFeatureCache] = None) -> List[PureVocalPause]:
         """使用VocalPauseDetectorV2计算精确切点
         
         Args:
@@ -835,9 +881,10 @@ class PureVocalPauseDetector:
         
         # 🔥 关键修复：调用VocalPauseDetectorV2的能量谷切点计算，传入vocal_audio作为waveform
         try:
+            bpm_features = feature_cache.bpm_features if feature_cache is not None else None
             vocal_pauses = self._cut_point_calculator._calculate_cut_points(
                 vocal_pauses, 
-                bpm_features=None,  # 纯人声模式不使用BPM对齐
+                bpm_features=bpm_features,  # 纯人声模式不使用BPM对齐
                 waveform=vocal_audio  # 关键：传递纯人声音频数据用于能量谷检测
             )
             logger.info("✅ 能量谷切点计算成功")
@@ -985,85 +1032,98 @@ class PureVocalPauseDetector:
         logger.info(f"🔥 能量谷检测完成: 发现{len(pauses)}个能量谷停顿")
         return pauses
 
-    def _apply_mdd_enhancement(self, pauses: List[PureVocalPause], original_audio: np.ndarray) -> List[PureVocalPause]:
-        """
-        🔥 MDD (音乐动态密度) 增强处理
-        
+    def _apply_mdd_enhancement(self, pauses: List[PureVocalPause], original_audio: Optional[np.ndarray], feature_cache: Optional[TrackFeatureCache] = None) -> List[PureVocalPause]:
+        """利用缓存或原始音频执行 MDD 增强。
+
         Args:
-            pauses: 原始停顿列表
-            original_audio: 原始混音音频
-            
-        Returns:
-            MDD增强后的停顿列表
+            pauses: 初步筛选后的停顿列表
+            original_audio: 原始混音波形，可为 None
+            feature_cache: 轨道特征缓存，用于复用RMS/BPM等指标
         """
+
         logger.info("🔥 开始MDD增强处理...")
-        
+
         if not pauses:
             return pauses
-            
-        # 1. 计算音乐动态密度
-        frame_length = int(self.sample_rate * 0.1)  # 100ms窗口
-        hop_length = int(self.sample_rate * 0.05)   # 50ms跳跃
-        
-        # RMS能量密度
-        rms_energy = librosa.feature.rms(y=original_audio, frame_length=frame_length, hop_length=hop_length)[0]
-        
-        # 频谱平坦度
-        spectral_flatness = librosa.feature.spectral_flatness(y=original_audio, hop_length=hop_length)[0]
-        
-        # 音符起始检测
-        onset_frames = librosa.onset.onset_detect(y=original_audio, sr=self.sample_rate, hop_length=hop_length)
-        onset_strength = librosa.onset.onset_strength(y=original_audio, sr=self.sample_rate, hop_length=hop_length)
-        
-        # 时间轴
-        time_frames = librosa.frames_to_time(np.arange(len(rms_energy)), sr=self.sample_rate, hop_length=hop_length)
-        
-        # 2. 计算MDD指标权重
+
+        use_cache = (
+            feature_cache is not None
+            and isinstance(feature_cache, TrackFeatureCache)
+            and feature_cache.frame_count() > 0
+            and feature_cache.sr == self.sample_rate
+        )
+
+        if not use_cache and (original_audio is None or not hasattr(original_audio, 'size') or original_audio.size == 0):
+            logger.warning("未提供原始音频或特征缓存，跳过MDD增强")
+            return pauses
+
+        if use_cache:
+            hop_length = int(feature_cache.hop_length)
+            hop_s = float(feature_cache.hop_s)
+            rms_energy = np.asarray(feature_cache.rms_series, dtype=np.float32)
+            spectral_flatness = np.asarray(feature_cache.spectral_flatness, dtype=np.float32)
+            onset_frames = np.asarray(feature_cache.onset_frames, dtype=np.int64)
+            onset_strength = np.asarray(feature_cache.onset_strength, dtype=np.float32)
+            time_frames = np.arange(feature_cache.frame_count(), dtype=np.float32) * hop_s
+            rms_max = float(feature_cache.rms_max)
+            onset_max = float(feature_cache.onset_max)
+        else:
+            frame_length = int(self.sample_rate * 0.1)  # 100ms窗口
+            hop_length = int(self.sample_rate * 0.05)   # 50ms跨步
+            rms_energy = librosa.feature.rms(y=original_audio, frame_length=frame_length, hop_length=hop_length)[0]
+            spectral_flatness = librosa.feature.spectral_flatness(y=original_audio, hop_length=hop_length)[0]
+            onset_strength = librosa.onset.onset_strength(y=original_audio, sr=self.sample_rate, hop_length=hop_length)
+            onset_frames = librosa.onset.onset_detect(onset_envelope=onset_strength, sr=self.sample_rate, hop_length=hop_length)
+            time_frames = librosa.frames_to_time(np.arange(len(rms_energy)), sr=self.sample_rate, hop_length=hop_length)
+            rms_max = float(np.max(rms_energy)) if rms_energy.size else 0.0
+            onset_max = float(np.max(onset_strength)) if onset_strength.size else 0.0
+
         energy_weight = get_config('musical_dynamic_density.energy_weight', 0.7)
         spectral_weight = get_config('musical_dynamic_density.spectral_weight', 0.3)
         onset_weight = get_config('musical_dynamic_density.onset_weight', 0.2)
-        
-        # 3. 为每个停顿计算MDD评分
-        enhanced_pauses = []
+
         threshold_multiplier = get_config('musical_dynamic_density.threshold_multiplier', 0.3)
         max_multiplier = get_config('musical_dynamic_density.max_multiplier', 1.4)
         min_multiplier = get_config('musical_dynamic_density.min_multiplier', 0.6)
-        
+
+        if rms_max <= 0:
+            rms_max = 1.0
+        if onset_max <= 0:
+            onset_max = 1.0
+
+        enhanced_pauses: List[PureVocalPause] = []
         for pause in pauses:
-            # 找到停顿对应的时间窗口
-            start_frame = np.argmin(np.abs(time_frames - pause.start_time))
-            end_frame = np.argmin(np.abs(time_frames - pause.end_time))
-            
-            if start_frame >= end_frame or start_frame >= len(rms_energy):
+            start_frame = int(np.argmin(np.abs(time_frames - pause.start_time))) if len(time_frames) else 0
+            end_frame = int(np.argmin(np.abs(time_frames - pause.end_time))) if len(time_frames) else 0
+
+            if end_frame <= start_frame:
                 enhanced_pauses.append(pause)
                 continue
-                
-            # 计算停顿周围的MDD
-            window_start = max(0, start_frame - 10)  # 扩展窗口
+
+            window_start = max(0, start_frame - 10)
             window_end = min(len(rms_energy), end_frame + 10)
-            
-            # RMS能量密度
-            local_rms = np.mean(rms_energy[window_start:window_end])
-            energy_score = local_rms / np.max(rms_energy) if np.max(rms_energy) > 0 else 0.0
-            
-            # 频谱平坦度 (越平坦密度越低)
-            local_flatness = np.mean(spectral_flatness[window_start:window_end])
-            spectral_score = 1.0 - local_flatness  # 反转，密度越高分数越高
-            
-            # 音符起始密度
-            onset_count = np.sum((onset_frames >= window_start) & (onset_frames < window_end))
-            onset_score = min(1.0, onset_count / 5.0)  # 归一化到0-1
-            
-            # 综合MDD评分
-            mdd_score = (energy_score * energy_weight + 
-                        spectral_score * spectral_weight + 
-                        onset_score * onset_weight)
-            
-            # 根据MDD调整停顿置信度
+            if window_end <= window_start:
+                enhanced_pauses.append(pause)
+                continue
+
+            local_rms = float(np.mean(rms_energy[window_start:window_end]))
+            energy_score = local_rms / rms_max
+
+            local_flatness = float(np.mean(spectral_flatness[window_start:window_end]))
+            spectral_score = 1.0 - local_flatness
+
+            onset_count = int(np.sum((onset_frames >= window_start) & (onset_frames < window_end))) if onset_frames.size else 0
+            onset_score = min(1.0, onset_count / 5.0) if onset_count > 0 else 0.0
+
+            mdd_score = (
+                (energy_score * energy_weight)
+                + (spectral_score * spectral_weight)
+                + (onset_score * onset_weight)
+            )
+
             confidence_multiplier = 1.0 + (mdd_score * threshold_multiplier)
             confidence_multiplier = max(min_multiplier, min(max_multiplier, confidence_multiplier))
-            
-            # 创建增强的停顿
+
             enhanced_pause = PureVocalPause(
                 start_time=pause.start_time,
                 end_time=pause.end_time,
@@ -1075,10 +1135,16 @@ class PureVocalPauseDetector:
                 quality_grade=pause.quality_grade
             )
             enhanced_pauses.append(enhanced_pause)
-            
-            logger.debug(f"MDD增强 - 停顿{pause.start_time:.2f}s: MDD={mdd_score:.3f}, 置信度倍数={confidence_multiplier:.3f}")
-        
-        logger.info(f"🔥 MDD增强完成: {len(enhanced_pauses)}个停顿已优化")
+            logger.debug(
+                "MDD增强 - 停顿%.2fs: window=(%d,%d), score=%.3f, multiplier=%.3f",
+                pause.start_time,
+                window_start,
+                window_end,
+                mdd_score,
+                confidence_multiplier
+            )
+
+        logger.info("🔥 MDD增强完成: %d 个停顿已优化", len(enhanced_pauses))
         return enhanced_pauses
 
     def _estimate_vpp_multiplier(self, vocal_audio: np.ndarray):

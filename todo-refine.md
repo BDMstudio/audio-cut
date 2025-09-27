@@ -19,9 +19,9 @@
 
 1. [ ] **抽取“通用切点精炼算法”为独立工具类**（消除跨类隐式依赖）。
   * `src/audio_cut/cutting/refine.py` 提供 `CutContext`/`finalize_cut_points`，统一处理过零吸附、守卫右推、min-gap NMS；`SeamlessSplitter` 已改用该模块。
-2. [ ] **合并全局/局部特征（BPM/MDD）并引入缓存**（一次计算，多处索引）。
-  * `src/audio_cut/analysis/features_cache.py` 构建 `TrackFeatureCache`，集中缓存 BPM、RMS、MDD 序列；`SeamlessSplitter` 首次构建后传入纯人声检测与 BPM 增强路径。
-  * `PureVocalPauseDetector` 与 `VocalPauseDetectorV2/AdaptiveVADEnhancer` 均复用缓存数据，避免重复的 `librosa.beat`/能量特征扫描。
+2. [x] **合并全局/局部特征（BPM/MDD）并引入缓存**（一次计算，多处索引）。
+  * `src/audio_cut/analysis/features_cache.py` 构建 `TrackFeatureCache`，集中缓存 BPM、RMS、MDD 序列；`SeamlessSplitter` 在分离后构建并传给纯人声检测与 BPM 增强路径。
+  * `PureVocalPauseDetector` 与 `VocalPauseDetectorV2/AdaptiveVADEnhancer` 复用缓存数据，避免重复的 `librosa.beat`/能量特征扫描。
 3. [ ] **合并重复过滤**（把 Weighted NMS 与最终 min-gap 过滤收敛到单一阶段）。
   * `PureVocalPauseDetector` 仅做候选上限控制，去重/最小间隔过滤统一由 `audio_cut.cutting.refine.finalize_cut_points` 执行，消除重复 min-gap 逻辑。
 

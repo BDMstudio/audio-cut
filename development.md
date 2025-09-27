@@ -1,83 +1,67 @@
 <!-- File: development.md -->
-<!-- AI-SUMMARY: Vocal Smart Splitter 工程侧技术演进、架构与配置准则的单一事实来源。 -->
+<!-- AI-SUMMARY: 记录 Vocal Smart Splitter 的架构、流程、测试矩阵与近期演进。 -->
 
-# development.md · 技术路线与模块总览（更新于 2025-09-14）
+# development.md — 技术路线与模块总览（更新于 2025-09-26）
 
-本文作为工程侧的单一事实来源（SSOT），梳理技术路线、系统架构、关键模块、配置要点与最新变更。
+本文是工程事实来源（SSOT），记录架构、流程与约束。
 
-## 1. 技术路线（演进）
-- v1.x：原混音 -> BPM/复杂度分析 -> Silero VAD -> 节拍对齐 -> 样本级切割
-- v2.0：原混音 -> 人声分离（MDX23/Demucs）-> 多维特征/频谱感知/验证 -> 切点 -> 样本级切割
-- v2.1：VocalPrime（RMS/EMA/动态地板/滞回/平台验证/未来静默守卫）
-- v2.2：MDD（Musical Dynamic Density）主/副歌识别与阈值动态调整
-- 2025-09-12：终筛改造V2 + 守卫可配置化
-- 2025-09-14：VPP 一次判定落地（移除二次插点/强拆，流程收敛为守卫+最小间隔）
+## 1. 版本演进
+- v1.x：混音 -> BPM/动态范围 -> Silero VAD -> 阈值切分（遗留，仅用于比较）。
+- v2.0：混音 -> MDX23/Demucs 分离 -> 人声静区检索 -> 切分；首次引入长音保护。
+- v2.1：VocalPrime（VMS/EMA）实验版，提供更细粒度 F0/共振峰分析，仍保留旧守卫链路。
+- v2.2（2025-09-12）：Pure Vocal + MDD 合流，统一成“一次检测 + NMS + 守卫”的策略。
+- v2.3（2025-09-26）：SeamlessSplitter 收敛为单入口；守卫统计、片段标注落盘；`audio_cut.*` 拆出通用特征缓存与切点精修。
 
-关键铁律：
-- 先分离（vocal stem）再在纯人声域做停顿/换气检测；
-- 切点吸附零交叉避免爆音；
-- 默认不破坏兼容，失败路径优雅回退。
+## 2. 目录与职责
+- src/vocal_smart_splitter/core：主流程（SeamlessSplitter、PureVocalPauseDetector、QualityController、EnhancedVocalSeparator、VocalPauseDetectorV2 等）。
+- src/vocal_smart_splitter/utils：IO、配置优先级、BPM 自适应参数计算、特征抽取。
+- src/audio_cut/analysis：TrackFeatureCache，缓存 BPM/MDD/RMS 等序列，主流程分离后构建一次并向检测/守卫复用。
+- src/audio_cut/cutting：CutPoint/CutContext/切点精修，提供过零、静音守卫、min-gap NMS 的独立实现，计划替换 `_finalize_and_filter_cuts_v2` 内嵌逻辑。
+- scripts/：快速诊断脚本（quick_start、run_splitter、debug 工具）。
+- tests/：unit / integration / contracts / performance 分层。
+- config/：预置 YAML，避免在主配置中留下实验参数。
 
-## 2. 目录与模块
-- `core/seamless_splitter.py`（统一引擎）
-  - `split_audio_seamlessly(...)`：入口
-  - `_finalize_and_filter_cuts_v2(...)`：终筛改造V2（采纳守卫校正时间 + 时长治理）
-- `core/pure_vocal_pause_detector.py`：纯人声多维特征检测
-- `core/vocal_pause_detector.py`：能量谷与 BPM 自适应工具（供纯人声检测内部调用）
-- `core/enhanced_vocal_separator.py`：分离后端（MDX23/Demucs）选择与质量评估
-- `core/quality_controller.py`：质量控制/零交叉/安静守卫/过滤
-- `core/adaptive_vad_enhancer.py`：BPM/复杂度自适应增强
-- `utils/*`：音频处理、特征提取、配置管理
-- `quick_start.py` / `run_splitter.py`：交互式与参数化入口
+## 3. 核心流程
+- (1) `AudioProcessor.load_audio` 读取并保持原始振幅，必要时重采样到 44.1 kHz。
+- (2) `EnhancedVocalSeparator.separate_for_detection` 先行分离人声/伴奏，记录后端与置信度。
+- (3) `PureVocalPauseDetector.detect_pure_vocal_pauses` 计算候选静区：先走相对能量模式（默认），再视需要回退到全特征评估；BPM/MDD/VPP 自适应在此执行，并优先从 `TrackFeatureCache` 读取全局特征。
+- (4) `SeamlessSplitter._finalize_and_filter_cuts_v2` 整合候选，执行加权 NMS → 守卫（纯人声轨 → 混音轨）→ 最小间隔过滤。
+- (5) `SeamlessSplitter._classify_segments_vocal_presence` 依据 RMS 活跃度、阈值和辅助标记判断 `_human/_music`。
+- (6) `QualityController` 输出守卫位移统计；`_save_segments` 落盘 24-bit WAV 与调试信息。
 
-## 3. 数据流
-1) 加载原音频（必要时重采样至 `44100Hz`）；
-2) 人声分离（MDX23 优先，失败降级 Demucs/HPSS）；
-3) 检测停顿：纯人声路径（v2.2 MDD 一次检测）；
-4) 终筛（VPP 一次判定）：采纳守卫校正时间 -> 过滤最小间隔（不再二次插点/强拆）；
-5) 样本级切割、纯音乐能量切分与命名标注（_human/_music），同步导出原混音与纯人声两套 24-bit WAV 切片；
-6)（可选）拼接完整性验证（误差 0）。
+## 4. 核心模块要点
+- SeamlessSplitter：统一入口；缓存 `segment_classification_debug`、`guard_shift_stats`；负责落盘，并在分离后构建 `TrackFeatureCache`。
+- EnhancedVocalSeparator：封装 MDX23/Demucs，支持环境变量强制后端、失败回退、keep-in-memory。
+- PureVocalPauseDetector：在相对能量模式下使用峰值/RMS 比例、BPM/MDD/VPP 自适应补偿；复杂模式含 F0、共振峰、谱质心、谐波比率等特征。
+- QualityController：执行静音守卫、过零吸附、最小间隔过滤；`AdaptiveParameterCalculator` 提供 BPM 级别自适应参数。
+- AdaptiveVADEnhancer/BPMAnalyzer：抽取 BPM、动态密度、节拍信息，为 pause_stats 与 quality_controller 提供上下文。
+- audio_cut.analysis/features_cache：集中计算 RMS、谱平坦度、onset 等序列，避免多次重复运算；已在 SeamlessSplitter → PureVocalPauseDetector → VocalPauseDetector 流程中落地复用。
+- audio_cut.cutting/refine：NMS + 过零 + 静音守卫的割点库，准备替换 `_finalize_and_filter_cuts_v2` 的手写逻辑，便于复用与测试。
 
-## 4. 切点与守卫策略
-- 零交叉吸附 + 安静守卫（右推搜索"相对地板+余量"的安静点），必要时局部最小兜底；
-- BPM 轻度自适应（可选）：按 BPM/VPP 轻微调整阈值与分割间隙；
-- 长短段治理：终筛阶段仅依赖 `min_split_gap` 过滤；`segment_min_duration` 目前仅用于 VPP 候选上限，`segment_max_duration` 暂未启用，需要通过阈值/守卫调参解决极端超长段；
-- 过滤最小间隔：`min_split_gap`。
-- 后缀智能：统计纯人声轨活跃占比；>= `segment_vocal_activity_ratio` 判定 `_human`，否则 `_music`。
+## 5. 配置与参数策略
+- `config_manager.get_config` 支持层级覆盖：默认 YAML → `AUDIO_CUT_*` 环境变量 → 运行时传参。
+- 相对能量阈值默认 0.26/0.32，并通过 BPM/MDD/VPP clamp 在 0.85–1.15 范围。
+- 守卫默认关闭；当项目需要零爆音保障时，应同步开启 `quality_control.enforce_quiet_cut.enable` 与 `save_analysis_report` 便于验收。
+- `segment_vocal_activity_ratio` 设 0.10，若测试集中出现误判，应通过单元测试验证新的阈值后再调整。
 
-## 5. MDD（v2.2）概要
-综合能量（RMS）、频谱平坦度、起始率三维指标，动态调整阈值并识别主/副歌，减少副歌段过切、提升自然度。
+## 6. 测试矩阵
+- unit：`test_cut_alignment`, `test_segment_labeling`, `test_pre_vocal_split`, `test_cpu_baseline_perfect_reconstruction` 等，保证算法细节。
+- integration：`test_pipeline_v2_valley.py` 跑通 v2.2 全流程。
+- contracts：配置文件契约 (`test_config_contracts.py`)、valley 基准 (`valley_no_silence.yaml`)。
+- performance：`test_valley_perf.py` 监控 MDD+VPP 的耗时。
+- 慢测试与 GPU 相关 case 以 `@pytest.mark.slow`、`@pytest.mark.gpu` 标记，CI 默认跳过。
 
-## 6. VPP 一次判定与守卫可配置化（2025-09-14）
-变更：
-- `SeamlessSplitter._finalize_and_filter_cuts_v2(...)` 简化为：NMS -> 守卫校正 -> 最小间隔；移除"二次插点/强拆"。
-- `QualityController.enforce_quiet_cut(...)` 支持从配置覆盖 `win_ms / guard_db / search_right_ms / floor_percentile`。
+## 7. 性能与复杂度基线
+- 分离阶段：MDX23 在 RTX 4090 上 ~0.6x 实时，CPU 回退 ~3.5x。
+- 检测 + 守卫：10 分钟素材在单核下约 12s；开启静音守卫会额外增加 ~8%。
+- 拼接误差：`test_cpu_baseline_perfect_reconstruction` 要求最大绝对误差 < 1e-8。
 
-效果：
-- 保持一次检测的自然度与稳定性，避免后处理"二次破坏"优选切点；
-- 配合 README 的"调参口诀"，通过 VPP 阈值/权重与 BPM 自适应即可解决快歌/和声等场景的过长片段问题。
+## 8. 当前进展与下一步
+- 已完成：v2.2 单次判决合流、守卫统计、片段调试输出、文档重写；TrackFeatureCache 接入主线。
+- 进行中：拆分 `_finalize_and_filter_cuts_v2`，用 `audio_cut.cutting.finalize_cut_points` 统一逻辑。
+- 待规划：VPP/BPM 指标化、全链路性能采样脚本、配置迁移工具（v2→v3）。
 
-建议配置（可选，详见 README 调参口诀）：
-```yaml
-quality_control:
-  min_split_gap: 0.9-1.2
-  segment_min_duration: 4-6
-  segment_max_duration: 15-20   # 超限会触发能量谷再切分，守住上限
-  segment_vocal_activity_ratio: 0.10   # 纯人声活跃占比用于后缀判定
-  enforce_quiet_cut:
-    win_ms: 80
-    guard_db: 2.0-3.0
-    search_right_ms: 120-200
-    floor_percentile: 5
-```
-
-## 7. 测试与验证
-- 单元：valley_cut/bpm_guard/defaults_guard 等；
-- 契约：`contracts/valley_no_silence.yaml`；
-- 集成：`integration/test_pipeline_v2_valley.py`；
-- 拼接验证：`test_seamless_reconstruction.py`（误差 0）。
-
-## 8. 环境与依赖
-- Python 3.10+
-- librosa/numpy/scipy/soundfile/pydub
-- demucs（可选）、PyTorch（Demucs/Silero 所需）
+## 9. 环境与工具
+- Python 3.10+，PyTorch + librosa + numpy/scipy/soundfile。
+- `pip install -e .[dev]` 提供开发依赖（pytest/black/flake8）。
+- Windows + PowerShell/WSL 均可运行；外部模型位于 `MVSEP-MDX23-music-separation-model/`。

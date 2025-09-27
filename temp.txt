@@ -1,7 +1,7 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 # File: src/audio_cut/cutting/refine.py
-# AI-SUMMARY: 音频切点精炼工具，提供过零吸附、守卫右推与最小间隔 NMS 等共享逻辑。
+# AI-SUMMARY: 闊抽鍒囩偣绮剧偧宸ュ叿锛屾彁渚涜繃闆跺惛闄勩€佸畧鍗彸鎺ㄤ笌鏈€灏忛棿闅?NMS 绛夊叡浜€昏緫銆?
 
 from __future__ import annotations
 
@@ -15,7 +15,7 @@ _EPS = 1e-12
 
 @dataclass
 class CutPoint:
-    """切点候选信息"""
+    """鍒囩偣鍊欓€変俊鎭?""
 
     t: float
     score: float
@@ -24,7 +24,7 @@ class CutPoint:
 
 @dataclass
 class CutContext:
-    """切点精炼上下文"""
+    """鍒囩偣绮剧偧涓婁笅鏂?""
 
     sr: int
     mix_wave: np.ndarray
@@ -33,7 +33,7 @@ class CutContext:
 
 @dataclass
 class CutAdjustment:
-    """切点校正明细"""
+    """鍒囩偣鏍℃鏄庣粏"""
 
     raw_time: float
     guard_time: float
@@ -45,7 +45,7 @@ class CutAdjustment:
 
 @dataclass
 class CutRefineResult:
-    """精炼结果汇总"""
+    """绮剧偧缁撴灉姹囨€?""
 
     final_points: List[CutPoint]
     sample_boundaries: List[int]
@@ -63,7 +63,7 @@ def _ensure_mono(wave: Optional[np.ndarray]) -> Optional[np.ndarray]:
 
 
 def align_to_zero_cross(wave: Optional[np.ndarray], sr: int, t: float, win_ms: float = 8.0) -> float:
-    """在指定窗口内吸附到最近的零交叉点。"""
+    """鍦ㄦ寚瀹氱獥鍙ｅ唴鍚搁檮鍒版渶杩戠殑闆朵氦鍙夌偣銆?""
 
     wave = _ensure_mono(wave)
     if wave is None or wave.size == 0 or sr <= 0:
@@ -113,7 +113,7 @@ def apply_quiet_guard(
     window_ms: float = 10.0,
     floor_db: float = -60.0,
 ) -> float:
-    """向右搜索更安静的点并返回调整后的时间。"""
+    """鍚戝彸鎼滅储鏇村畨闈欑殑鐐瑰苟杩斿洖璋冩暣鍚庣殑鏃堕棿銆?""
 
     wave = _ensure_mono(wave)
     if wave is None or wave.size == 0 or sr <= 0:
@@ -151,7 +151,7 @@ def apply_quiet_guard(
 
 
 def nms_min_gap(points: Iterable[CutPoint], min_gap_s: float, topk: Optional[int] = None) -> List[CutPoint]:
-    """基于得分的最小间隔筛选。"""
+    """鍩轰簬寰楀垎鐨勬渶灏忛棿闅旂瓫閫夈€?""
 
     ordered = sorted(points, key=lambda p: p.score, reverse=True)
     kept: List[CutPoint] = []
@@ -199,7 +199,7 @@ def finalize_cut_points(
     zero_cross_win_ms: float = 8.0,
     min_boundary_s: float = 0.5,
 ) -> CutRefineResult:
-    """执行切点精炼并返回结果。"""
+    """鎵ц鍒囩偣绮剧偧骞惰繑鍥炵粨鏋溿€?""
 
     sr = ctx.sr
     mix = _ensure_mono(ctx.mix_wave)
@@ -221,18 +221,17 @@ def finalize_cut_points(
         raw_t = point.t
         guard_stage_time = raw_t
 
-        if use_vocal_guard_first and vocal is not None:
+        if use_vocal_guard_first and vocal is not None and enable_vocal_guard:
             guard_stage_time = align_to_zero_cross(vocal, sr, guard_stage_time, win_ms=zero_cross_win_ms)
-            if enable_vocal_guard:
-                guard_stage_time = apply_quiet_guard(
-                    vocal,
-                    sr,
-                    guard_stage_time,
-                    max_shift_ms=search_right_ms,
-                    guard_db=guard_db,
-                    window_ms=guard_win_ms,
-                    floor_db=floor_db,
-                )
+            guard_stage_time = apply_quiet_guard(
+                vocal,
+                sr,
+                guard_stage_time,
+                max_shift_ms=search_right_ms,
+                guard_db=guard_db,
+                window_ms=guard_win_ms,
+                floor_db=floor_db,
+            )
 
         mix_time = align_to_zero_cross(mix, sr, guard_stage_time, win_ms=zero_cross_win_ms)
         if enable_mix_guard:
