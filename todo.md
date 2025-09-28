@@ -14,7 +14,7 @@
 - [x] 输出结构统一：`segments_vocal/` 产出 24-bit 人声片段，与伴奏对齐；主目录保留完整人声/伴奏。
 
 ## 2. 进行中（Doing）
-- [x] 文档对齐：重写 README / development.md / PRD 交叉验证细节与插图。
+- [/] 文档对齐：重写 README / development.md / PRD 交叉验证细节与插图。
 - [/] 同类型母带回放：收集长句、说唱、电音、现场、对白等基线素材，验证守卫与判定稳健性。
 
 ## 3. 待办（Backlog）

@@ -1,20 +1,63 @@
-﻿{
+{
   "version": "v2.2_mdd",
   "dataset_label": "TODO-replace-with-dataset",
   "created_at": null,
   "metrics": {},
   "guardrails": {
-    "realtime_factor": {"min": null},
-    "avg_long_segment_ratio": {"max": null},
-    "avg_short_segment_ratio": {"max": null},
-    "avg_segment_count": {"min": null},
-    "success_rate": {"min": 1.0},
-    "guard_avg_shift_ms": {"max": null},
-    "guard_avg_guard_only_ms": {"max": null},
-    "guard_avg_vocal_guard_shift_ms": {"max": null},
-    "guard_avg_mix_guard_shift_ms": {"max": null},
-    "guard_max_shift_ms": {"max": null},
-    "peak_rss_bytes": {"max": null}
+    "realtime_factor": {
+      "min": null
+    },
+    "avg_long_segment_ratio": {
+      "max": null
+    },
+    "avg_short_segment_ratio": {
+      "max": null
+    },
+    "avg_segment_count": {
+      "min": null
+    },
+    "success_rate": {
+      "min": 1.0
+    },
+    "guard_avg_shift_ms": {
+      "max": null
+    },
+    "guard_avg_guard_only_ms": {
+      "max": null
+    },
+    "guard_avg_vocal_shift_ms": {
+      "max": null
+    },
+    "guard_avg_mix_shift_ms": {
+      "max": null
+    },
+    "guard_max_shift_ms": {
+      "max": null
+    },
+    "peak_rss_bytes": {
+      "max": null
+    },
+    "avg_gpu_util_percent": {
+      "min": null
+    },
+    "avg_gpu_mem_bytes": {
+      "max": null
+    },
+    "peak_gpu_mem_bytes": {
+      "max": null
+    },
+    "avg_h2d_time_s": {
+      "max": null
+    },
+    "avg_dtoh_time_s": {
+      "max": null
+    },
+    "total_h2d_bytes": {
+      "max": null
+    },
+    "total_dtoh_bytes": {
+      "max": null
+    }
   },
   "tolerances": {
     "quality_relative": 0.05,

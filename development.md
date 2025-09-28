@@ -27,7 +27,7 @@
 - (3) `PureVocalPauseDetector.detect_pure_vocal_pauses` 计算候选静区：先走相对能量模式（默认），再视需要回退到全特征评估；BPM/MDD/VPP 自适应在此执行，并优先从 `TrackFeatureCache` 读取全局特征。
 - (4) `SeamlessSplitter._finalize_and_filter_cuts_v2` 调用 `audio_cut.cutting.finalize_cut_points`，先执行加权 NMS，再在人声/混音轨套用守卫并做最小间隔过滤。
 - (5) `SeamlessSplitter._classify_segments_vocal_presence` 依据 RMS 活跃度、阈值和辅助标记判断 `_human/_music`。
-- (6) `QualityController` 输出守卫位移统计；`_save_segments` 落盘 24-bit WAV 与调试信息。
+- (6) `SeamlessSplitter` 汇总守卫位移统计并调用 `_save_segments` 落盘 24-bit WAV 与调试信息；`QualityController` 仅在 legacy 路径作为兜底校验。
 
 ## 4. 核心模块要点
 - SeamlessSplitter：统一入口；缓存 `segment_classification_debug`、`guard_shift_stats`；负责落盘，并在分离后构建 `TrackFeatureCache`。
