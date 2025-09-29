@@ -9,6 +9,15 @@ audio:
   format: wav
   quality: 320
 
+gpu_pipeline:
+  enable: false
+  prefer_device: cuda
+  chunk_seconds: 10.0
+  overlap_seconds: 2.5
+  halo_seconds: 0.5
+  prefetch_pinned_buffers: 2
+  inflight_chunks_limit: 2
+
 pure_vocal_detection:
   enable: true
   # Base detection
@@ -186,5 +195,3 @@ bpm_adaptive_core:
     medium: 0.5
     fast: 0.3
     very_fast: 0.2
-
-

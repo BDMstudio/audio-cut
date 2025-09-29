@@ -14,6 +14,7 @@ import tempfile
 import soundfile as sf
 
 from audio_cut.analysis import TrackFeatureCache, build_feature_cache
+from audio_cut.utils.gpu_pipeline import PipelineConfig, PipelineContext, build_pipeline_context
 from audio_cut.cutting.refine import CutContext, CutPoint, finalize_cut_points
 
 from ..utils.config_manager import get_config
@@ -73,6 +74,38 @@ class SeamlessSplitter:
         # 1. 加载音频
         original_audio = self._load_and_resample_if_needed(input_path)
 
+        gpu_cfg = self._get_gpu_pipeline_config()
+        gpu_context: Optional[PipelineContext] = None
+        use_gpu_pipeline = False
+        if gpu_cfg.enable:
+            try:
+                gpu_context = self._build_gpu_pipeline_context(original_audio, gpu_cfg)
+                use_gpu_pipeline = bool(gpu_context and gpu_context.enabled)
+            except Exception as exc:
+                gpu_context = None
+                logger.warning("[GPU Pipeline] init failed, fallback to CPU: %s", exc, exc_info=True)
+        if use_gpu_pipeline:
+            logger.info("[GPU Pipeline] enabled: device=%s, chunk_count=%d", gpu_context.device, len(gpu_context.plans))
+        else:
+            logger.info("[GPU Pipeline] disabled; continue with CPU path.")
+
+        preferred_device = gpu_cfg.prefer_device.lower() if isinstance(gpu_cfg.prefer_device, str) else 'cpu'
+        if preferred_device not in {'cpu', 'cuda', 'gpu'}:
+            preferred_device = 'cpu'
+        fallback_device = 'cuda' if preferred_device in {'cuda', 'gpu'} else 'cpu'
+        effective_device = gpu_context.device if use_gpu_pipeline and gpu_context else fallback_device
+        gpu_meta = {
+            'gpu_pipeline_enabled': bool(gpu_cfg.enable),
+            'gpu_pipeline_used': bool(use_gpu_pipeline),
+            'gpu_pipeline_device': effective_device,
+            'gpu_pipeline_chunks': len(gpu_context.plans) if use_gpu_pipeline and gpu_context else 0,
+            'gpu_pipeline_config': {
+                'chunk_seconds': float(gpu_cfg.chunk_s),
+                'overlap_seconds': float(gpu_cfg.overlap_s),
+                'halo_seconds': float(gpu_cfg.halo_s),
+            },
+        }
+
         # 2. 高质量人声分离
         logger.info(f"[{mode.upper()}-STEP1] 执行高质量人声分离...")
         separation_start = time.time()
@@ -80,7 +113,9 @@ class SeamlessSplitter:
         separation_time = time.time() - separation_start
 
         if separation_result.vocal_track is None:
-            return {'success': False, 'error': '人声分离失败', 'input_file': input_path}
+            failure = {'success': False, 'error': '��������ʧ��', 'input_file': input_path}
+            failure.update(gpu_meta)
+            return failure
 
         vocal_track = separation_result.vocal_track
         logger.info(f"[{mode.upper()}-STEP1] 人声分离完成 - 后端: {separation_result.backend_used}, 质量: {separation_result.separation_confidence:.3f}, 耗时: {separation_time:.1f}s")
@@ -111,17 +146,21 @@ class SeamlessSplitter:
 
         if not vocal_pauses:
             has_vocal = self._estimate_vocal_presence(vocal_track)
-            return self._create_single_segment_result(original_audio, input_path, output_dir, "未在纯人声中找到停顿", is_vocal=has_vocal)
+            return self._create_single_segment_result(
+                original_audio,
+                input_path,
+                output_dir,
+                "δ�ڴ��������ҵ�ͣ��",
+                is_vocal=has_vocal,
+                gpu_meta=gpu_meta,
+            )
 
-        # 4. 生成、过滤并分割 (在 vocal_track 上进行最终验证)
-        # 转换PureVocalPause到样本点
-        cut_points_samples = []
-        for p in vocal_pauses:
-            if hasattr(p, 'cut_point'):
-                cut_points_samples.append(int(p.cut_point * self.sample_rate))
+        cut_points_samples: List[int] = []
+        for pause in vocal_pauses:
+            if hasattr(pause, 'cut_point'):
+                cut_points_samples.append(int(pause.cut_point * self.sample_rate))
             else:
-                # 兜底：使用停顿中心
-                center_time = (p.start_time + p.end_time) / 2
+                center_time = (pause.start_time + pause.end_time) / 2
                 cut_points_samples.append(int(center_time * self.sample_rate))
 
         logger.info(f"[{mode.upper()}-STEP3] 生成{len(cut_points_samples)}个候选分割点")
@@ -243,7 +282,7 @@ class SeamlessSplitter:
 
         total_time = time.time() - overall_start_time
 
-        return {
+        result = {
             'success': True, 'method': f'pure_vocal_split_{mode}', 'num_segments': len(segments),
             'saved_files': saved_files, 'mix_segment_files': mix_segment_files, 'vocal_segment_files': vocal_segment_files,
             'backend_used': separation_result.backend_used,
@@ -255,6 +294,26 @@ class SeamlessSplitter:
             'guard_shift_stats': self._get_guard_shift_stats(),
             'input_file': input_path, 'output_dir': output_dir
         }
+        result.update(gpu_meta)
+        return result
+
+    def _get_gpu_pipeline_config(self) -> PipelineConfig:
+        try:
+            mapping = get_config('gpu_pipeline', {})
+        except Exception:
+            mapping = {}
+        if not isinstance(mapping, dict):
+            mapping = {}
+        return PipelineConfig.from_mapping(mapping)
+
+    def _build_gpu_pipeline_context(self, audio: np.ndarray, cfg: PipelineConfig) -> Optional[PipelineContext]:
+        if not cfg.enable or self.sample_rate <= 0:
+            return None
+        duration_s = float(audio.shape[-1]) / float(self.sample_rate)
+        ctx = build_pipeline_context(duration_s, cfg)
+        if not ctx.enabled:
+            return None
+        return ctx
 
     def _process_vocal_separation_only(self, input_path: str, output_dir: str) -> Dict:
         """处理纯人声分离模式"""
@@ -808,14 +867,14 @@ class SeamlessSplitter:
             return self._blank_guard_stats()
         return dict(stats)
 
-    def _create_single_segment_result(self, audio: np.ndarray, input_path: str, output_dir: str, reason: str, is_vocal: bool = True) -> Dict:
+    def _create_single_segment_result(self, audio: np.ndarray, input_path: str, output_dir: str, reason: str, is_vocal: bool = True, gpu_meta: Optional[Dict[str, Any]] = None) -> Dict:
         """当无法分割时，创建单个片段的结果"""
         logger.warning(f"{reason}，将输出为单个文件。")
         self._last_guard_shift_stats = self._blank_guard_stats()
         sample_count = audio.shape[-1] if hasattr(audio, 'shape') else len(audio)
         duration_s = float(sample_count) / float(self.sample_rate) if self.sample_rate > 0 else 0.0
         saved_files = self._save_segments([audio], output_dir, segment_is_vocal=[is_vocal])
-        return {
+        result = {
             'success': True, 'num_segments': 1, 'saved_files': saved_files,
             'segment_durations': [duration_s],
             'segment_vocal_flags': [is_vocal],
@@ -824,6 +883,9 @@ class SeamlessSplitter:
             'guard_shift_stats': self._get_guard_shift_stats(),
             'note': reason, 'input_file': input_path, 'output_dir': output_dir
         }
+        if gpu_meta:
+            result.update(gpu_meta)
+        return result
 
 
 
