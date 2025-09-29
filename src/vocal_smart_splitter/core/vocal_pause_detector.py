@@ -62,7 +62,7 @@ class VocalPauseDetectorV2:
             )
             (self.get_speech_timestamps, _, _, _, _) = self.vad_utils
             self._vad_device = 'cuda' if torch.cuda.is_available() and get_config('advanced_vad.use_cuda', True) else 'cpu'
-            self._silero_use_fp16 = bool(get_config('advanced_vad.silero_use_fp16', True)) and self._vad_device == 'cuda'
+            self._silero_use_fp16 = bool(get_config('advanced_vad.silero_use_fp16', False)) and self._vad_device == 'cuda'
             target_device = torch.device(self._vad_device)
             self.vad_model = self.vad_model.to(target_device)
             if self._silero_use_fp16:
