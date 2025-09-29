@@ -108,6 +108,7 @@
     multi_gpu:
       enabled: false
       preferred_devices: [0]
+
 ````
 
 * 为配置与默认值添加单测。
