@@ -75,11 +75,13 @@
   pytest -m "not slow and not gpu" --cov=src --cov-report=term-missing
   ```
 - 关键用例：
-  - `tests/test_seamless_reconstruction.py`：端到端拼接验证。
   - `tests/unit/test_cpu_baseline_perfect_reconstruction.py`：样本级零误差基线。
+  - `tests/unit/test_cutting_refiner.py`：切点精炼器的 NMS/守卫/零交叉行为。
   - `tests/unit/test_cut_alignment.py`：守卫与过零逻辑。
   - `tests/integration/test_pipeline_v2_valley.py`：v2.2 管线集成。
   - `tests/contracts/test_config_contracts.py`：配置兼容契约。
+- 待补充：
+  - `tests/test_seamless_reconstruction.py`：旧版验证脚本尚未对接 v2.3 结果结构，运行前需先完成重构。
 
 ## 更新记录
 - **2025-09-26**
