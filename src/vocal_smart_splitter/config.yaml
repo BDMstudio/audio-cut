@@ -1,4 +1,4 @@
-# File: src/vocal_smart_splitter/config.yaml
+﻿# File: src/vocal_smart_splitter/config.yaml
 # AI-SUMMARY: Global config for audio IO, pause detection thresholds, and quality gates
 # Normalized configuration for Vocal Smart Splitter (v2.x)
 # Focus: Pure vocal detection with BPM/MDD/VPP adaptation and weighted NMS
@@ -186,3 +186,5 @@ bpm_adaptive_core:
     medium: 0.5
     fast: 0.3
     very_fast: 0.2
+
+

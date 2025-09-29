@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 # vocal_smart_splitter/core/vocal_pause_detector.py
 
@@ -54,11 +54,26 @@ class VocalPauseDetectorV2:
         try:
             import torch
             torch.set_num_threads(1)
-            self.vad_model, self.vad_utils = torch.hub.load(repo_or_dir='snakers4/silero-vad', model='silero_vad', force_reload=False, onnx=False)
+            self.vad_model, self.vad_utils = torch.hub.load(
+                repo_or_dir='snakers4/silero-vad',
+                model='silero_vad',
+                force_reload=False,
+                onnx=False,
+            )
             (self.get_speech_timestamps, _, _, _, _) = self.vad_utils
+            self._vad_device = 'cuda' if torch.cuda.is_available() and get_config('advanced_vad.use_cuda', True) else 'cpu'
+            self._silero_use_fp16 = bool(get_config('advanced_vad.silero_use_fp16', True)) and self._vad_device == 'cuda'
+            target_device = torch.device(self._vad_device)
+            self.vad_model = self.vad_model.to(target_device)
+            if self._silero_use_fp16:
+                self.vad_model = self.vad_model.half()
+            else:
+                self.vad_model = self.vad_model.float()
             logger.info("Silero VAD模型加载成功")
         except Exception as e:
             self.vad_model = None
+            self._vad_device = 'cpu'
+            self._silero_use_fp16 = False
             logger.error(f"Silero VAD初始化失败: {e}")
 
     def detect_vocal_pauses(self, detection_target_audio: np.ndarray, context_audio: Optional[np.ndarray] = None) -> List[VocalPause]:
@@ -112,45 +127,73 @@ class VocalPauseDetectorV2:
     # ... 它们的内容保持不变 ...
 
     def _detect_speech_timestamps(self, audio: np.ndarray) -> List[Dict]:
-        """使用Silero VAD检测语音时间戳，参数由self.current_adaptive_params动态提供"""
+        """使用 Silero VAD 计算语音时间戳，并在 GPU 时优先尝试 FP16 推理。"""
         try:
             import torch
             import librosa
-            target_sr = 16000
-            audio_16k = librosa.resample(audio, orig_sr=self.sample_rate, target_sr=target_sr)
-            audio_tensor = torch.from_numpy(audio_16k).float()
-            
-            # 动态获取VAD参数
-            if self.current_adaptive_params:
-                params = self.current_adaptive_params
-                vad_params = {
-                    'threshold': params.vad_threshold,
-                    'min_speech_duration_ms': get_config('advanced_vad.silero_min_speech_ms', 250),
-                    'min_silence_duration_ms': int(params.min_pause_duration * 1000),
-                    'window_size_samples': get_config('advanced_vad.silero_window_size_samples', 512),
-                    'speech_pad_ms': int(params.speech_pad_ms)
-                }
-                logger.info(f"应用动态VAD参数: {vad_params}")
-            else: # 回退到静态配置
-                vad_params = {
-                    'threshold': get_config('advanced_vad.silero_prob_threshold_down', 0.35),
-                    'min_speech_duration_ms': get_config('advanced_vad.silero_min_speech_ms', 250),
-                    'min_silence_duration_ms': get_config('advanced_vad.silero_min_silence_ms', 700),
-                    'window_size_samples': get_config('advanced_vad.silero_window_size_samples', 512),
-                    'speech_pad_ms': get_config('advanced_vad.silero_speech_pad_ms', 150)
-                }
-                logger.info(f"应用静态VAD参数: {vad_params}")
-            
-            speech_timestamps_16k = self.get_speech_timestamps(audio_tensor, self.vad_model, sampling_rate=target_sr, **vad_params)
-            
-            scale_factor = self.sample_rate / target_sr
-            for ts in speech_timestamps_16k:
-                ts['start'] = int(ts['start'] * scale_factor)
-                ts['end'] = int(ts['end'] * scale_factor)
-            return speech_timestamps_16k
-        except Exception as e:
-            logger.error(f"Silero VAD检测失败: {e}", exc_info=True)
+        except Exception as exc:
+            logger.error(f"Silero VAD 依赖未就绪: {exc}", exc_info=True)
             return []
+
+        if self.vad_model is None:
+            logger.error("Silero VAD模型未初始化，无法检测语音片段")
+            return []
+
+        target_sr = 16000
+        audio_16k = librosa.resample(audio, orig_sr=self.sample_rate, target_sr=target_sr).astype(np.float32)
+
+        device_name = getattr(self, '_vad_device', 'cpu')
+        use_fp16 = bool(getattr(self, '_silero_use_fp16', False) and device_name == 'cuda')
+        device = torch.device(device_name)
+
+        tensor = torch.from_numpy(audio_16k).to(device)
+        tensor_fp = tensor.half() if use_fp16 else tensor.float()
+
+        self.vad_model = self.vad_model.to(device)
+        self.vad_model = self.vad_model.half() if use_fp16 else self.vad_model.float()
+
+        if self.current_adaptive_params:
+            params = self.current_adaptive_params
+            vad_params = {
+                'threshold': params.vad_threshold,
+                'min_speech_duration_ms': get_config('advanced_vad.silero_min_speech_ms', 250),
+                'min_silence_duration_ms': int(params.min_pause_duration * 1000),
+                'window_size_samples': get_config('advanced_vad.silero_window_size_samples', 512),
+                'speech_pad_ms': int(params.speech_pad_ms),
+            }
+            logger.info(f"应用自适应 VAD 参数: {vad_params}")
+        else:
+            vad_params = {
+                'threshold': get_config('advanced_vad.silero_prob_threshold_down', 0.35),
+                'min_speech_duration_ms': get_config('advanced_vad.silero_min_speech_ms', 250),
+                'min_silence_duration_ms': get_config('advanced_vad.silero_min_silence_ms', 700),
+                'window_size_samples': get_config('advanced_vad.silero_window_size_samples', 512),
+                'speech_pad_ms': get_config('advanced_vad.silero_speech_pad_ms', 150),
+            }
+            logger.info(f"应用静态 VAD 参数: {vad_params}")
+
+        def _run_inference(input_tensor, model):
+            with torch.inference_mode():
+                return self.get_speech_timestamps(input_tensor, model, sampling_rate=target_sr, **vad_params)
+
+        try:
+            speech_timestamps_16k = _run_inference(tensor_fp, self.vad_model)
+        except RuntimeError as err:
+            if use_fp16:
+                logger.warning(f"Silero FP16 推理失败，回退至 FP32: {err}")
+                self._silero_use_fp16 = False
+                tensor_fp32 = tensor.float()
+                self.vad_model = self.vad_model.float()
+                speech_timestamps_16k = _run_inference(tensor_fp32, self.vad_model)
+            else:
+                logger.error(f"Silero VAD推理失败: {err}", exc_info=True)
+                return []
+
+        scale_factor = self.sample_rate / target_sr
+        for ts in speech_timestamps_16k:
+            ts['start'] = int(ts['start'] * scale_factor)
+            ts['end'] = int(ts['end'] * scale_factor)
+        return speech_timestamps_16k
 
     def _calculate_pause_segments(self, speech_timestamps: List[Dict], audio_length: int) -> List[Dict]:
         pause_segments = []
@@ -290,6 +333,30 @@ class VocalPauseDetectorV2:
             return valley_idx / self.sample_rate if valley_idx is not None else None
         return None
 
+    def _get_mdd_score_for_pause(self, pause: Dict) -> float:
+        segments = getattr(self, 'adaptive_enhancer', None)
+        last_segments = getattr(segments, 'last_analyzed_segments', None) if segments else None
+        if not last_segments:
+            return 0.0
+        sr = self.sample_rate
+        if 'start_time' in pause and 'end_time' in pause:
+            start_s = float(pause.get('start_time', 0.0))
+            end_s = float(pause.get('end_time', start_s))
+        else:
+            start_s = float(pause.get('start', 0.0)) / float(sr)
+            end_s = float(pause.get('end', start_s)) / float(sr)
+        if end_s <= start_s:
+            return 0.0
+        scores = []
+        for seg in last_segments:
+            seg_start = float(getattr(seg, 'start_time', 0.0))
+            seg_end = float(getattr(seg, 'end_time', seg_start))
+            overlap_start = max(start_s, seg_start)
+            overlap_end = min(end_s, seg_end)
+            if overlap_end > overlap_start:
+                scores.append(float(getattr(seg, 'dynamic_density_score', 0.0)))
+        return float(np.mean(scores)) if scores else 0.0
+
     def _smart_beat_align(self, waveform: np.ndarray, valley_point_s: float, bpm_features: 'BPMFeatures', search_start_s: float, search_end_s: float) -> float:
         beat_interval = 60.0 / float(bpm_features.main_bpm)
         nearest_beat_s = round(valley_point_s / beat_interval) * beat_interval
@@ -313,11 +380,29 @@ class VocalPauseDetectorV2:
         floor_val = np.percentile(np.abs(segment), floor_percentile)
         order = np.argsort(rms)
         margin_samples = max(1, int(0.02 * sample_rate))
+        enable_valley_mode = bool(get_config('vocal_pause_splitting.enable_valley_mode', True))
+        auto_fallback = bool(get_config('vocal_pause_splitting.auto_valley_fallback', True))
+        enforce_margin = enable_valley_mode or auto_fallback
+        min_margin = margin_samples if enforce_margin else 0
         for j in order:
-            if margin_samples <= j < (len(rms) - margin_samples):
-                if guard_samples == 0 or self._future_silence_guard(rms, j, guard_samples, floor_val):
+            if min_margin <= j < (len(rms) - min_margin):
+                if guard_samples == 0 or not enforce_margin or self._future_silence_guard(rms, j, guard_samples, floor_val):
                     return left_idx + j
-        return left_idx + order[0] if order.size > 0 else None
+        for j in order:
+            if min_margin <= j < (len(rms) - min_margin):
+                return left_idx + j
+        if order.size == 0:
+            return None
+        fallback = left_idx + order[0]
+        enforce_margin = bool(get_config('vocal_pause_splitting.enable_valley_mode', True))
+        if enforce_margin:
+            if (fallback - left_idx) < margin_samples:
+                fallback = left_idx + margin_samples
+            if (right_idx - fallback) < margin_samples:
+                fallback = right_idx - margin_samples
+        return max(left_idx, min(fallback, right_idx))
+
+
 
     def _compute_rms_envelope(self, waveform: np.ndarray, win_samples: int) -> np.ndarray:
         if win_samples <= 1: return np.abs(waveform).astype(np.float32)
@@ -329,3 +414,5 @@ class VocalPauseDetectorV2:
         if end_idx <= start_idx: return False
         window = rms[start_idx:end_idx]
         return (np.sum(window <= (floor_val * allowance)) / float(window.size)) >= ratio if window.size > 0 else False
+
+

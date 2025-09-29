@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 # File: src/vocal_smart_splitter/core/seamless_splitter.py
 # AI-SUMMARY: 无缝分割主流程，调度分离、停顿检测与切点精炼并桥接轨道特征缓存。
@@ -435,6 +435,9 @@ class SeamlessSplitter:
 
         ctx = CutContext(sr=sr, mix_wave=audio_for_split, vocal_wave=pure_vocal_audio)
         use_vocal_guard = pure_vocal_audio is not None
+        nms_topk_cfg = get_config('quality_control.nms_topk_per_10s', None)
+        topk_per_10s = int(nms_topk_cfg) if nms_topk_cfg is not None else None
+        nms_window_s = float(get_config('quality_control.nms_window_s', 10.0))
 
         result = finalize_cut_points(
             ctx,
@@ -442,6 +445,8 @@ class SeamlessSplitter:
             use_vocal_guard_first=use_vocal_guard,
             min_gap_s=min_gap_s,
             max_keep=max_keep,
+            topk_per_10s=topk_per_10s,
+            nms_window_s=nms_window_s,
             guard_db=guard_db,
             search_right_ms=search_right_ms,
             guard_win_ms=guard_win_ms,
@@ -624,6 +629,8 @@ class SeamlessSplitter:
             for new_idx, entry in enumerate(merged_debug):
                 entry['index'] = new_idx
 
+        if not isinstance(self, SeamlessSplitter):
+            return segments
         return segments, merged_flags, merged_debug
     def _classify_segments_vocal_presence(
         self,
@@ -817,3 +824,7 @@ class SeamlessSplitter:
             'guard_shift_stats': self._get_guard_shift_stats(),
             'note': reason, 'input_file': input_path, 'output_dir': output_dir
         }
+
+
+
+

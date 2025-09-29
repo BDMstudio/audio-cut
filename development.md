@@ -26,11 +26,11 @@
 - (2) `EnhancedVocalSeparator.separate_for_detection` 先行分离人声/伴奏，记录后端与置信度。
 - (3) `PureVocalPauseDetector.detect_pure_vocal_pauses` 计算候选静区：先走相对能量模式（默认），再视需要回退到全特征评估；BPM/MDD/VPP 自适应在此执行，并优先从 `TrackFeatureCache` 读取全局特征。
 - (4) `SeamlessSplitter._finalize_and_filter_cuts_v2` 调用 `audio_cut.cutting.finalize_cut_points`，先执行加权 NMS，再在人声/混音轨套用守卫并做最小间隔过滤。
-- (5) `SeamlessSplitter._classify_segments_vocal_presence` 依据 RMS 活跃度、阈值和辅助标记判断 `_human/_music`。
+- (5) `SeamlessSplitter._classify_segments_vocal_presence` 当前仅依靠 RMS 活跃度阈值决定 `_human/_music`，辅助标记/能量投票仍保留占位用于调试记录。
 - (6) `SeamlessSplitter` 汇总守卫位移统计并调用 `_save_segments` 落盘 24-bit WAV 与调试信息；`QualityController` 仅在 legacy 路径作为兜底校验。
 
 ## 4. 核心模块要点
-- SeamlessSplitter：统一入口；缓存 `segment_classification_debug`、`guard_shift_stats`；负责落盘，并在分离后构建 `TrackFeatureCache`。
+- SeamlessSplitter：统一入口；缓存 `segment_classification_debug`、`guard_shift_stats`；负责落盘，并在分离后构建 `TrackFeatureCache`。当前 `_classify_segments_vocal_presence` 只使用 `vocal_activity_ratio` 判决，marker/energy 投票字段作为调试占位保留 None。
 - EnhancedVocalSeparator：封装 MDX23/Demucs，支持环境变量强制后端、失败回退、keep-in-memory。
 - PureVocalPauseDetector：在相对能量模式下使用峰值/RMS 比例、BPM/MDD/VPP 自适应补偿；复杂模式含 F0、共振峰、谱质心、谐波比率等特征。
 - QualityController：保留静音守卫/过零吸附的兼容实现，用于 fallback 与质量度量；`AdaptiveParameterCalculator` 仍提供 BPM 级别自适应参数。

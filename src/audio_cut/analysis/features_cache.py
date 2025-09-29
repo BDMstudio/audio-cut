@@ -1,26 +1,33 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 # File: src/audio_cut/analysis/features_cache.py
-# AI-SUMMARY: 构建并缓存整轨 BPM / MDD 等全局特征，供各检测器复用，避免重复计算。
-
+# AI-SUMMARY: 构建并缓存单次 STFT 提取的 BPM/MDD 全局特征，按需使用 Torch GPU 加速并回落到 CPU 计算。
 from __future__ import annotations
 
 import logging
+import math
 from dataclasses import dataclass
 from typing import Dict, Optional
 
 import librosa
 import numpy as np
 
-from src.vocal_smart_splitter.utils.config_manager import get_config
 from src.vocal_smart_splitter.core.adaptive_vad_enhancer import BPMAnalyzer, BPMFeatures
+from src.vocal_smart_splitter.utils.config_manager import get_config
 
 logger = logging.getLogger(__name__)
 
 _EPS = 1e-12
 
+try:  # Torch 为可选依赖，GPU 路径失效时自动回退。
+    import torch
+    from torch import Tensor
+except Exception:  # pragma: no cover - torch 在 CPU 测试环境非必备
+    torch = None
+    Tensor = None
 
-def _ensure_mono(wave: np.ndarray) -> np.ndarray:
+
+def _ensure_mono_np(wave: np.ndarray) -> np.ndarray:
     if wave.ndim == 1:
         return wave
     if wave.ndim == 2:
@@ -99,22 +106,24 @@ def _compute_mdd_series(rms: np.ndarray, flatness: np.ndarray, onset_strength: n
     return np.clip(mdd_series, 0.0, 1.0)
 
 
-def build_feature_cache(
-    mix_wave: np.ndarray,
-    vocal_wave: Optional[np.ndarray],
-    sr: int,
-    *,
-    hop_s: float = 0.05,
-) -> TrackFeatureCache:
-    """构建全局特征缓存。"""
+def _resolve_backend(preference: Optional[str]) -> str:
+    pref = (preference or 'auto').lower()
+    if pref not in {'auto', 'cpu', 'cuda', 'gpu'}:
+        logger.warning("Unknown features_cache backend '%s', fallback to auto", preference)
+        pref = 'auto'
+    if pref == 'cpu':
+        return 'cpu'
+    if pref in {'cuda', 'gpu'}:
+        if torch is None or not torch.cuda.is_available():
+            logger.warning('Torch CUDA 未就绪，特征缓存回退到 CPU 路径。')
+            return 'cpu'
+        return 'cuda'
+    if torch is not None and torch.cuda.is_available():
+        return 'cuda'
+    return 'cpu'
 
-    mix_wave = _ensure_mono(mix_wave)
-    if mix_wave is None or mix_wave.size == 0:
-        raise ValueError('mix_wave is empty, cannot build feature cache')
 
-    _ = vocal_wave  # vocal 波形暂未使用，保留参数以兼容后续扩展
-
-    hop_length = max(1, int(round(sr * hop_s)))
+def _build_feature_cache_numpy(mix_wave: np.ndarray, sr: int, hop_length: int, hop_s: float) -> TrackFeatureCache:
     frame_length = max(hop_length * 2, int(round(sr * 0.1)))
 
     rms_series = librosa.feature.rms(y=mix_wave, frame_length=frame_length, hop_length=hop_length)[0]
@@ -158,3 +167,114 @@ def build_feature_cache(
         global_mdd=global_mdd,
         mdd_series=mdd_series,
     )
+
+
+def _torch_hann_window(length: int, device: torch.device) -> Tensor:
+    return torch.hann_window(length, device=device, dtype=torch.float32)
+
+
+def _compute_rms_torch(signal: Tensor, frame_length: int, hop_length: int) -> Tensor:
+    pad = frame_length // 2
+    kernel = torch.ones(1, 1, frame_length, device=signal.device, dtype=torch.float32) / float(frame_length)
+    sq = signal.pow(2).unsqueeze(0).unsqueeze(0)
+    rms_sq = torch.nn.functional.conv1d(sq, kernel, stride=hop_length, padding=pad)
+    return torch.sqrt(torch.clamp(rms_sq.squeeze(0).squeeze(0), min=_EPS))
+
+
+def _build_feature_cache_torch(mix_wave: np.ndarray, sr: int, hop_length: int, hop_s: float, device: torch.device) -> TrackFeatureCache:
+    if torch is None:
+        raise RuntimeError('Torch backend is unavailable')
+
+    frame_length = max(hop_length * 2, int(round(sr * 0.1)))
+    n_fft = 1 << int(math.ceil(math.log2(frame_length)))
+    if n_fft < frame_length:
+        n_fft = frame_length
+
+    mix_tensor = torch.as_tensor(mix_wave, dtype=torch.float32, device=device)
+    mix_tensor = mix_tensor if mix_tensor.ndim == 1 else mix_tensor.mean(dim=0)
+
+    with torch.inference_mode():
+        window = _torch_hann_window(frame_length, device)
+        stft = torch.stft(
+            mix_tensor,
+            n_fft=n_fft,
+            hop_length=hop_length,
+            win_length=frame_length,
+            window=window,
+            center=True,
+            return_complex=True,
+        )
+        magnitude = stft.abs().float()
+        rms_tensor = _compute_rms_torch(mix_tensor, frame_length, hop_length)
+
+    _ = magnitude.detach()  # STFT magnitude reserved for potential future use
+
+    rms_series = librosa.feature.rms(y=mix_wave, frame_length=frame_length, hop_length=hop_length)[0]
+    spectral_flatness = librosa.feature.spectral_flatness(y=mix_wave, hop_length=hop_length)[0]
+    onset_envelope = librosa.onset.onset_strength(y=mix_wave, sr=sr, hop_length=hop_length)
+    onset_strength = onset_envelope.copy()
+    onset_frames = librosa.onset.onset_detect(onset_envelope=onset_envelope, sr=sr, hop_length=hop_length)
+
+    bpm_analyzer = BPMAnalyzer(sr)
+    bpm_features = bpm_analyzer.extract_bpm_features(mix_wave)
+
+    tempo_curve = librosa.beat.tempo(
+        onset_envelope=onset_envelope,
+        sr=sr,
+        hop_length=hop_length,
+        aggregate=None,
+    )
+    _, beat_frames = librosa.beat.beat_track(onset_envelope=onset_envelope, sr=sr, hop_length=hop_length)
+    beat_times = librosa.frames_to_time(beat_frames, sr=sr, hop_length=hop_length)
+
+    mdd_series = _compute_mdd_series(rms_series, spectral_flatness, onset_strength)
+    global_mdd = float(np.mean(mdd_series))
+    duration_s = len(mix_wave) / float(sr)
+
+    return TrackFeatureCache(
+        sr=sr,
+        hop_length=hop_length,
+        hop_s=hop_s,
+        duration_s=duration_s,
+        rms_series=rms_series,
+        spectral_flatness=spectral_flatness,
+        onset_envelope=onset_envelope,
+        onset_strength=onset_strength,
+        onset_frames=onset_frames,
+        rms_max=float(np.max(rms_series) if rms_series.size else 0.0),
+        onset_max=float(np.max(onset_strength) if onset_strength.size else 0.0),
+        bpm_features=bpm_features,
+        tempo_curve=tempo_curve,
+        beat_times=beat_times,
+        global_mdd=global_mdd,
+        mdd_series=mdd_series,
+    )
+
+
+def build_feature_cache(
+    mix_wave: np.ndarray,
+    vocal_wave: Optional[np.ndarray],
+    sr: int,
+    *,
+    hop_s: float = 0.05,
+) -> TrackFeatureCache:
+    """构建全局特征缓存，可根据配置选择 GPU 或 CPU 后端。"""
+
+    mix_wave = _ensure_mono_np(mix_wave)
+    if mix_wave is None or mix_wave.size == 0:
+        raise ValueError('mix_wave is empty, cannot build feature cache')
+
+    _ = vocal_wave  # 占位以保证后续扩展兼容
+
+    hop_length = max(1, int(round(sr * hop_s)))
+    backend_pref = get_config('analysis.features_cache.device', 'auto')
+    backend = _resolve_backend(backend_pref)
+
+    if backend == 'cuda':
+        try:
+            device = torch.device('cuda')
+            return _build_feature_cache_torch(mix_wave, sr, hop_length, hop_s, device=device)
+        except Exception as exc:  # pragma: no cover - GPU 相关路径在 CI 中不可测
+            logger.warning('GPU features_cache 失败，回退到 CPU。原因: %s', exc)
+
+    return _build_feature_cache_numpy(mix_wave, sr, hop_length, hop_s)

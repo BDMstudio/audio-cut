@@ -1,4 +1,4 @@
-# todo-refine.md — GPU + Silero 主路径性能优化计划
+﻿# todo-refine.md — GPU + Silero 主路径性能优化计划
 
 > **适用范围**：本项目默认运行在 **NVIDIA GPU**（CUDA）环境，**Silero-VAD 为主路径必需组件**（用于语音/静音裁剪候选窗口，降低后续检测负载）。CPU 兼容与“轻量替代 VAD”仅作为**诊断/应急兜底**的可选插件，不纳入默认路径或性能基线。
 
@@ -31,15 +31,15 @@
 
 ### Milestone 1：**计算复用与候选限流（P0）**
 
-* [ ] **一次 STFT（GPU），多处复用**
+* [x] **一次 STFT（GPU），多处复用**
 
   * 新增 `src/audio_cut/analysis/features_cache.py`（GPU 版）：使用 `torch.stft/torchaudio` 计算并缓存 |S|、RMS、谱平坦度、onset、MDD 序列与全局 BPM，统一 **hop_s** 时间栅格。
   * 所有频域/节拍/复杂度相关计算 **仅依赖该缓存**，禁止重复 STFT。
-* [ ] **Silero → 候选窗口裁剪**
+* [x] **Silero → 候选窗口裁剪**
 
   * Silero 在**人声轨**上推理（`float16`、`inference_mode`），将相邻短间隙（<120ms）合并，得到语音段 `V`。
   * **仅在 `V` 的左右各 ±200ms 边界窗口**内运行 VPP/MDD 的“贵计算”（阈值评估、候选停顿识别），窗口外跳过。
-* [ ] **先 NMS，后守卫**（统一到 `refine.finalize_cut_points`）
+* [x] **先 NMS，后守卫**（统一到 `refine.finalize_cut_points`）
 
   * 先执行 `min_gap` + `topK/10s` 的 NMS 限流，再进行守卫/过零。
   * 守卫采用 **O(1) 跳转**：预计算 100 Hz 栅格 `quiet_mask` 与 `next_quiet_right`，候选点直接索引到最近安静帧；过零吸附使用向量化而非逐样本 while 循环。
@@ -207,3 +207,4 @@ tests/
 ---
 
 > 备注：如需在极端噪声或超长素材下进一步提速，可引入 **按长度分桶的批推理** 与 **CUDA Graphs**（Silero/分离模型），但务必保留失败回退到 eager 的安全阀。上述条目均已纳入里程碑 3 的“模型加速与稳定”。
+

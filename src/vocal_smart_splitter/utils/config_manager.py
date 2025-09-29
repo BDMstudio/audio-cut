@@ -11,6 +11,62 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
+_UNSET = object()
+
+
+def _load_yaml_file(path: Path) -> Dict[str, Any]:
+    if not path.exists():
+        raise FileNotFoundError(f"配置文件不存在: {path}")
+    with open(path, 'r', encoding='utf-8') as f:
+        data = yaml.safe_load(f) or {}
+    if not isinstance(data, dict):
+        raise ValueError(f"配置文件必须是字典结构: {path}")
+    return data
+
+
+def _deep_merge_dict(base: Dict[str, Any], override: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    result = dict(base)
+    if not override:
+        return result
+    for key, value in override.items():
+        if key in result and isinstance(result[key], dict) and isinstance(value, dict):
+            result[key] = _deep_merge_dict(result[key], value)
+        else:
+            result[key] = value
+    return result
+
+
+def _parse_env_value(raw: str) -> Any:
+    value = raw.strip()
+    lower = value.lower()
+    if lower in {'true', 'false'}:
+        return lower == 'true'
+    try:
+        if '.' in value:
+            return float(value)
+        return int(value)
+    except ValueError:
+        return raw
+
+
+def _apply_env_overrides(config: Dict[str, Any]) -> Dict[str, Any]:
+    result = dict(config)
+    prefix = 'VSS__'
+    for key, raw in os.environ.items():
+        if not key.startswith(prefix):
+            continue
+        parts = [part.lower() for part in key[len(prefix):].split('__') if part]
+        if not parts:
+            continue
+        value = _parse_env_value(raw)
+        cursor = result
+        for part in parts[:-1]:
+            if part not in cursor or not isinstance(cursor[part], dict):
+                cursor[part] = {}
+            cursor = cursor[part]
+        cursor[parts[-1]] = value
+    return result
+
 class ConfigManager:
     """智能人声分割器配置管理器"""
     
@@ -34,18 +90,27 @@ class ConfigManager:
     def _load_config(self) -> Dict[str, Any]:
         """加载配置文件"""
         try:
-            if not self.config_path.exists():
-                raise FileNotFoundError(f"配置文件不存在: {self.config_path}")
-            
-            with open(self.config_path, 'r', encoding='utf-8') as f:
-                config = yaml.safe_load(f)
-            
+            base_path = Path(__file__).parent.parent / 'config.yaml'
+            config = _load_yaml_file(base_path)
+
+            external_path = os.environ.get('VSS_EXTERNAL_CONFIG_PATH')
+            if external_path:
+                external_config = _load_yaml_file(Path(external_path))
+                config = _deep_merge_dict(config, external_config)
+
+            explicit_path = Path(self.config_path)
+            if explicit_path.resolve() != base_path.resolve():
+                explicit_config = _load_yaml_file(explicit_path)
+                config = _deep_merge_dict(config, explicit_config)
+
+            config = _apply_env_overrides(config)
+
             logger.info("配置文件加载成功")
             return config
-            
         except Exception as e:
             logger.error(f"配置文件加载失败: {e}")
             raise
+
     
     def _validate_config(self):
         """验证配置参数的有效性"""
@@ -84,7 +149,7 @@ class ConfigManager:
         if not (0 < quality_config['max_silence_ratio'] < 1):
             raise ValueError("静音比例必须在0-1之间")
     
-    def get(self, key_path: str, default: Any = None) -> Any:
+    def get(self, key_path: str, default: Any = _UNSET) -> Any:
         """获取配置值
         
         Args:
@@ -102,7 +167,7 @@ class ConfigManager:
                 value = value[key]
             return value
         except (KeyError, TypeError):
-            if default is not None:
+            if default is not _UNSET:
                 return default
             raise KeyError(f"配置键不存在: {key_path}")
     
@@ -202,7 +267,7 @@ def get_config_manager(config_path: Optional[str] = None) -> ConfigManager:
     
     return _config_manager
 
-def get_config(key_path: str, default: Any = None) -> Any:
+def get_config(key_path: str, default: Any = _UNSET) -> Any:
     """快捷方式：获取配置值
     
     Args:
@@ -234,3 +299,7 @@ def reset_runtime_config():
         original_path = _config_manager.config_path
         _config_manager = ConfigManager(str(original_path))
         logger.info("运行时配置已重置")
+
+
+
+

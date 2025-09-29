@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 # File: src/vocal_smart_splitter/core/pure_vocal_pause_detector.py
 # AI-SUMMARY: 纯人声停顿检测器 - 基于MDX23/Demucs分离后的纯人声进行多维特征分析，解决高频换气误判问题
@@ -110,6 +110,10 @@ class PureVocalPauseDetector:
             self._last_feature_cache = cache
         feature_cache = cache
 
+        focus_windows: Optional[List[Tuple[float, float]]] = None
+        if cache is not None:
+            focus_windows = self._compute_focus_windows(vocal_audio)
+
         # 🔥 关键修复：启用相对能量谷检测
         enable_relative_mode = get_config('pure_vocal_detection.enable_relative_energy_mode', False)
         if enable_relative_mode:
@@ -211,7 +215,7 @@ class PureVocalPauseDetector:
                     logger.info(f"VPP自适应：{vpp_log}, mul_pause={mul_pause:.2f} → peak={peak_ratio:.3f}, rms={rms_ratio:.3f}")
             except Exception as e:
                 logger.warning(f"VPP自适应失败（忽略）：{e}")
-            filtered_pauses = self._detect_energy_valleys(vocal_audio, peak_ratio, rms_ratio)
+            filtered_pauses = self._detect_energy_valleys(vocal_audio, peak_ratio, rms_ratio, focus_windows=focus_windows)
             # VPP后处理：合并过近停顿与粗筛上限，防止候选爆炸
             try:
                 filtered_pauses = self._compress_pauses(filtered_pauses)
@@ -249,6 +253,48 @@ class PureVocalPauseDetector:
         logger.info(f"检测完成: {len(filtered_pauses)}个高质量停顿点")
         return filtered_pauses
     
+    def _compute_focus_windows(self, vocal_audio: np.ndarray) -> Optional[List[Tuple[float, float]]]:
+        """基于 Silero VAD 的语音片段生成焦点窗口，减少能量谷扫描范围。"""
+        enabled = bool(get_config('advanced_vad.focus_window_enable', True))
+        if not enabled or vocal_audio is None or not hasattr(vocal_audio, 'size') or vocal_audio.size == 0:
+            return []
+        pad_s = float(get_config('advanced_vad.focus_window_pad_s', 0.2))
+        try:
+            segments = self._cut_point_calculator._detect_speech_timestamps(vocal_audio)
+        except Exception as exc:
+            logger.warning(f'焦点窗口计算失败，回退全量扫描: {exc}')
+            return []
+        if not segments:
+            return []
+        duration = len(vocal_audio) / float(self.sample_rate) if self.sample_rate > 0 else 0.0
+        windows: List[Tuple[float, float]] = []
+        for seg in segments:
+            start = float(seg.get('start', 0)) / float(self.sample_rate)
+            end = float(seg.get('end', 0)) / float(self.sample_rate)
+            left = max(0.0, start - pad_s)
+            right = min(duration, start + pad_s)
+            windows.append((left, right))
+            tail_left = max(0.0, end - pad_s)
+            tail_right = min(duration, end + pad_s)
+            windows.append((tail_left, tail_right))
+        return self._merge_windows(windows)
+
+    @staticmethod
+    def _merge_windows(windows: List[Tuple[float, float]], min_width: float = 0.0) -> List[Tuple[float, float]]:
+        if not windows:
+            return []
+        merged: List[Tuple[float, float]] = []
+        for start, end in sorted(windows, key=lambda w: w[0]):
+            if end <= start:
+                continue
+            if merged and start <= merged[-1][1]:
+                merged[-1] = (merged[-1][0], max(merged[-1][1], end))
+            else:
+                merged.append((start, end))
+        if min_width > 0.0:
+            merged = [(s, e) for s, e in merged if (e - s) >= min_width]
+        return merged
+
     def _extract_vocal_features(self, audio: np.ndarray) -> VocalFeatures:
         """提取人声多维特征
         
@@ -902,7 +948,7 @@ class PureVocalPauseDetector:
         
         return pure_vocal_pauses
 
-    def _detect_energy_valleys(self, vocal_audio: np.ndarray, peak_ratio: float, rms_ratio: float) -> List[PureVocalPause]:
+    def _detect_energy_valleys(self, vocal_audio: np.ndarray, peak_ratio: float, rms_ratio: float, focus_windows: Optional[List[Tuple[float, float]]] = None) -> List[PureVocalPause]:
         """
         🔥 相对能量谷检测 - 解决长音频分割不足问题
         
@@ -943,6 +989,17 @@ class PureVocalPauseDetector:
         # 3. 找到低于阈值的区域
         low_energy_mask = rms_energy < energy_threshold
         time_frames = librosa.frames_to_time(np.arange(len(rms_energy)), sr=self.sample_rate, hop_length=hop_length)
+        if focus_windows:
+            valid_mask = np.zeros_like(low_energy_mask, dtype=bool)
+            for start, end in focus_windows:
+                if end <= start:
+                    continue
+                valid_mask |= (time_frames >= start) & (time_frames <= end)
+            if not np.any(valid_mask):
+                logger.warning('焦点窗口未覆盖有效帧，回退全局扫描')
+            else:
+                low_energy_mask &= valid_mask
+                logger.debug("焦点窗口生效: %d 帧参与能量谷检测", int(valid_mask.sum()))
         
         # 4. 将连续的低能量区域合并
         pauses = []
@@ -1147,6 +1204,23 @@ class PureVocalPauseDetector:
         logger.info("🔥 MDD增强完成: %d 个停顿已优化", len(enhanced_pauses))
         return enhanced_pauses
 
+    def _get_mdd_score_for_pause(self, pause: Dict) -> float:
+        cache = getattr(self, '_last_feature_cache', None)
+        if not isinstance(cache, TrackFeatureCache) or cache.mdd_series.size == 0:
+            return 0.0
+        sr = self.sample_rate
+        if 'start_time' in pause and 'end_time' in pause:
+            start_s = float(pause.get('start_time', 0.0))
+            end_s = float(pause.get('end_time', start_s))
+        else:
+            start_s = float(pause.get('start', 0.0)) / float(sr)
+            end_s = float(pause.get('end', start_s)) / float(sr)
+        if end_s <= start_s:
+            return 0.0
+        sl = cache.frame_slice(start_s, end_s)
+        segment = cache.mdd_series[sl]
+        return float(np.mean(segment)) if segment.size else 0.0
+
     def _estimate_vpp_multiplier(self, vocal_audio: np.ndarray):
         """估计 VPP（Vocal Pause Profile）并返回倍率与日志。
         仅在演唱区间(singing_blocks)内统计，避免将间奏计入停顿画像。
@@ -1294,3 +1368,7 @@ class PureVocalPauseDetector:
         mul_pause = float(mults.get(cls, 1.0))
         vpp_log = f"VPP{{cls={cls}, mpd={mpd:.2f}, p95={p95:.2f}, pr={pr:.1f}/min, rr={rr:.2f}}}"
         return mul_pause, vpp_log
+
+
+
+
