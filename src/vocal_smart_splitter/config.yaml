@@ -22,7 +22,7 @@ enhanced_separation:
   backend: mdx23
   enable_fallback: true
   mdx23:
-    model_filename: Kim_Vocal_1.onnx  # 想用哪个模型写哪个
+    model_filename: Kim_Inst.onnx  # 想用哪个模型写哪个
 
 pure_vocal_detection:
   enable: true
