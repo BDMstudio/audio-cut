@@ -3,6 +3,6 @@
 # File: src/audio_cut/analysis/__init__.py
 # AI-SUMMARY: 提供音频分析缓存构建工具，集中管理BPM与MDD等全局特征。
 
-from .features_cache import TrackFeatureCache, build_feature_cache
+from .features_cache import ChunkFeatureBuilder, TrackFeatureCache, build_feature_cache
 
-__all__ = ['TrackFeatureCache', 'build_feature_cache']
+__all__ = ['TrackFeatureCache', 'build_feature_cache', 'ChunkFeatureBuilder']

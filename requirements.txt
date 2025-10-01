@@ -30,3 +30,5 @@ noisereduce>=3.0.0
 pathlib2>=2.3.0
 
 demucs>=4.0.0
+torch>=2.0.0
+onnxruntime-gpu>=1.17.0

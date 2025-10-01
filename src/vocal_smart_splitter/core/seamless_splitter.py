@@ -109,7 +109,10 @@ class SeamlessSplitter:
         # 2. 高质量人声分离
         logger.info(f"[{mode.upper()}-STEP1] 执行高质量人声分离...")
         separation_start = time.time()
-        separation_result = self.separator.separate_for_detection(original_audio)
+        separation_result = self.separator.separate_for_detection(
+            original_audio,
+            gpu_context=gpu_context if use_gpu_pipeline else None,
+        )
         separation_time = time.time() - separation_start
 
         if separation_result.vocal_track is None:
@@ -125,17 +128,18 @@ class SeamlessSplitter:
 
         # 检查是否为v2.2 MDD模式
         enable_mdd = (mode == 'v2.2_mdd')
-        feature_cache: Optional[TrackFeatureCache] = None
-        try:
-            feature_cache = build_feature_cache(original_audio, vocal_track, self.sample_rate)
-            logger.debug(
-                "Feature cache built: frames=%d, global_mdd=%.4f",
-                feature_cache.frame_count(),
-                feature_cache.global_mdd,
-            )
-        except Exception as exc:
-            logger.warning("Failed to build feature cache: %s", exc)
-            feature_cache = None
+        feature_cache: Optional[TrackFeatureCache] = separation_result.feature_cache
+        if feature_cache is None:
+            try:
+                feature_cache = build_feature_cache(original_audio, vocal_track, self.sample_rate)
+                logger.debug(
+                    "Feature cache built (fallback): frames=%d, global_mdd=%.4f",
+                    feature_cache.frame_count(),
+                    feature_cache.global_mdd,
+                )
+            except Exception as exc:
+                logger.warning("Failed to build feature cache: %s", exc)
+                feature_cache = None
 
         vocal_pauses = self.pure_vocal_detector.detect_pure_vocal_pauses(
             vocal_track,

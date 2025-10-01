@@ -1,851 +1,290 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 # File: src/vocal_smart_splitter/core/enhanced_vocal_separator.py
-# AI-SUMMARY: 检测专用高精度人声分离器，支持MDX23/Demucs v4等先进分离后端，专门用于提升停顿检测精度
+# AI-SUMMARY: 分块化声部分离器，封装 MDX23 ONNX 与 Demucs 后端，支持 GPU 流水线、OLA 重建与特征缓存共享。
 
-import os
-import sys
-import time  # 统一在顶部导入time模块
-import numpy as np
-import librosa
+from __future__ import annotations
+
 import logging
-import tempfile
-import subprocess
-import glob
-from typing import Tuple, Dict, Optional, Union, List
-from pathlib import Path
+import time
 from dataclasses import dataclass
+from pathlib import Path
+from typing import Dict, Optional, Tuple
 
+import numpy as np
+
+from audio_cut.analysis.features_cache import (
+    ChunkFeatureBuilder,
+    TrackFeatureCache,
+    build_feature_cache,
+)
+from audio_cut.separation.backends import (
+    DemucsPyTorchBackend,
+    IVocalSeparatorBackend,
+    MDX23OnnxBackend,
+    SeparationOutputs,
+)
+from audio_cut.utils.gpu_pipeline import (
+    ChunkPlan,
+    PipelineConfig,
+    PipelineContext,
+    Streams,
+    chunk_schedule,
+)
 from ..utils.config_manager import get_config
-from .vocal_separator import VocalSeparator  # 继承现有分离器
-from pathlib import Path  # 添加Path导入
+from .vocal_separator import VocalSeparator
 
 logger = logging.getLogger(__name__)
 
+
 @dataclass
 class SeparationResult:
-    """人声分离结果数据结构"""
-    vocal_track: np.ndarray      # 分离的人声轨道
-    instrumental_track: Optional[np.ndarray] = None  # 器乐轨道（可选）
-    separation_confidence: float = 0.0  # 分离质量置信度 (0-1)
-    backend_used: str = "unknown"       # 使用的分离后端
-    processing_time: float = 0.0        # 处理耗时（秒）
-    quality_metrics: Dict = None        # 质量指标
+    """声部分离结果。"""
+
+    vocal_track: np.ndarray
+    instrumental_track: Optional[np.ndarray]
+    separation_confidence: float
+    backend_used: str
+    processing_time: float
+    quality_metrics: Dict
+    feature_cache: Optional[TrackFeatureCache] = None
+
 
 class EnhancedVocalSeparator:
-    """检测专用高精度人声分离器
-    
-    设计理念：
-    1. 高质量后端支持：MDX23(主推) / Demucs v4(备选)
-    2. 检测专用：只返回内存数据，不保存文件，优化性能
-    3. 质量评估：自动评估分离质量，为双路检测提供置信度
-    4. 智能降级：优先使用MDX23，失败时自动切换到Demucs
-    """
-    
-    def __init__(self, sample_rate: int = 44100):
-        """初始化增强型分离器
-        
-        Args:
-            sample_rate: 音频采样率
-        """
+    """支持 GPU 分块流水线的高精度声部分离器。"""
+
+    def __init__(self, sample_rate: int = 44100) -> None:
         self.sample_rate = sample_rate
         self._marker_helper = VocalSeparator(sample_rate)
-        
-        # 从配置加载参数，但优先使用环境变量强制设置
-        import os
-        forced_backend = os.environ.get('FORCE_SEPARATION_BACKEND')
+
+        forced_backend = get_config("enhanced_separation.force_backend", None)
         if forced_backend:
-            self.backend = forced_backend
-            self.enable_fallback = False  # 强制模式不允许降级
-            logger.info(f"✓ 检测到强制后端设置: {forced_backend}")
+            self.backend_pref = str(forced_backend).lower()
+            self.enable_fallback = False
+            logger.info("[Separator] 强制使用后端: %s", self.backend_pref)
         else:
-            self.backend = get_config('enhanced_separation.backend', 'mdx23')
-            self.enable_fallback = get_config('enhanced_separation.enable_fallback', True)
-            
-        self.min_confidence_threshold = get_config('enhanced_separation.min_separation_confidence', 0.7)
-        
-        # 初始化后端状态
-        self.backend_status = {
-            'mdx23': {'available': False, 'error': None},
-            'demucs_v4': {'available': False, 'error': None}
-        }
-        
-        # 检查和初始化高精度后端
-        self._initialize_backends()
-        
-        logger.info(f"增强型分离器初始化完成 - 主后端: {self.backend}")
-        
-    def _initialize_backends(self):
-        """初始化和检测各分离后端的可用性"""
-        
-        # 检测MDX23后端
-        if self.backend == 'mdx23' or self.enable_fallback:
-            self._check_mdx23_availability()
-            
-        # 检测Demucs v4后端  
-        if self.backend == 'demucs_v4' or self.enable_fallback:
-            self._check_demucs_availability()
-            
-        # 报告后端状态
-        available_backends = [name for name, status in self.backend_status.items() if status['available']]
-        logger.info(f"可用分离后端: {available_backends}")
-        
-        if not any(self.backend_status[b]['available'] for b in ['mdx23', 'demucs_v4']):
-            logger.error("❌ 没有可用的高精度分离后端，请检查MDX23或Demucs安装")
-    
-    def _check_mdx23_availability(self):
-        """检测MDX23后端可用性"""
-        try:
-            # 使用绝对路径检查MDX23项目
-            project_root = Path(__file__).resolve().parents[3]  # 回到项目根目录 (修正路径层级)
-            mdx23_path = project_root / "MVSEP-MDX23-music-separation-model"
-            
-            logger.info(f"检查MDX23路径: {mdx23_path}")
-            
-            if mdx23_path.exists():
-                # 检查inference.py
-                inference_file = mdx23_path / "inference.py"
-                if inference_file.exists():
-                    logger.info(f"✓ 找到MDX23 inference.py: {inference_file}")
-                    
-                    # 检查模型文件
-                    models_dir = mdx23_path / "models"
-                    if models_dir.exists():
-                        onnx_files = list(models_dir.glob("*.onnx"))
-                        if onnx_files:
-                            self.backend_status['mdx23']['available'] = True
-                            self.mdx23_project_path = str(mdx23_path)
-                            self.mdx23_models_found = [f.name for f in onnx_files]
-                            logger.info(f"✓ MDX23后端可用 - 找到{len(onnx_files)}个模型: {self.mdx23_models_found[:3]}")
-                        else:
-                            self.backend_status['mdx23']['error'] = "ONNX模型文件缺失"
-                            logger.warning(f"MDX23模型文件缺失，请在{models_dir}放置.onnx文件")
-                    else:
-                        self.backend_status['mdx23']['error'] = "models目录不存在"
-                        logger.warning(f"MDX23 models目录不存在: {models_dir}")
-                else:
-                    self.backend_status['mdx23']['error'] = "inference.py不存在"
-                    logger.warning(f"MDX23 inference.py不存在: {inference_file}")
-            else:
-                self.backend_status['mdx23']['error'] = "MDX23项目未安装"
-                logger.warning(f"MDX23项目未找到: {mdx23_path}")
-                logger.info("建议执行: git clone https://github.com/ZFTurbo/MVSEP-MDX23-music-separation-model")
-                
-        except Exception as e:
-            self.backend_status['mdx23']['error'] = str(e)
-            logger.error(f"⚠️ MDX23后端检测异常: {e}", exc_info=True)
-    
-    def _try_import_mdx23(self) -> Dict:
-        """尝试导入MDX23相关模块"""
-        try:
-            # 方案1：尝试导入已安装的MDX23 Python包
+            self.backend_pref = str(get_config("enhanced_separation.backend", "mdx23")).lower()
+            self.enable_fallback = bool(get_config("enhanced_separation.enable_fallback", True))
+
+        self.min_confidence_threshold = float(get_config("enhanced_separation.min_separation_confidence", 0.7))
+        self._primary_backend: Optional[IVocalSeparatorBackend] = None
+        self._fallback_backend: Optional[IVocalSeparatorBackend] = None
+        self._init_backends()
+
+    def _init_backends(self) -> None:
+        project_root = Path(__file__).resolve().parents[3]
+        mdx_models = project_root / "MVSEP-MDX23-music-separation-model" / "models"
+
+        backend_errors = {}
+
+        if self.backend_pref in {"mdx23", "auto"}:
             try:
-                import inference
-                return {'success': True, 'method': 'python_module'}
-            except ImportError:
-                pass
-            
-            # 方案2：检查MDX23可执行文件
-            mdx23_executable = get_config('enhanced_separation.mdx23.executable_path', 'python inference.py')
-            
-            # 尝试运行help命令测试可用性
-            test_result = subprocess.run(
-                [sys.executable, '-c', 'import inference; print("MDX23 available")'],
-                capture_output=True, text=True, timeout=10
-            )
-            
-            if test_result.returncode == 0:
-                return {'success': True, 'method': 'cli_available'}
-            else:
-                # 检查是否有独立的MDX23项目目录
-                mdx23_project_path = get_config('enhanced_separation.mdx23.project_path', './MVSEP-MDX23-music-separation-model')
-                if os.path.exists(os.path.join(mdx23_project_path, 'inference.py')):
-                    return {'success': True, 'method': 'project_directory', 'path': mdx23_project_path}
-                    
-                return {'success': False, 'error': 'MDX23未找到，请安装或配置正确路径'}
-                
-        except subprocess.TimeoutExpired:
-            return {'success': False, 'error': 'MDX23检测超时'}
-        except Exception as e:
-            return {'success': False, 'error': f'MDX23检测异常: {e}'}
-    
-    def _check_mdx23_models(self) -> bool:
-        """检查MDX23预训练模型"""
+                backend = MDX23OnnxBackend(mdx_models)
+                backend.load_model()
+                self._primary_backend = backend
+                logger.info("[Separator] MDX23 ONNX 后端已就绪")
+            except Exception as exc:  # pragma: no cover - 环境相关
+                backend_errors["mdx23"] = str(exc)
+                logger.warning("MDX23 ONNX 后端不可用: %s", exc)
+
+        if self.backend_pref == "demucs_v4":
+            try:
+                backend = DemucsPyTorchBackend("htdemucs")
+                backend.load_model()
+                self._primary_backend = backend
+                logger.info("[Separator] Demucs v4 后端已就绪")
+            except Exception as exc:  # pragma: no cover - 环境相关
+                backend_errors["demucs_v4"] = str(exc)
+                logger.warning("Demucs v4 后端不可用: %s", exc)
+
+        if not self._primary_backend and self.enable_fallback:
+            # 回退优先 MDX23 → Demucs v4
+            if "mdx23" not in backend_errors:
+                try:
+                    backend = MDX23OnnxBackend(mdx_models)
+                    backend.load_model()
+                    self._primary_backend = backend
+                    logger.info("[Separator] 回退使用 MDX23 ONNX")
+                except Exception as exc:  # pragma: no cover
+                    backend_errors["mdx23"] = str(exc)
+            if not self._primary_backend:
+                try:
+                    backend = DemucsPyTorchBackend("htdemucs")
+                    backend.load_model()
+                    self._primary_backend = backend
+                    logger.info("[Separator] 回退使用 Demucs v4")
+                except Exception as exc:  # pragma: no cover
+                    backend_errors["demucs_v4"] = str(exc)
+
+        if not self._primary_backend:
+            raise RuntimeError(f"无可用声部分离后端: {backend_errors}")
+
+        if self.enable_fallback and not isinstance(self._primary_backend, DemucsPyTorchBackend):
+            # 准备 Demucs 作为兜底
+            try:
+                demucs_backend = DemucsPyTorchBackend("htdemucs")
+                demucs_backend.load_model()
+                self._fallback_backend = demucs_backend
+            except Exception as exc:  # pragma: no cover
+                logger.warning("准备 Demucs 兜底失败: %s", exc)
+
+    def separate_for_detection(
+        self,
+        audio: np.ndarray,
+        *,
+        gpu_context: Optional[PipelineContext] = None,
+    ) -> SeparationResult:
+        """执行声部分离，优先使用 GPU 分块流水线。"""
+
+        primary = self._primary_backend
+        if primary is None:
+            raise RuntimeError("声部分离后端尚未初始化")
+
+        backend_name = type(primary).__name__
+        start_time = time.time()
+
         try:
-            # 检查用户指定的模型路径
-            user_model_path = get_config('enhanced_separation.mdx23.model_path', '')
-            if user_model_path and os.path.exists(user_model_path):
-                logger.info(f"找到用户指定的MDX23模型: {user_model_path}")
-                return True
-            
-            # 检查默认模型目录
-            default_model_dirs = [
-                './models',  # 项目本地模型目录
-                './MVSEP-MDX23-music-separation-model/models',  # MDX23项目模型目录
-                os.path.expanduser('~/.cache/mdx23_models'),  # 用户缓存目录
-            ]
-            
-            # 常见的MDX23模型文件名模式
-            model_patterns = [
-                '*.pth', '*.onnx', '*.pt',  # PyTorch模型
-                'MDX23C*.pth', 'Kim_Vocal*.onnx',  # 特定MDX23模型
-            ]
-            
-            for model_dir in default_model_dirs:
-                if not os.path.exists(model_dir):
-                    continue
-                    
-                for pattern in model_patterns:
-                    import glob
-                    matching_files = glob.glob(os.path.join(model_dir, pattern))
-                    if matching_files:
-                        logger.info(f"找到MDX23模型文件: {matching_files[0]}")
-                        return True
-            
-            logger.warning("未找到MDX23预训练模型文件")
-            return False
-            
-        except Exception as e:
-            logger.error(f"MDX23模型检测失败: {e}")
-            return False
-    
-    def _check_demucs_availability(self):
-        """检测Demucs v4后端可用性"""
-        try:
-            # 尝试导入demucs
-            import demucs.pretrained
-            import demucs.apply
-            self.backend_status['demucs_v4']['available'] = True
-            logger.info("Demucs v4后端可用") 
-        except ImportError:
-            self.backend_status['demucs_v4']['error'] = "demucs模块未安装"
-            logger.warning("Demucs v4未安装")
-        except Exception as e:
-            self.backend_status['demucs_v4']['error'] = str(e)
-            logger.warning(f"Demucs v4后端检测失败: {e}")
-    
-    def separate_for_detection(self, audio: np.ndarray) -> SeparationResult:
-        """专用于检测的人声分离（核心方法）
-        
-        Args:
-            audio: 输入音频数据
-            
-        Returns:
-            SeparationResult: 分离结果，包含人声轨道和质量评估
-        """
-        logger.debug(f"开始人声分离检测 - 目标后端: {self.backend}")
-        
-        # 选择最优可用后端
-        selected_backend = self._select_optimal_backend()
-        
-        # 执行分离
-        if selected_backend == 'mdx23':
-            result = self._separate_with_mdx23(audio)
-        elif selected_backend == 'demucs_v4':
-            result = self._separate_with_demucs(audio)
-        else:
-            raise RuntimeError(f"❌ 不支持的分离后端: {selected_backend}")
-        
-        # 质量评估
-        result.separation_confidence = self._assess_separation_quality(audio, result.vocal_track)
-        
-        self._attach_vocal_presence_markers(result)
-        logger.debug(f"分离完成 - 后端: {result.backend_used}, 置信度: {result.separation_confidence:.3f}")
-        return result
-    
-    def _attach_vocal_presence_markers(self, result: SeparationResult) -> None:
-        try:
-            if result.vocal_track is None:
-                return
-            markers = self._marker_helper._compute_vocal_presence_markers(result.vocal_track)
-            if result.quality_metrics is None:
-                result.quality_metrics = {}
-            result.quality_metrics.update(markers)
+            pipeline_ctx = self._ensure_pipeline_context(audio, gpu_context)
+            vocal, instrumental, feature_cache = self._separate_with_pipeline(audio, primary, pipeline_ctx)
         except Exception as exc:
-            logger.warning(f'[Markers] 提取人声标记失败: {exc}')
+            logger.error("主后端分离失败: %s", exc, exc_info=True)
+            if not self._fallback_backend:
+                raise
 
-    def _select_optimal_backend(self) -> str:
-        """选择最优可用分离后端"""
-        import os
-        forced_backend = os.environ.get('FORCE_SEPARATION_BACKEND')
-        
-        logger.info("=== 分离后端选择决策 ===")
-        if forced_backend:
-            logger.info(f"🚫 强制模式: 必须使用 {forced_backend}")
-        else:
-            logger.info(f"配置后端: {self.backend}")
-            
-        logger.info(f"后端状态概览:")
-        for backend, status in self.backend_status.items():
-            if status['available']:
-                logger.info(f"  ✓ {backend}: 可用")
-            else:
-                error_msg = status.get('error', '未知错误')
-                logger.info(f"  ✗ {backend}: 不可用 ({error_msg})")
-        
-        # 强制模式：必须使用指定后端
-        if forced_backend:
-            if self.backend_status.get(forced_backend, {}).get('available', False):
-                logger.info(f"✓ 强制使用后端: {forced_backend}")
-                if forced_backend == 'mdx23':
-                    logger.info(f"  MDX23项目路径: {getattr(self, 'mdx23_project_path', 'Not Set')}")
-                    logger.info(f"  找到模型: {getattr(self, 'mdx23_models_found', 'None')}")
-                return forced_backend
-            else:
-                error_msg = self.backend_status.get(forced_backend, {}).get('error', '未知错误')
-                raise RuntimeError(f"❌ 强制后端 {forced_backend} 不可用: {error_msg}")
-        
-        # 如果用户指定了backend且可用，优先使用
-        if self.backend != 'auto' and self.backend_status.get(self.backend, {}).get('available', False):
-            logger.info(f"✓ 选择用户指定后端: {self.backend}")
-            return self.backend
-        
-        # 自动选择：MDX23 > Demucs v4
-        if self.backend_status['mdx23']['available']:
-            logger.info("✓ 自动选择MDX23后端（最高质量）")
-            logger.info(f"  MDX23项目路径: {getattr(self, 'mdx23_project_path', 'Not Set')}")
-            logger.info(f"  找到模型: {getattr(self, 'mdx23_models_found', 'None')}")
-            return 'mdx23'
-        elif self.backend_status['demucs_v4']['available']:
-            logger.info("✓ 自动选择Demucs v4后端")
-            return 'demucs_v4'
-        else:
-            # 没有可用的高质量后端
-            logger.error("❌ 所有高质量分离后端都不可用")
-            logger.error("详细错误信息:")
-            if self.backend_status['mdx23']['error']:
-                logger.error(f"  MDX23错误: {self.backend_status['mdx23']['error']}")
-            if self.backend_status['demucs_v4']['error']:
-                logger.error(f"  Demucs错误: {self.backend_status['demucs_v4']['error']}")
-            logger.error("建议检查:")
-            logger.error("  1. MDX23项目是否正确克隆到项目根目录")
-            logger.error("  2. 模型文件是否已下载到 models/ 目录")
-            logger.error("  3. Demucs是否正确安装")
-            raise RuntimeError("❌ 没有可用的人声分离后端，无法进行纯人声检测")
-    
-    def _separate_with_mdx23(self, audio: np.ndarray) -> SeparationResult:
-        """使用MDX23进行分离"""
-        start_time = time.time()
-        
-        try:
-            # 方案1：尝试直接Python接口（如果可用）
-            if hasattr(self, '_mdx23_python_available'):
-                return self._separate_with_mdx23_python(audio, start_time)
-                
-            # 方案2：通过CLI接口分离（主要方案）
-            return self._separate_with_mdx23_cli(audio, start_time)
-            
-        except Exception as e:
-            logger.warning(f"MDX23分离失败，尝试降级到Demucs v4: {e}")
-            # 自动降级到Demucs v4
-            if self.backend_status['demucs_v4']['available']:
-                return self._separate_with_demucs(audio)
-            else:
-                raise RuntimeError(f"❌ MDX23分离失败且无Demucs备选: {e}")
-    
-    def _separate_with_mdx23_cli(self, audio: np.ndarray, start_time: float) -> SeparationResult:
-        """通过CLI接口使用MDX23分离"""
-        temp_dir = None
-        try:
-            logger.info("=== 开始MDX23 CLI分离 ===")
-            # 轻量诊断：确认即将用于子进程的解释器与虚拟环境
-            import sys as _sys, os as _os
-            logger.info(f"PYTHON (CLI): {_sys.executable}")
-            logger.info(f"VIRTUAL_ENV: {_os.environ.get('VIRTUAL_ENV', '')}")
-
-            # 创建临时目录
-            temp_dir = tempfile.mkdtemp(prefix='mdx23_separation_')
-            input_file = os.path.join(temp_dir, 'input.wav')
-            output_dir = os.path.join(temp_dir, 'output')
-            os.makedirs(output_dir, exist_ok=True)
-            
-            logger.info(f"临时目录: {temp_dir}")
-            logger.info(f"输入文件: {input_file}")
-            logger.info(f"输出目录: {output_dir}")
-            
-            # 保存输入音频到临时文件
-            import soundfile as sf
-            sf.write(input_file, audio, self.sample_rate)
-            logger.info(f"音频写入完成: {input_file} (长度: {len(audio)}样本, 采样率: {self.sample_rate}Hz)")
-            
-            # 准备MDX23命令参数
-            mdx23_cmd = self._build_mdx23_command(input_file, output_dir)
-            
-            # 确保在项目根目录执行命令
-            project_root = Path(__file__).resolve().parents[3]  # 使用Path而不是os.path (修正路径层级)
-            
-            logger.info(f"MDX23命令: {' '.join(mdx23_cmd)}")
-            logger.info(f"执行目录: {project_root}")
-            logger.info(f"MDX23项目路径: {self.mdx23_project_path}")
-            
-            # 验证MDX23路径和文件
-            mdx23_inference = Path(self.mdx23_project_path) / "inference.py"
-            if not mdx23_inference.exists():
-                raise FileNotFoundError(f"MDX23 inference.py不存在: {mdx23_inference}")
-            
-            logger.info("开始执行MDX23命令...")
-            result = subprocess.run(
-                mdx23_cmd, 
-                capture_output=True, 
-                text=True,
-                timeout=get_config('enhanced_separation.mdx23.timeout', 300),  # 5分钟超时
-                cwd=str(project_root)  # 在项目根目录执行
-            )
-            
-            logger.info(f"MDX23命令执行完成，返回码: {result.returncode}")
-            if result.stdout:
-                logger.info(f"MDX23输出: {result.stdout}")
-            if result.stderr:
-                logger.warning(f"MDX23错误: {result.stderr}")
-            
-            if result.returncode != 0:
-                logger.error(f"MDX23执行失败 (返回码 {result.returncode})")
-                raise RuntimeError(f"MDX23执行失败: {result.stderr}")
-            
-            # 检查输出目录
-            output_files = list(Path(output_dir).glob("*"))
-            logger.info(f"输出目录内容: {[f.name for f in output_files]}")
-            
-            # 读取分离结果
-            vocal_file = self._find_vocal_output_file(output_dir)
-            if not vocal_file:
-                logger.error(f"未找到MDX23输出的人声文件，输出目录: {output_dir}")
-                logger.error(f"输出文件列表: {output_files}")
-                raise FileNotFoundError("未找到MDX23输出的人声文件")
-                
-            logger.info(f"找到人声文件: {vocal_file}")
-            vocal_track, sr = librosa.load(vocal_file, sr=self.sample_rate)
-            logger.info(f"人声轨道加载完成: 长度={len(vocal_track)}, 采样率={sr}")
-            
-            processing_time = time.time() - start_time
-            
-            result = SeparationResult(
-                vocal_track=vocal_track,
-                backend_used="mdx23",
-                processing_time=processing_time
-            )
-            
-            logger.info(f"✓ MDX23分离成功完成，耗时: {processing_time:.2f}秒")
-            return result
-            
-        except subprocess.TimeoutExpired:
-            logger.error("MDX23处理超时")
-            raise RuntimeError("MDX23处理超时")
-        except Exception as e:
-            logger.error(f"✗ MDX23 CLI分离失败: {e}")
-            logger.error(f"失败时的状态信息:")
-            logger.error(f"  临时目录: {temp_dir}")
-            logger.error(f"  MDX23项目路径: {getattr(self, 'mdx23_project_path', 'Not Set')}")
-            logger.error(f"  可用模型: {getattr(self, 'mdx23_models_found', 'None')}")
-            raise
-        finally:
-            # 清理临时文件
-            if temp_dir and os.path.exists(temp_dir):
+            if hasattr(primary, '_fallback_to_cpu_session'):
                 try:
-                    import shutil
-                    shutil.rmtree(temp_dir)
-                except Exception as e:
-                    logger.warning(f"清理临时目录失败: {e}")
-    
-    def _build_mdx23_command(self, input_file: str, output_dir: str) -> List[str]:
-        """构建MDX23命令行参数"""
-        # 使用绝对路径
-        project_root = Path(__file__).resolve().parents[3]  # 修正路径层级
-        mdx23_path = project_root / "MVSEP-MDX23-music-separation-model"
-        inference_script = mdx23_path / "inference.py"
-        
-        # 基础命令
-        cmd = [sys.executable, str(inference_script)]
-        # 预检：在同一解释器内尝试导入 demucs（与 CLI 一致）
-        try:
-            probe = subprocess.run(
-                [sys.executable, '-c', 'import demucs,sys;print("demucs_ok")'],
-                capture_output=True, text=True, timeout=10
-            )
-            if probe.returncode == 0 and 'demucs_ok' in (probe.stdout or ''):
-                logger.info("Demucs import preflight: OK")
-            else:
-                logger.warning(f"Demucs import preflight: FAIL (rc={probe.returncode}) stdout={probe.stdout!r} stderr={probe.stderr!r}")
-        except Exception as _e:
-            logger.warning(f"Demucs import preflight exception: {_e}")
+                    primary._fallback_to_cpu_session()  # type: ignore[attr-defined]
+                except Exception:
+                    pass
 
-        # 记录即将执行的命令（精简）
+            backend_name = type(self._fallback_backend).__name__
+            logger.warning("切换至兜底后端: %s", backend_name)
+            if hasattr(self._fallback_backend, "force_cpu"):
+                try:
+                    self._fallback_backend.force_cpu()  # type: ignore[attr-defined]
+                except Exception:
+                    pass
+            pipeline_ctx = self._ensure_pipeline_context(audio, None)
+            vocal, instrumental, feature_cache = self._separate_with_pipeline(audio, self._fallback_backend, pipeline_ctx)
+
+        processing_time = time.time() - start_time
+        confidence = self._estimate_confidence(vocal, instrumental, audio)
+        quality_metrics = self._marker_helper._compute_vocal_presence_markers(vocal)  # pylint: disable=protected-access
+
+        return SeparationResult(
+            vocal_track=vocal,
+            instrumental_track=instrumental,
+            separation_confidence=confidence,
+            backend_used=backend_name,
+            processing_time=processing_time,
+            quality_metrics=quality_metrics,
+            feature_cache=feature_cache,
+        )
+
+    def _ensure_pipeline_context(
+        self,
+        audio: np.ndarray,
+        gpu_context: Optional[PipelineContext],
+    ) -> PipelineContext:
+        duration_s = float(len(audio)) / float(self.sample_rate) if self.sample_rate > 0 else 0.0
+        cfg = self._get_pipeline_config()
+
+        if gpu_context and gpu_context.enabled:
+            # 使用已有 GPU 上下文，但确保 plan 与音频长度一致
+            if not gpu_context.plans:
+                plans = chunk_schedule(
+                    duration_s,
+                    chunk_s=cfg.chunk_s,
+                    overlap_s=cfg.overlap_s,
+                    halo_s=cfg.halo_s,
+                )
+                gpu_context.plans = plans
+            return gpu_context
+
+        plans = chunk_schedule(
+            duration_s,
+            chunk_s=cfg.chunk_s,
+            overlap_s=cfg.overlap_s,
+            halo_s=cfg.halo_s,
+        )
+        logger.debug("[Separator] 构建 CPU 分块上下文: %d chunks", len(plans))
+        return PipelineContext(device='cpu', streams=Streams(), plans=plans, pinned_pool=None)
+
+    def _get_pipeline_config(self) -> PipelineConfig:
         try:
-            logger.info(f"MDX23 CLI cmd: {' '.join(cmd)}")
+            mapping = get_config('gpu_pipeline', {})
         except Exception:
-            pass
+            mapping = {}
+        return PipelineConfig.from_mapping(mapping)
 
-        # 添加输入输出参数
-        cmd.extend(['--input_audio', input_file])
-        cmd.extend(['--output_folder', output_dir])
-        
-        # 模型选择参数
-        use_kim_model_1 = get_config('enhanced_separation.mdx23.use_kim_model_1', False)
-        if use_kim_model_1:
-            cmd.append('--use_kim_model_1')
-            logger.info("MDX23使用模型: Kim Model 1")
+    def _separate_with_pipeline(
+        self,
+        audio: np.ndarray,
+        backend: IVocalSeparatorBackend,
+        gpu_context: PipelineContext,
+    ) -> Tuple[np.ndarray, Optional[np.ndarray], TrackFeatureCache]:
+        plans = gpu_context.plans
+        sr = self.sample_rate
+        total_samples = len(audio)
+
+        vocal_accum = np.zeros(total_samples, dtype=np.float32)
+        instrumental_accum = np.zeros(total_samples, dtype=np.float32)
+        weight_accum = np.zeros(total_samples, dtype=np.float32)
+
+        feature_builder = ChunkFeatureBuilder(sr=sr)
+
+        for plan in plans:
+            chunk_start = max(0, int(round(plan.start_s * sr)))
+            chunk_end = min(total_samples, int(round(plan.end_s * sr)))
+            chunk = audio[chunk_start:chunk_end]
+            if chunk.size == 0:
+                continue
+
+            outputs = backend.infer_chunk(chunk)
+
+            effective_start = chunk_start + int(round(plan.halo_left_s * sr))
+            effective_end = chunk_end - int(round(plan.halo_right_s * sr))
+            effective_end = max(effective_start, min(total_samples, effective_end))
+
+            local_start = effective_start - chunk_start
+            local_end = local_start + (effective_end - effective_start)
+            effective_vocal = outputs.vocal[local_start:local_end]
+            effective_instr = outputs.instrumental[local_start:local_end] if outputs.instrumental is not None else None
+
+            if effective_vocal.size == 0:
+                continue
+
+            vocal_accum[effective_start:effective_end] += effective_vocal
+            weight_accum[effective_start:effective_end] += 1.0
+
+            if effective_instr is not None:
+                instrumental_accum[effective_start:effective_end] += effective_instr
+
+            feature_builder.add_chunk(plan, chunk, sr)
+
+        flush_outputs = backend.flush()
+        if flush_outputs is not None:
+            logger.debug("[Separator] 后端 flush 产生额外输出，忽略 halo 区域后追加")
+
+        weight_accum[weight_accum == 0.0] = 1.0
+        vocal = vocal_accum / weight_accum
+        instrumental = (instrumental_accum / weight_accum) if np.any(instrumental_accum) else None
+
+        feature_cache = feature_builder.finalize(audio)
+        return vocal.astype(np.float32), None if instrumental is None else instrumental.astype(np.float32), feature_cache
+
+    def _estimate_confidence(self, vocal: np.ndarray, instrumental: Optional[np.ndarray], mix: np.ndarray) -> float:
+        vocal_energy = float(np.mean(np.square(vocal))) if vocal.size else 0.0
+        mix_energy = float(np.mean(np.square(mix))) if mix.size else 1e-8
+        ratio = vocal_energy / (mix_energy + 1e-8)
+        ratio = float(np.clip(ratio, 0.0, 1.0))
+        if instrumental is not None and instrumental.size:
+            instr_energy = float(np.mean(np.square(instrumental)))
+            balance = vocal_energy / (instr_energy + 1e-8)
+            confidence = 0.5 * ratio + 0.5 * np.clip(balance / (1.0 + balance), 0.0, 1.0)
         else:
-            logger.info("MDX23使用模型: Kim Model 2 (默认)")
-        
-        # GPU/CPU 模式
-        import torch
-        use_cpu = False
-        if not torch.cuda.is_available() or not get_config('enhanced_separation.gpu_config.enable_gpu', True):
-            cmd.append('--cpu')
-            use_cpu = True
-            logger.info("MDX23使用CPU模式")
-        else:
-            # 大GPU模式
-            gpu_memory = torch.cuda.get_device_properties(0).total_memory / 1024**3
-            if gpu_memory > 8 and get_config('enhanced_separation.gpu_config.large_gpu_mode', True):
-                cmd.append('--large_gpu')
-                logger.info(f"MDX23启用大GPU模式 (GPU内存: {gpu_memory:.1f}GB)")
-            else:
-                logger.info(f"MDX23使用标准GPU模式 (GPU内存: {gpu_memory:.1f}GB)")
-        
-        # 重叠参数 - 修复参数名称
-        overlap_large = get_config('enhanced_separation.mdx23.overlap_large', 0.6)
-        overlap_small = get_config('enhanced_separation.mdx23.overlap_small', 0.5)
-        chunk_size = get_config('enhanced_separation.mdx23.chunk_size', 1000000)  # 使用默认值
-        
-        cmd.extend(['--overlap_large', str(overlap_large)])
-        cmd.extend(['--overlap_small', str(overlap_small)])
-        cmd.extend(['--chunk_size', str(chunk_size)])
-        
-        # 添加单次输出参数（避免重复处理）
-        cmd.append('--single_onnx')
-        cmd.append('--only_vocals')  # 只输出人声
-        
-        logger.info(f"MDX23参数: chunk_size={chunk_size}, overlap_large={overlap_large}, overlap_small={overlap_small}")
-        
-        return cmd
-    
-    def _find_vocal_output_file(self, output_dir: str) -> Optional[str]:
-        """在输出目录中查找人声文件"""
-        # MDX23输出文件的常见命名模式
-        vocal_patterns = [
-            '*_vocals.wav',
-            '*_vocal.wav', 
-            '*_voice.wav',
-            'vocals_*.wav',
-            'vocal_*.wav'
-        ]
-        
-        import glob
-        for pattern in vocal_patterns:
-            matches = glob.glob(os.path.join(output_dir, pattern))
-            if matches:
-                return matches[0]  # 返回第一个匹配的文件
-        
-        # 如果没找到特定模式，查找所有wav文件
-        all_wav_files = glob.glob(os.path.join(output_dir, '*.wav'))
-        if all_wav_files:
-            # 返回最大的文件（通常是主要输出）
-            return max(all_wav_files, key=os.path.getsize)
-            
-        return None
-    
-    def _separate_with_mdx23_python(self, audio: np.ndarray, start_time: float) -> SeparationResult:
-        """通过Python接口使用MDX23分离（如果可用）"""
-        try:
-            # 这部分需要MDX23提供Python API
-            # 目前MDX23主要是CLI工具，Python接口可能需要进一步开发
-            import inference
-            
-            # 假设的Python API调用（实际需要根据MDX23的Python接口调整）
-            vocal_track = inference.separate_vocals(audio, self.sample_rate)
-            
-            processing_time = time.time() - start_time
-            
-            result = SeparationResult(
-                vocal_track=vocal_track,
-                backend_used="mdx23_python",
-                processing_time=processing_time
-            )
-            
-            logger.debug(f"MDX23 Python分离完成，耗时: {processing_time:.2f}秒")
-            return result
-            
-        except Exception as e:
-            logger.error(f"MDX23 Python接口分离失败: {e}")
-            raise
-    
-    def _separate_with_demucs(self, audio: np.ndarray) -> SeparationResult:
-        """使用Demucs v4进行分离"""
-        start_time = time.time()
-        
-        try:
-            # PyTorch 2.8.0兼容性修复 - 必须在导入demucs之前
-            import torch
-            import torch.serialization
-            
-            # 应用Demucs兼容性修复
-            try:
-                import demucs.htdemucs
-                import demucs.hdemucs
-                torch.serialization.add_safe_globals([demucs.htdemucs.HTDemucs])
-                torch.serialization.add_safe_globals([demucs.hdemucs.HDemucs])
-                logger.debug("[COMPAT] Demucs兼容性修复已应用")
-            except (ImportError, AttributeError):
-                logger.debug("[COMPAT] Demucs兼容性修复跳过")
-            
-            # 使用demucs进行分离
-            import demucs.pretrained
-            import demucs.apply
-            
-            # 从配置获取设备和模型参数
-            config_device = get_config('enhanced_separation.demucs_v4.device', 'auto')
-            model_name = get_config('enhanced_separation.demucs_v4.model', 'htdemucs')
-            segment_size = get_config('enhanced_separation.demucs_v4.segment', 8)
-            shifts = get_config('enhanced_separation.demucs_v4.shifts', 1)
-            overlap = get_config('enhanced_separation.demucs_v4.overlap', 0.25)
-            split = get_config('enhanced_separation.demucs_v4.split', True)
-            
-            # 设备选择逻辑
-            if config_device == 'cuda' and torch.cuda.is_available():
-                device = 'cuda'
-                # GPU内存管理：清理缓存
-                torch.cuda.empty_cache()
-                gpu_name = torch.cuda.get_device_name()
-                gpu_memory = torch.cuda.get_device_properties(0).total_memory / 1024**3
-                logger.debug(f"使用GPU: {gpu_name} ({gpu_memory:.1f}GB)")
-            elif config_device == 'auto':
-                device = 'cuda' if torch.cuda.is_available() else 'cpu'
-                if device == 'cuda':
-                    torch.cuda.empty_cache()
-                logger.debug(f"自动选择设备: {device}")
-            else:
-                device = 'cpu'
-                logger.debug("使用CPU模式")
-            
-            # 加载预训练模型
-            model = demucs.pretrained.get_model(name=model_name)
-            model.to(device)
-            
-            # 准备音频数据 - 修复维度问题
-            if audio.ndim == 1:
-                # 单声道转立体声
-                audio_stereo = np.stack([audio, audio], axis=0)  # [2, length]
-            else:
-                # 确保是 [channels, length] 格式
-                if audio.shape[0] > audio.shape[1]:
-                    audio_stereo = audio.T  # 转置为 [channels, length]
-                else:
-                    audio_stereo = audio
-            
-            # 转换为torch张量
-            audio_tensor = torch.from_numpy(audio_stereo).float()
-            
-            # 确保形状为 [batch, channels, length]
-            if audio_tensor.dim() == 2:
-                # [channels, length] -> [1, channels, length]
-                audio_tensor = audio_tensor.unsqueeze(0)
-            elif audio_tensor.dim() == 1:
-                # [length] -> [1, 2, length] (单声道转立体声)
-                audio_tensor = audio_tensor.unsqueeze(0).unsqueeze(0).repeat(1, 2, 1)
-            
-            # 验证最终形状
-            if audio_tensor.dim() != 3 or audio_tensor.shape[1] not in [1, 2]:
-                logger.error(f"音频张量形状错误: {audio_tensor.shape}，期望 [batch, channels, length]")
-                raise ValueError(f"音频张量形状错误: {audio_tensor.shape}")
-            
-            # 确保音频在正确的设备上
-            audio_tensor = audio_tensor.to(device)
-            
-            logger.debug(f"Demucs输入张量形状: {audio_tensor.shape}")
-            
-            # 执行分离
-            try:
-                with torch.no_grad():
-                    # 自适应调整segment大小以避免形状错误
-                    audio_length = audio_tensor.shape[-1]
-                    # 确保segment大小是合理的（至少为2，最大为音频长度的1/4）
-                    min_segment = 2
-                    max_segment = max(min_segment, audio_length // 8)  # 更保守的分段
-                    adjusted_segment = min(max(min_segment, segment_size), max_segment)
-                    
-                    logger.debug(f"Demucs参数: segment={adjusted_segment}, audio_length={audio_length}, input_shape={audio_tensor.shape}")
-                    
-                    sources = demucs.apply.apply_model(
-                        model,
-                        audio_tensor,
-                        shifts=shifts,
-                        split=split,
-                        overlap=overlap,
-                        segment=adjusted_segment,  # 使用调整后的分段大小
-                        progress=False
-                    )
-            except Exception as demucs_error:
-                logger.warning(f"Demucs apply_model失败: {demucs_error}")
-                # 尝试使用更保守的参数
-                try:
-                    with torch.no_grad():
-                        # 最保守的参数配置
-                        conservative_segment = max(2, audio_tensor.shape[-1] // 16)  # 更小的分段
-                        sources = demucs.apply.apply_model(
-                            model,
-                            audio_tensor,
-                            shifts=1,           # 最少的shifts
-                            split=True,         # 强制split
-                            overlap=0.05,       # 最小overlap
-                            segment=conservative_segment,  # 更小的segment
-                            progress=False
-                        )
-                    logger.debug(f"使用保守参数成功执行Demucs (segment={conservative_segment})")
-                except Exception as conservative_error:
-                    logger.error(f"保守参数也失败: {conservative_error}")
-                    # 尝试最后的救援措施：使用CPU和最小参数
-                    try:
-                        logger.info("尝试CPU模式作为最后救援...")
-                        cpu_tensor = audio_tensor.cpu()
-                        model_cpu = model.cpu()
-                        with torch.no_grad():
-                            sources = demucs.apply.apply_model(
-                                model_cpu,
-                                cpu_tensor,
-                                shifts=1,
-                                split=True,
-                                overlap=0.0,
-                                segment=1,
-                                progress=False
-                            )
-                        logger.debug("CPU救援模式成功")
-                    except Exception:
-                        raise demucs_error  # 如果所有方法都失败，抛出原始错误
-            
-            # 提取人声轨道
-            logger.debug(f"Demucs输出张量形状: {sources.shape}")
-            
-            # HTDemucs模型输出顺序: drums, bass, other, vocals (索引3是vocals)
-            try:
-                if sources.dim() == 4:  # [batch, num_sources, channels, time]
-                    if sources.shape[1] < 4:
-                        raise ValueError(f"输出源数量不足: {sources.shape[1]} < 4")
-                    vocals = sources[0, 3]  # 取第一个batch的vocals
-                elif sources.dim() == 3:  # [num_sources, channels, time] 
-                    if sources.shape[0] < 4:
-                        raise ValueError(f"输出源数量不足: {sources.shape[0]} < 4")
-                    vocals = sources[3]  # 直接取vocals
-                else:
-                    logger.warning(f"意外的Demucs输出维度: {sources.shape}, 尝试使用第一个输出")
-                    # 尝试使用第一个可用的输出作为人声
-                    if sources.dim() >= 2:
-                        vocals = sources[0] if sources.dim() == 3 else sources[0, 0] if sources.dim() == 4 else sources
-                    else:
-                        raise ValueError(f"无法处理的Demucs输出维度: {sources.shape}")
-                
-                logger.debug(f"提取的vocals形状: {vocals.shape}")
-                
-                # 转为单声道并转为numpy
-                if vocals.dim() == 2:  # [channels, time]
-                    vocal_track = vocals.mean(0).cpu().numpy()  # 立体声转单声道
-                elif vocals.dim() == 1:  # [time]
-                    vocal_track = vocals.cpu().numpy()  # 已经是单声道
-                elif vocals.dim() == 3:  # [batch, channels, time] - 额外batch维度
-                    vocal_track = vocals[0].mean(0).cpu().numpy()  # 取第一个batch并转单声道
-                else:
-                    logger.warning(f"意外的vocals维度: {vocals.shape}, 尝试展平")
-                    # 作为最后手段，尝试展平为1D
-                    vocal_track = vocals.flatten().cpu().numpy()
-                    
-            except Exception as extraction_error:
-                logger.error(f"人声提取失败: {extraction_error}")
-                # 应急措施：使用混音作为人声（虽然质量较低）
-                logger.warning("使用原始音频作为应急人声输出")
-                vocal_track = audio.mean(axis=0) if audio.ndim > 1 else audio
-            
-            processing_time = time.time() - start_time
-            
-            # GPU内存清理
-            if device == 'cuda':
-                del model, sources, audio_tensor, vocals
-                torch.cuda.empty_cache()
-                logger.debug("GPU内存已清理")
-            
-            result = SeparationResult(
-                vocal_track=vocal_track,
-                instrumental_track=None,
-                backend_used="demucs_v4",
-                processing_time=processing_time
-            )
-            
-            logger.debug(f"Demucs分离完成，耗时: {processing_time:.2f}秒")
-            return result
-            
-        except Exception as e:
-            logger.error(f"❌ Demucs v4分离失败: {e}")
-            raise RuntimeError(f"❌ Demucs v4分离失败，没有更多备选方案: {e}")
-    
-    
-    def _assess_separation_quality(self, original: np.ndarray, vocals: np.ndarray) -> float:
-        """评估分离质量，返回置信度 (0-1)
-        
-        Args:
-            original: 原始音频
-            vocals: 分离的人声
-            
-        Returns:
-            置信度分数 (0-1)，越高表示分离质量越好
-        """
-        try:
-            # 1. 能量比例分析
-            original_energy = np.mean(original ** 2)
-            vocal_energy = np.mean(vocals ** 2)
-            
-            # 避免除零错误
-            if original_energy == 0:
-                return 0.0
-                
-            energy_ratio = vocal_energy / original_energy
-            
-            # 2. 频谱分析 - 人声频段能量
-            vocal_fft = np.abs(librosa.stft(vocals))
-            original_fft = np.abs(librosa.stft(original))
-            
-            # 人声主要频段 (200-4000 Hz)
-            freqs = librosa.fft_frequencies(sr=self.sample_rate)
-            vocal_band_mask = (freqs >= 200) & (freqs <= 4000)
-            
-            vocal_band_energy = np.mean(vocal_fft[vocal_band_mask])
-            original_band_energy = np.mean(original_fft[vocal_band_mask])
-            
-            if original_band_energy == 0:
-                return 0.0
-                
-            spectral_ratio = vocal_band_energy / original_band_energy
-            
-            # 3. 综合评分
-            # 好的人声分离应该保持合理的能量比例，并且人声频段突出
-            energy_score = min(1.0, max(0.0, energy_ratio))  # 0-1范围
-            spectral_score = min(1.0, max(0.0, spectral_ratio))  # 0-1范围
-            
-            # 加权组合
-            confidence = 0.4 * energy_score + 0.6 * spectral_score
-            
-            # 应用质量阈值
-            if confidence < self.min_confidence_threshold:
-                logger.debug(f"分离质量低于阈值 ({confidence:.3f} < {self.min_confidence_threshold})")
-            
-            return confidence
-            
-        except Exception as e:
-            logger.warning(f"质量评估失败: {e}")
-            return 0.5  # 返回中等置信度
-    
-    def get_backend_info(self) -> Dict:
-        """获取后端状态信息"""
-        return {
-            'current_backend': self.backend,
-            'backend_status': self.backend_status,
-            'sample_rate': self.sample_rate,
-            'min_confidence_threshold': self.min_confidence_threshold
-        }
-    
-    def is_high_quality_backend_available(self) -> bool:
-        """检查是否有高质量后端可用"""
-        return (self.backend_status['mdx23']['available'] or 
-                self.backend_status['demucs_v4']['available'])
-    
-    def __str__(self) -> str:
-        available = sum(1 for status in self.backend_status.values() if status['available'])
-        return f"EnhancedVocalSeparator(backend={self.backend}, available_backends={available}/3)"
+            confidence = ratio
+        return float(np.clip(confidence, 0.0, 1.0))
+
+
+__all__ = ["EnhancedVocalSeparator", "SeparationResult"]

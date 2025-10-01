@@ -909,43 +909,67 @@ class PureVocalPauseDetector:
             包含精确切点的停顿列表
         """
         logger.info(f"🔥 使用能量谷算法计算 {len(pure_vocal_pauses)} 个停顿的精确切点...")
-        
-        # 转换为VocalPause格式以使用能量谷计算
-        from .vocal_pause_detector import VocalPause
-        vocal_pauses = []
-        
-        for i, pure_pause in enumerate(pure_vocal_pauses):
-            vocal_pause = VocalPause(
-                start_time=pure_pause.start_time,
-                end_time=pure_pause.end_time, 
-                duration=pure_pause.duration,
-                position_type='middle',  # 默认中间停顿
-                confidence=pure_pause.confidence,
-                cut_point=(pure_pause.start_time + pure_pause.end_time) / 2  # 临时切点
+
+        if vocal_audio is None or not isinstance(vocal_audio, np.ndarray) or vocal_audio.size == 0:
+            logger.warning("纯人声音频无效，跳过能量谷切点计算")
+            return pure_vocal_pauses
+
+        sr = self.sample_rate
+        local_rms_ms = float(get_config('vocal_pause_splitting.local_rms_window_ms', 25))
+        guard_ms = float(get_config('vocal_pause_splitting.lookahead_guard_ms', 120))
+        floor_percentile = float(get_config('vocal_pause_splitting.silence_floor_percentile', 5))
+        floor_allowance = float(get_config('vocal_pause_splitting.silence_floor_allowance', 1.5))
+
+        win_samples = max(1, int(local_rms_ms / 1000.0 * sr))
+        guard_samples = max(0, int(guard_ms / 1000.0 * sr))
+
+        def _rms_envelope(data: np.ndarray) -> np.ndarray:
+            if data.size == 0:
+                return np.empty(0, dtype=np.float32)
+            if win_samples <= 1:
+                return np.abs(data.astype(np.float32))
+            kernel = np.ones(win_samples, dtype=np.float32) / float(win_samples)
+            conv = np.convolve(data.astype(np.float32) ** 2, kernel, mode='same')
+            return np.sqrt(np.maximum(conv, 1e-12))
+
+        for pause in pure_vocal_pauses:
+            start_sample = max(0, int(round(pause.start_time * sr)))
+            end_sample = min(len(vocal_audio), int(round(pause.end_time * sr)))
+            if end_sample - start_sample <= 1:
+                continue
+
+            segment = vocal_audio[start_sample:end_sample]
+            envelope = _rms_envelope(segment)
+            if envelope.size == 0:
+                continue
+
+            local_idx = int(np.argmin(envelope))
+            cut_idx = start_sample + local_idx
+            used_fallback = False
+
+            if guard_samples > 0:
+                guard_end = min(len(vocal_audio), cut_idx + guard_samples)
+                guard_segment = vocal_audio[cut_idx:guard_end]
+                if guard_segment.size > 0:
+                    guard_envelope = _rms_envelope(guard_segment)
+                    if guard_envelope.size > 0:
+                        offset = int(np.argmin(guard_envelope))
+                        cut_idx = min(guard_end - 1, cut_idx + offset)
+
+            floor_val = np.percentile(np.abs(segment), floor_percentile) if segment.size else 0.0
+            if floor_val > 0.0 and np.abs(vocal_audio[cut_idx]) > floor_val * floor_allowance:
+                cut_idx = start_sample + (end_sample - start_sample) // 2
+                used_fallback = True
+
+            pause.cut_point = cut_idx / float(sr)
+            pause.quality_grade = 'A' if not used_fallback else 'B'
+            logger.debug(
+                "停顿切点: [%.3fs, %.3fs] -> %.3fs",
+                pause.start_time,
+                pause.end_time,
+                pause.cut_point,
             )
-            vocal_pauses.append(vocal_pause)
-        
-        # 🔥 关键修复：调用VocalPauseDetectorV2的能量谷切点计算，传入vocal_audio作为waveform
-        try:
-            bpm_features = feature_cache.bpm_features if feature_cache is not None else None
-            vocal_pauses = self._cut_point_calculator._calculate_cut_points(
-                vocal_pauses, 
-                bpm_features=bpm_features,  # 纯人声模式不使用BPM对齐
-                waveform=vocal_audio  # 关键：传递纯人声音频数据用于能量谷检测
-            )
-            logger.info("✅ 能量谷切点计算成功")
-        except Exception as e:
-            logger.error(f"❌ 能量谷切点计算失败: {e}") 
-            logger.info("使用停顿中心作为兜底切点")
-            for vocal_pause in vocal_pauses:
-                vocal_pause.cut_point = (vocal_pause.start_time + vocal_pause.end_time) / 2
-        
-        # 将结果映射回PureVocalPause
-        for i, (pure_pause, vocal_pause) in enumerate(zip(pure_vocal_pauses, vocal_pauses)):
-            pure_pause.cut_point = vocal_pause.cut_point
-            pure_pause.quality_grade = 'A' if hasattr(vocal_pause, 'cut_point') and vocal_pause.cut_point != (vocal_pause.start_time + vocal_pause.end_time) / 2 else 'B'
-            logger.debug(f"停顿 {i+1}: [{pure_pause.start_time:.3f}s, {pure_pause.end_time:.3f}s] -> 切点 {pure_pause.cut_point:.3f}s ({pure_pause.quality_grade})")
-        
+
         return pure_vocal_pauses
 
     def _detect_energy_valleys(self, vocal_audio: np.ndarray, peak_ratio: float, rms_ratio: float, focus_windows: Optional[List[Tuple[float, float]]] = None) -> List[PureVocalPause]:

@@ -7,13 +7,14 @@ from __future__ import annotations
 import logging
 import math
 from dataclasses import dataclass
-from typing import Dict, Optional
+from typing import Dict, List, Optional
 
 import librosa
 import numpy as np
 
 from src.vocal_smart_splitter.core.adaptive_vad_enhancer import BPMAnalyzer, BPMFeatures
 from src.vocal_smart_splitter.utils.config_manager import get_config
+from audio_cut.utils.gpu_pipeline import ChunkPlan
 
 logger = logging.getLogger(__name__)
 
@@ -87,6 +88,121 @@ class TrackFeatureCache:
             'mdd': self.mdd_series[sl],
             'slice': sl,
         }
+
+
+class ChunkFeatureBuilder:
+    """分块特征缓存构建器，与 GPU 流水线共享 ChunkPlan。"""
+
+    def __init__(self, sr: int, hop_s: float = 0.05) -> None:
+        self.sr = sr
+        self.hop_length = max(1, int(round(sr * hop_s)))
+        self.hop_s = float(self.hop_length) / float(sr)
+        self.frame_length = max(self.hop_length * 2, int(round(sr * 0.1)))
+
+        self._rms: List[np.ndarray] = []
+        self._flat: List[np.ndarray] = []
+        self._onset_env: List[np.ndarray] = []
+        self._onset_strength: List[np.ndarray] = []
+        self._onset_frames: List[int] = []
+        self._times: List[np.ndarray] = []
+        self._mix_audio_segments: List[np.ndarray] = []
+
+    def add_chunk(self, plan: ChunkPlan, mix_chunk: np.ndarray, sr: int) -> None:
+        if mix_chunk.size == 0:
+            return
+
+        # 计算分块特征
+        rms = librosa.feature.rms(y=mix_chunk, frame_length=self.frame_length, hop_length=self.hop_length)[0]
+        flat = librosa.feature.spectral_flatness(y=mix_chunk, hop_length=self.hop_length)[0]
+        onset_env = librosa.onset.onset_strength(y=mix_chunk, sr=sr, hop_length=self.hop_length)
+        onset_strength = onset_env.copy()
+        onset_frames_local = librosa.onset.onset_detect(onset_envelope=onset_env, sr=sr, hop_length=self.hop_length)
+
+        frame_times = librosa.frames_to_time(np.arange(len(rms)), sr=sr, hop_length=self.hop_length)
+        frame_times += plan.start_s
+
+        eff_start = plan.effective_start_s
+        eff_end = plan.effective_end_s
+        mask = (frame_times >= eff_start) & (frame_times < eff_end)
+
+        if not np.any(mask):
+            return
+
+        self._rms.append(rms[mask])
+        self._flat.append(flat[mask])
+        self._onset_env.append(onset_env[mask])
+        self._onset_strength.append(onset_strength[mask])
+        self._times.append(frame_times[mask])
+
+        start_frame = int(round(plan.start_s / self.hop_s))
+        for frame in onset_frames_local:
+            global_frame = start_frame + int(frame)
+            frame_time = frame_times[frame] if frame < len(frame_times) else plan.start_s
+            if eff_start <= frame_time < eff_end:
+                self._onset_frames.append(global_frame)
+
+        # 保留混音片段以便最终 BPM/MDD 计算（去除 halo）
+        eff_start_sample = int(round(eff_start * sr))
+        eff_end_sample = int(round(eff_end * sr))
+        chunk_start_sample = int(round(plan.start_s * sr))
+        local_start = eff_start_sample - chunk_start_sample
+        local_end = local_start + (eff_end_sample - eff_start_sample)
+        if local_end > local_start:
+            self._mix_audio_segments.append(mix_chunk[local_start:local_end])
+
+    def finalize(self, full_mix_wave: np.ndarray) -> TrackFeatureCache:
+        if not self._rms:
+            # 回退到整段构建
+            return build_feature_cache(full_mix_wave, None, self.sr, hop_s=self.hop_s)
+
+        rms_series = np.concatenate(self._rms)
+        spectral_flatness = np.concatenate(self._flat)
+        onset_envelope = np.concatenate(self._onset_env)
+        onset_strength = np.concatenate(self._onset_strength)
+        frame_times = np.concatenate(self._times)
+        onset_frames = np.array(sorted(set(self._onset_frames)), dtype=int)
+
+        mix_wave = np.concatenate(self._mix_audio_segments) if self._mix_audio_segments else full_mix_wave
+
+        bpm_analyzer = BPMAnalyzer(self.sr)
+        bpm_features = bpm_analyzer.extract_bpm_features(mix_wave)
+
+        tempo_curve = librosa.beat.tempo(
+            onset_envelope=onset_envelope,
+            sr=self.sr,
+            hop_length=self.hop_length,
+            aggregate=None,
+        )
+        _, beat_frames = librosa.beat.beat_track(
+            onset_envelope=onset_envelope,
+            sr=self.sr,
+            hop_length=self.hop_length,
+        )
+        beat_times = librosa.frames_to_time(beat_frames, sr=self.sr, hop_length=self.hop_length)
+
+        mdd_series = _compute_mdd_series(rms_series, spectral_flatness, onset_strength)
+        global_mdd = float(np.mean(mdd_series))
+
+        duration_s = len(full_mix_wave) / float(self.sr)
+
+        return TrackFeatureCache(
+            sr=self.sr,
+            hop_length=self.hop_length,
+            hop_s=self.hop_s,
+            duration_s=duration_s,
+            rms_series=rms_series,
+            spectral_flatness=spectral_flatness,
+            onset_envelope=onset_envelope,
+            onset_strength=onset_strength,
+            onset_frames=onset_frames,
+            rms_max=float(np.max(rms_series) if rms_series.size else 0.0),
+            onset_max=float(np.max(onset_strength) if onset_strength.size else 0.0),
+            bpm_features=bpm_features,
+            tempo_curve=tempo_curve,
+            beat_times=beat_times,
+            global_mdd=global_mdd,
+            mdd_series=mdd_series,
+        )
 
 
 def _compute_mdd_series(rms: np.ndarray, flatness: np.ndarray, onset_strength: np.ndarray) -> np.ndarray:
