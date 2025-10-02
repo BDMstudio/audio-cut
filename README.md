@@ -25,7 +25,7 @@
    ```bash
    python run_splitter.py input/your_song.mp3 --mode v2.2_mdd
    ```
-   可加 `--validate-reconstruction` 触发拼接完整性校验。
+   可加 `--validate-reconstruction` 请求拼接检查；但当前 `tests/test_seamless_reconstruction.py` 仍沿用旧返回结构，命令会抛出 KeyError，需先完成测试脚本重构。
 4. 结果位于 `output/<job timestamp>/`。
 
 > 初次运行前请安装依赖：`python -m venv env && env\Scripts\activate` → `pip install -e .[dev]`。
@@ -64,7 +64,7 @@
   - 提高 `min_split_gap` 至 1.2–1.3s，并将 `segment_min_duration` 设为 6–7s。
 - **静音切点不干净**
   - 启用 `enforce_quiet_cut.enable: true`，并根据素材调节 `guard_db` 2.0–3.0、`search_right_ms` 150–200。
-  - 确认输入素材未被额外规范化；`AudioProcessor.load_audio` 默认不归一化。
+  - 确认输入素材未被额外规范化；主流程在 `_load_and_resample_if_needed` 中以 `normalize=False` 调用 `AudioProcessor.load_audio`，而若独立使用该类其默认仍会归一化。
 - **判定错误（伴奏被标成 human）**
   - 观察 `segment_classification_debug` 中 `vocal_activity_ratio` 与阈值差距。
   - 需要更严格判定时，可提升 `quality_control.segment_vocal_activity_ratio` 至 0.12–0.15。

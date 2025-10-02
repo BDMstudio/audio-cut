@@ -15,14 +15,20 @@ gpu_pipeline:
   chunk_seconds: 10.0
   overlap_seconds: 2.5
   halo_seconds: 0.5
+  align_hop: 4096
+  use_cuda_streams: true
   prefetch_pinned_buffers: 2
   inflight_chunks_limit: 2
+  ort:
+    graph_optimization_level: basic
+    cudnn_conv_algo_search: HEURISTIC
+    disable_trt: true
 
 enhanced_separation:
   backend: mdx23
   enable_fallback: true
   mdx23:
-    model_filename: Kim_Inst.onnx  # 想用哪个模型写哪个
+    model_filename: Kim_Inst.onnx  # 想用哪个模型写哪个 Kim_Inst.onnx/Kim_Vocal_1.onnx/Kim_Vocal_2.onnx
 
 pure_vocal_detection:
   enable: true

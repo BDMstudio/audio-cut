@@ -13,8 +13,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
+from contextlib import nullcontext
+
 import numpy as np
 
+from audio_cut.utils.gpu_pipeline import OrtExecutionConfig, ensure_ort_dependencies
 from src.vocal_smart_splitter.utils.config_manager import get_config
 
 logger = logging.getLogger(__name__)
@@ -74,7 +77,7 @@ class IVocalSeparatorBackend(abc.ABC):
         """返回模型预期采样率。"""
 
     @abc.abstractmethod
-    def infer_chunk(self, mix_chunk: np.ndarray) -> SeparationOutputs:
+    def infer_chunk(self, mix_chunk: np.ndarray, **kwargs) -> SeparationOutputs:
         """对输入混音分块执行分离，返回人声与伴奏。"""
 
     def flush(self) -> Optional[SeparationOutputs]:  # pragma: no cover - 默认无状态
@@ -92,6 +95,8 @@ class MDX23OnnxBackend(IVocalSeparatorBackend):
         *,
         provider: str = "CUDAExecutionProvider",
         execution_device: str = "cuda",
+        ort_config: Optional[OrtExecutionConfig] = None,
+        align_hop: Optional[int] = None,
     ) -> None:
         self._model_dir = Path(model_dir)
         self._provider = provider
@@ -103,16 +108,24 @@ class MDX23OnnxBackend(IVocalSeparatorBackend):
         self._sr = 44100
         self._model_path: Optional[Path] = None
         self._mdx_module = None
-        self._align_hop = int(os.getenv("MDX23_ALIGN_HOP", 4096))
+        if align_hop is None:
+            align_hop = int(os.getenv("MDX23_ALIGN_HOP", 4096))
+        self._align_hop = int(align_hop)
+        self._ort_config = ort_config or OrtExecutionConfig()
         self._cuda_failed = False
+        self._input_signature: Optional[dict] = None
 
     def sample_rate(self) -> int:  # noqa: D401
         return self._sr
+
+    def describe_input(self) -> Optional[dict]:
+        return dict(self._input_signature) if self._input_signature else None
 
     def load_model(self) -> None:
         if ort is None:
             raise RuntimeError("onnxruntime 未安装，无法使用 MDX23OnnxBackend")
 
+        ensure_ort_dependencies()
         _ensure_cuda_paths()
 
         model_pref = os.getenv("MDX23_MODEL_FILENAME")
@@ -155,15 +168,13 @@ class MDX23OnnxBackend(IVocalSeparatorBackend):
     def _create_session(self, provider: str) -> None:
         if self._model_path is None:
             raise RuntimeError("MDX23 模型路径未知，无法创建 Session")
-        sess_options = ort.SessionOptions()
-        sess_options.enable_mem_pattern = True
-        sess_options.enable_cpu_mem_arena = True
-        sess_options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_BASIC
+        if ort is None:
+            raise RuntimeError("onnxruntime 未安装，无法创建 Session")
 
-        providers = []
-        if provider == "CUDAExecutionProvider" and "CUDAExecutionProvider" in ort.get_available_providers():
-            providers.append("CUDAExecutionProvider")
-        providers.append("CPUExecutionProvider")
+        sess_options = ort.SessionOptions()
+        self._ort_config.apply(sess_options)
+
+        providers = self._ort_config.providers(prefer=provider)
 
         try:
             self._session = ort.InferenceSession(
@@ -173,16 +184,24 @@ class MDX23OnnxBackend(IVocalSeparatorBackend):
             )
             self._provider = self._session.get_providers()[0]
         except Exception as exc:  # pragma: no cover - depends on runtime
-            logger.warning("[MDX23Onnx] Session 创建失败，改用 CPU: %s", exc)
+            if provider == "CPUExecutionProvider":
+                raise
+            logger.warning("[MDX23Onnx] CUDA Session 创建失败，改用 CPU: %s", exc)
+            providers = self._ort_config.providers(prefer="CPUExecutionProvider")
             self._session = ort.InferenceSession(
                 self._model_path.as_posix(),
                 sess_options=sess_options,
-                providers=["CPUExecutionProvider"],
+                providers=providers,
             )
             self._provider = "CPUExecutionProvider"
 
         self._execution_device = "cuda" if self._provider == "CUDAExecutionProvider" else "cpu"
-        self._onnx_input = self._session.get_inputs()[0].name
+        input_info = self._session.get_inputs()[0]
+        self._onnx_input = input_info.name
+        self._input_signature = {
+            "name": input_info.name,
+            "shape": [int(dim) if isinstance(dim, int) else 1 for dim in input_info.shape],
+        }
         self._onnx_output = self._session.get_outputs()[0].name
         if self._mdx_module is not None:
             self._init_chunk_model(self._execution_device)
@@ -219,15 +238,22 @@ class MDX23OnnxBackend(IVocalSeparatorBackend):
         try:
             import torch
             if torch.cuda.is_available():
-                torch.cuda.synchronize()
                 torch.cuda.empty_cache()
         except Exception:
             pass
         self._create_session("CPUExecutionProvider")
 
-    def infer_chunk(self, mix_chunk: np.ndarray) -> SeparationOutputs:
+    def fallback_to_cpu(self) -> None:
+        """公开的 CPU 回退接口。"""
+
+        self._fallback_to_cpu_session()
+
+    def infer_chunk(self, mix_chunk: np.ndarray, **kwargs) -> SeparationOutputs:
         if self._session is None or self._chunk_model is None or self._onnx_input is None or self._onnx_output is None:
             raise RuntimeError("MDX23OnnxBackend 尚未初始化")
+
+        stream = kwargs.get("stream")
+        non_blocking = bool(kwargs.get("non_blocking", True))
 
         mix_stereo, align_pad = self._prepare_input(mix_chunk)
         aligned_len = mix_stereo.shape[-1]
@@ -257,12 +283,21 @@ class MDX23OnnxBackend(IVocalSeparatorBackend):
 
         import torch
 
+        stream_ctx = nullcontext()
+        if stream is not None and torch.cuda.is_available():
+            stream_ctx = torch.cuda.stream(stream)
+
         def _execute(device_str: str) -> np.ndarray:
             device = torch.device(device_str)
-            batch_tensor = torch.from_numpy(batch).to(device)
-            stft_tensor = self._chunk_model.stft(batch_tensor)
-            onnx_input = stft_tensor.detach().cpu().numpy()
-            run_inputs = {self._onnx_input: onnx_input}
+            with stream_ctx:
+                batch_tensor = torch.from_numpy(batch)
+                if device.type == "cuda":
+                    batch_tensor = batch_tensor.pin_memory().to(device, non_blocking=non_blocking)
+                else:
+                    batch_tensor = batch_tensor.to(device)
+                stft_tensor = self._chunk_model.stft(batch_tensor)
+                onnx_input = stft_tensor.detach().cpu().numpy()
+                run_inputs = {self._onnx_input: onnx_input}
             outputs = self._session.run(None, run_inputs)[0]
             return outputs
 
@@ -276,9 +311,14 @@ class MDX23OnnxBackend(IVocalSeparatorBackend):
             ort_output = _execute("cpu")
 
         device = torch.device(self._execution_device)
-        output_tensor = torch.from_numpy(ort_output).to(device)
-        wave_tensor = self._chunk_model.istft(output_tensor)
-        wave = wave_tensor[:, :, trim:-trim].transpose(0, 1).reshape(2, -1).cpu().numpy()
+        with stream_ctx:
+            output_tensor = torch.from_numpy(ort_output).to(device)
+            wave_tensor = self._chunk_model.istft(output_tensor)
+            wave_cpu = wave_tensor[:, :, trim:-trim].transpose(0, 1).reshape(2, -1)
+            if device.type == "cuda":
+                wave = wave_cpu.to("cpu", non_blocking=non_blocking).numpy()
+            else:
+                wave = wave_cpu.numpy()
         wave = wave[:, :chunk_size]
         mix_for_sub = mix_stereo[:, :chunk_size]
         if align_pad:
@@ -322,7 +362,7 @@ class DemucsPyTorchBackend(IVocalSeparatorBackend):
         self._model.to(device)
         self._model.eval()
 
-    def infer_chunk(self, mix_chunk: np.ndarray) -> SeparationOutputs:
+    def infer_chunk(self, mix_chunk: np.ndarray, **kwargs) -> SeparationOutputs:
         if self._model is None:
             raise RuntimeError("Demucs 模型尚未加载")
 

@@ -76,52 +76,56 @@ class SeamlessSplitter:
 
         gpu_cfg = self._get_gpu_pipeline_config()
         gpu_context: Optional[PipelineContext] = None
-        use_gpu_pipeline = False
         if gpu_cfg.enable:
             try:
                 gpu_context = self._build_gpu_pipeline_context(original_audio, gpu_cfg)
-                use_gpu_pipeline = bool(gpu_context and gpu_context.enabled)
             except Exception as exc:
                 gpu_context = None
-                logger.warning("[GPU Pipeline] init failed, fallback to CPU: %s", exc, exc_info=True)
-        if use_gpu_pipeline:
-            logger.info("[GPU Pipeline] enabled: device=%s, chunk_count=%d", gpu_context.device, len(gpu_context.plans))
+                logger.warning("[GPU Pipeline] 初始化失败，回退 CPU: %s", exc, exc_info=True)
+
+        if gpu_context and gpu_context.enabled:
+            logger.info(
+                "[GPU Pipeline] enabled: device=%s, chunk_count=%d",
+                gpu_context.device,
+                len(gpu_context.plans),
+            )
         else:
             logger.info("[GPU Pipeline] disabled; continue with CPU path.")
-
-        preferred_device = gpu_cfg.prefer_device.lower() if isinstance(gpu_cfg.prefer_device, str) else 'cpu'
-        if preferred_device not in {'cpu', 'cuda', 'gpu'}:
-            preferred_device = 'cpu'
-        fallback_device = 'cuda' if preferred_device in {'cuda', 'gpu'} else 'cpu'
-        effective_device = gpu_context.device if use_gpu_pipeline and gpu_context else fallback_device
-        gpu_meta = {
-            'gpu_pipeline_enabled': bool(gpu_cfg.enable),
-            'gpu_pipeline_used': bool(use_gpu_pipeline),
-            'gpu_pipeline_device': effective_device,
-            'gpu_pipeline_chunks': len(gpu_context.plans) if use_gpu_pipeline and gpu_context else 0,
-            'gpu_pipeline_config': {
-                'chunk_seconds': float(gpu_cfg.chunk_s),
-                'overlap_seconds': float(gpu_cfg.overlap_s),
-                'halo_seconds': float(gpu_cfg.halo_s),
-            },
-        }
 
         # 2. 高质量人声分离
         logger.info(f"[{mode.upper()}-STEP1] 执行高质量人声分离...")
         separation_start = time.time()
         separation_result = self.separator.separate_for_detection(
             original_audio,
-            gpu_context=gpu_context if use_gpu_pipeline else None,
+            gpu_context=gpu_context,
         )
         separation_time = time.time() - separation_start
 
         if separation_result.vocal_track is None:
-            failure = {'success': False, 'error': '��������ʧ��', 'input_file': input_path}
+            gpu_meta = dict(separation_result.gpu_meta or {})
+            failure = {
+                'success': False,
+                'error': '��������ʧ��',
+                'input_file': input_path,
+            }
             failure.update(gpu_meta)
             return failure
 
         vocal_track = separation_result.vocal_track
         logger.info(f"[{mode.upper()}-STEP1] 人声分离完成 - 后端: {separation_result.backend_used}, 质量: {separation_result.separation_confidence:.3f}, 耗时: {separation_time:.1f}s")
+
+        gpu_meta = dict(separation_result.gpu_meta or {})
+        if gpu_meta.get('gpu_pipeline_used'):
+            logger.info(
+                "[GPU Pipeline] used device=%s chunks=%s",
+                gpu_meta.get('gpu_pipeline_device'),
+                gpu_meta.get('gpu_pipeline_chunks'),
+            )
+        elif gpu_meta.get('gpu_pipeline_enabled'):
+            logger.info(
+                "[GPU Pipeline] not used, reason=%s",
+                gpu_meta.get('fallback_reason', gpu_meta.get('gpu_pipeline_failures', 'n/a')),
+            )
 
         # 3. 关键修复：使用正确的PureVocalPauseDetector进行停顿检测
         logger.info(f"[{mode.upper()}-STEP2] 使用PureVocalPauseDetector在[纯人声轨道]上进行多维特征检测...")
@@ -347,7 +351,7 @@ class SeamlessSplitter:
             'backend_used': separation_result.backend_used, 'separation_confidence': separation_result.separation_confidence,
             'processing_time': processing_time, 'segment_durations': [],
             'guard_shift_stats': self._get_guard_shift_stats(), 'input_file': input_path, 'output_dir': output_dir
-        }
+        } | dict(separation_result.gpu_meta or {})
 
     def _find_no_vocal_runs(self, vocal_audio: np.ndarray, min_duration: float):
         """

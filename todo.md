@@ -24,6 +24,7 @@
 - [ ] BPM 自适应的 clamp/multipliers 回归：验证在极端节拍下的鲁棒性并产出图表。
 - [ ] 质量日志强化：记录守卫右移、边界缩进、被最小间隔过滤的候选数量等指标。
 - [ ] README 扩充 “常见素材调参示例”，覆盖 BPM 驱动而非 profile 预设的调优路径。
+- [ ] 修复 `run_splitter --validate-reconstruction` KeyError：对齐 `split_audio_seamlessly` 返回结构并更新 `tests/test_seamless_reconstruction.py`。
 
 ## 4. 验收标准
 - 默认配置：无 >10s 片段被遗漏；单次检测产出稳定；`test_cpu_baseline_perfect_reconstruction` 通过。

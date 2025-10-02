@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import logging
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, Optional, Tuple
 
@@ -29,7 +29,10 @@ from audio_cut.utils.gpu_pipeline import (
     PipelineConfig,
     PipelineContext,
     Streams,
+    build_pipeline_context,
     chunk_schedule,
+    record_event,
+    wait_event,
 )
 from ..utils.config_manager import get_config
 from .vocal_separator import VocalSeparator
@@ -48,6 +51,8 @@ class SeparationResult:
     processing_time: float
     quality_metrics: Dict
     feature_cache: Optional[TrackFeatureCache] = None
+    gpu_meta: Dict = field(default_factory=dict)
+    pipeline_used: bool = False
 
 
 class EnhancedVocalSeparator:
@@ -56,6 +61,7 @@ class EnhancedVocalSeparator:
     def __init__(self, sample_rate: int = 44100) -> None:
         self.sample_rate = sample_rate
         self._marker_helper = VocalSeparator(sample_rate)
+        self._pipeline_cfg = self._resolve_pipeline_config()
 
         forced_backend = get_config("enhanced_separation.force_backend", None)
         if forced_backend:
@@ -79,7 +85,11 @@ class EnhancedVocalSeparator:
 
         if self.backend_pref in {"mdx23", "auto"}:
             try:
-                backend = MDX23OnnxBackend(mdx_models)
+                backend = MDX23OnnxBackend(
+                    mdx_models,
+                    ort_config=self._pipeline_cfg.ort_config,
+                    align_hop=self._pipeline_cfg.align_hop,
+                )
                 backend.load_model()
                 self._primary_backend = backend
                 logger.info("[Separator] MDX23 ONNX 后端已就绪")
@@ -101,7 +111,11 @@ class EnhancedVocalSeparator:
             # 回退优先 MDX23 → Demucs v4
             if "mdx23" not in backend_errors:
                 try:
-                    backend = MDX23OnnxBackend(mdx_models)
+                    backend = MDX23OnnxBackend(
+                        mdx_models,
+                        ort_config=self._pipeline_cfg.ort_config,
+                        align_hop=self._pipeline_cfg.align_hop,
+                    )
                     backend.load_model()
                     self._primary_backend = backend
                     logger.info("[Separator] 回退使用 MDX23 ONNX")
@@ -128,6 +142,13 @@ class EnhancedVocalSeparator:
             except Exception as exc:  # pragma: no cover
                 logger.warning("准备 Demucs 兜底失败: %s", exc)
 
+    def _resolve_pipeline_config(self) -> PipelineConfig:
+        try:
+            mapping = get_config('gpu_pipeline', {})
+        except Exception:
+            mapping = {}
+        return PipelineConfig.from_mapping(mapping)
+
     def separate_for_detection(
         self,
         audio: np.ndarray,
@@ -143,29 +164,24 @@ class EnhancedVocalSeparator:
         backend_name = type(primary).__name__
         start_time = time.time()
 
+        pipeline_ctx = self._ensure_pipeline_context(audio, gpu_context)
+
         try:
-            pipeline_ctx = self._ensure_pipeline_context(audio, gpu_context)
             vocal, instrumental, feature_cache = self._separate_with_pipeline(audio, primary, pipeline_ctx)
+            pipeline_meta = pipeline_ctx.to_meta()
+            pipeline_used = pipeline_ctx.enabled
         except Exception as exc:
             logger.error("主后端分离失败: %s", exc, exc_info=True)
-            if not self._fallback_backend:
+            pipeline_ctx.mark_failure("separation", str(exc))
+            if pipeline_ctx.strict_gpu:
                 raise
 
-            if hasattr(primary, '_fallback_to_cpu_session'):
-                try:
-                    primary._fallback_to_cpu_session()  # type: ignore[attr-defined]
-                except Exception:
-                    pass
-
-            backend_name = type(self._fallback_backend).__name__
-            logger.warning("切换至兜底后端: %s", backend_name)
-            if hasattr(self._fallback_backend, "force_cpu"):
-                try:
-                    self._fallback_backend.force_cpu()  # type: ignore[attr-defined]
-                except Exception:
-                    pass
-            pipeline_ctx = self._ensure_pipeline_context(audio, None)
-            vocal, instrumental, feature_cache = self._separate_with_pipeline(audio, self._fallback_backend, pipeline_ctx)
+            fallback_backend, backend_name = self._resolve_fallback_backend(exc)
+            cpu_ctx = self._build_cpu_context(float(len(audio)) / float(self.sample_rate) if self.sample_rate > 0 else 0.0)
+            vocal, instrumental, feature_cache = self._separate_with_pipeline(audio, fallback_backend, cpu_ctx)
+            pipeline_meta = cpu_ctx.to_meta()
+            pipeline_meta.setdefault("fallback_reason", str(exc))
+            pipeline_used = cpu_ctx.enabled
 
         processing_time = time.time() - start_time
         confidence = self._estimate_confidence(vocal, instrumental, audio)
@@ -179,6 +195,8 @@ class EnhancedVocalSeparator:
             processing_time=processing_time,
             quality_metrics=quality_metrics,
             feature_cache=feature_cache,
+            gpu_meta=pipeline_meta,
+            pipeline_used=pipeline_used,
         )
 
     def _ensure_pipeline_context(
@@ -186,36 +204,93 @@ class EnhancedVocalSeparator:
         audio: np.ndarray,
         gpu_context: Optional[PipelineContext],
     ) -> PipelineContext:
-        duration_s = float(len(audio)) / float(self.sample_rate) if self.sample_rate > 0 else 0.0
         cfg = self._get_pipeline_config()
+        duration_s = float(len(audio)) / float(self.sample_rate) if self.sample_rate > 0 else 0.0
 
         if gpu_context and gpu_context.enabled:
-            # 使用已有 GPU 上下文，但确保 plan 与音频长度一致
             if not gpu_context.plans:
-                plans = chunk_schedule(
+                gpu_context.plans = chunk_schedule(
                     duration_s,
                     chunk_s=cfg.chunk_s,
                     overlap_s=cfg.overlap_s,
                     halo_s=cfg.halo_s,
                 )
-                gpu_context.plans = plans
             return gpu_context
 
-        plans = chunk_schedule(
-            duration_s,
+        if cfg.enable:
+            ctx = build_pipeline_context(duration_s, cfg)
+            if ctx.enabled:
+                self._register_input_signature(ctx)
+                return ctx
+
+        cpu_ctx = self._build_cpu_context(duration_s)
+        logger.debug("[Separator] 构建 CPU 分块上下文: %d chunks (gpu disabled)", len(cpu_ctx.plans))
+        return cpu_ctx
+
+    def _get_pipeline_config(self) -> PipelineConfig:
+        return self._pipeline_cfg
+
+    def _build_cpu_context(self, duration_s: float) -> PipelineContext:
+        cfg = self._get_pipeline_config()
+        cpu_cfg = PipelineConfig(
+            enable=False,
+            prefer_device="cpu",
             chunk_s=cfg.chunk_s,
             overlap_s=cfg.overlap_s,
             halo_s=cfg.halo_s,
+            align_hop=cfg.align_hop,
+            use_cuda_streams=False,
+            prefetch_pinned_buffers=0,
+            inflight_chunks_limit=0,
+            strict_gpu=False,
+            ort_config=cfg.ort_config,
         )
-        logger.debug("[Separator] 构建 CPU 分块上下文: %d chunks", len(plans))
-        return PipelineContext(device='cpu', streams=Streams(), plans=plans, pinned_pool=None)
+        plans = chunk_schedule(
+            duration_s,
+            chunk_s=cpu_cfg.chunk_s,
+            overlap_s=cpu_cfg.overlap_s,
+            halo_s=cpu_cfg.halo_s,
+        )
+        ctx = PipelineContext(
+            device='cpu',
+            streams=Streams(),
+            plans=plans,
+            pinned_pool=None,
+            limiter=None,
+            config=cpu_cfg,
+            use_streams=False,
+            strict_gpu=False,
+        )
+        ctx.gpu_meta = {
+            "gpu_pipeline_enabled": bool(cfg.enable),
+            "gpu_pipeline_device": "cpu",
+            "gpu_pipeline_chunks": len(plans),
+            "gpu_pipeline_used": False,
+        }
+        return ctx
 
-    def _get_pipeline_config(self) -> PipelineConfig:
-        try:
-            mapping = get_config('gpu_pipeline', {})
-        except Exception:
-            mapping = {}
-        return PipelineConfig.from_mapping(mapping)
+    def _register_input_signature(self, ctx: PipelineContext) -> None:
+        backend = self._primary_backend
+        if isinstance(backend, MDX23OnnxBackend):
+            signature = backend.describe_input()
+            if signature:
+                ctx.register_mdx23_input(signature)
+                ctx.gpu_meta.setdefault("gpu_pipeline_mdx23_input", signature)
+
+    def _resolve_fallback_backend(self, exc: Exception) -> Tuple[IVocalSeparatorBackend, str]:
+        backend: Optional[IVocalSeparatorBackend] = self._fallback_backend or self._primary_backend
+        if backend is None:
+            raise RuntimeError("无可用兜底后端")
+        backend_name = type(backend).__name__
+        logger.warning("切换至兜底后端 `%s`，原因: %s", backend_name, exc)
+        if isinstance(backend, MDX23OnnxBackend):
+            backend.fallback_to_cpu()
+        elif hasattr(backend, "force_cpu"):
+            try:
+                backend.force_cpu()  # type: ignore[attr-defined]
+            except Exception as force_exc:  # pragma: no cover - 防御
+                logger.warning("兜底后端切换 CPU 失败: %s", force_exc)
+        return backend, backend_name
 
     def _separate_with_pipeline(
         self,
@@ -227,11 +302,23 @@ class EnhancedVocalSeparator:
         sr = self.sample_rate
         total_samples = len(audio)
 
+        try:
+            import torch
+        except Exception:  # pragma: no cover - torch 可能未安装
+            torch = None  # type: ignore
+
+        torch_cuda_available = bool(torch and torch.cuda.is_available())
+        sep_stream = gpu_context.streams.s_sep if gpu_context.use_streams and torch_cuda_available else None
+        current_stream = torch.cuda.current_stream() if torch_cuda_available else None
+
         vocal_accum = np.zeros(total_samples, dtype=np.float32)
         instrumental_accum = np.zeros(total_samples, dtype=np.float32)
         weight_accum = np.zeros(total_samples, dtype=np.float32)
 
         feature_builder = ChunkFeatureBuilder(sr=sr)
+        processed_chunks = 0
+        gpu_context.gpu_meta.setdefault("gpu_pipeline_used", bool(gpu_context.enabled))
+        gpu_context.gpu_meta.setdefault("gpu_pipeline_device", gpu_context.device)
 
         for plan in plans:
             chunk_start = max(0, int(round(plan.start_s * sr)))
@@ -240,7 +327,15 @@ class EnhancedVocalSeparator:
             if chunk.size == 0:
                 continue
 
-            outputs = backend.infer_chunk(chunk)
+            with gpu_context.acquire_inflight():
+                outputs = backend.infer_chunk(
+                    chunk,
+                    stream=sep_stream if gpu_context.enabled else None,
+                    non_blocking=True,
+                )
+                if sep_stream is not None and torch_cuda_available:
+                    event = record_event(sep_stream)
+                    wait_event(current_stream, event)
 
             effective_start = chunk_start + int(round(plan.halo_left_s * sr))
             effective_end = chunk_end - int(round(plan.halo_right_s * sr))
@@ -261,6 +356,7 @@ class EnhancedVocalSeparator:
                 instrumental_accum[effective_start:effective_end] += effective_instr
 
             feature_builder.add_chunk(plan, chunk, sr)
+            processed_chunks += 1
 
         flush_outputs = backend.flush()
         if flush_outputs is not None:
@@ -271,6 +367,8 @@ class EnhancedVocalSeparator:
         instrumental = (instrumental_accum / weight_accum) if np.any(instrumental_accum) else None
 
         feature_cache = feature_builder.finalize(audio)
+        gpu_context.gpu_meta["gpu_pipeline_processed_chunks"] = processed_chunks
+        gpu_context.gpu_meta["gpu_pipeline_used"] = bool(gpu_context.enabled)
         return vocal.astype(np.float32), None if instrumental is None else instrumental.astype(np.float32), feature_cache
 
     def _estimate_confidence(self, vocal: np.ndarray, instrumental: Optional[np.ndarray], mix: np.ndarray) -> float:
