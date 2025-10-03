@@ -91,6 +91,12 @@ pure_vocal_detection:
     max_raw_candidates: 1200      # 能量谷原始候选上限，防爆炸
     max_kept_after_nms: 200       # 适度上调，确保有足够一轮切点供选择
 
+advanced_vad:
+  focus_window_pad_s: 0.2
+  focus_window_min_width_s: 0.0
+  silero_merge_gap_ms: 120.0
+  focus_merge_gap_s: 0.12
+
 spectral_classifier:
   breath_threshold: 0.3
   pause_threshold: 0.7

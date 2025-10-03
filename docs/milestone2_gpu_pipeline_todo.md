@@ -28,10 +28,10 @@
 
 ## C. Silero VAD / 特征缓存分块化
 
-- [ ] Silero VAD 按块推理（含 halo），跨块合并时间戳（间隙 <120ms 合并）并输出全局时间轴。
-- [ ] “仅在语音段边界 ±200 ms 的窗口里跑贵计算（VPP/MDD）”，窗口外跳过；并把短隙 <120 ms 合并写成可配置阈值。
-- [ ] `PureVocalPauseDetector` 的昂贵检测步骤（能量谷、MDD、特征分析）仅在焦点窗口内执行，复用块级 VAD 结果。
-- [ ] `ChunkFeatureBuilder` 支持 GPU STFT（一次计算多处复用），仅写入有效区帧并跨块拼接。
+- [x] Silero VAD 按块推理（含 halo），跨块合并时间戳（间隙 <120ms 合并）并输出全局时间轴。 (src/audio_cut/detectors/silero_chunk_vad.py)
+- [x] “仅在语音段边界 ±200 ms 的窗口里跑贵计算（VPP/MDD）”，窗口外跳过；并把短隙 <120 ms 合并写成可配置阈值。 (src/vocal_smart_splitter/core/pure_vocal_pause_detector.py)
+- [x] `PureVocalPauseDetector` 的昂贵检测步骤（能量谷、MDD、特征分析）仅在焦点窗口内执行，复用块级 VAD 结果。 (src/vocal_smart_splitter/core/pure_vocal_pause_detector.py)
+- [x] ChunkFeatureBuilder 支持 GPU STFT，一次计算多段复用，仅写入有效帧并跨块拼接 (src/audio_cut/analysis/features_cache.py)
 - [ ] 校验分块 STFT 与整段 STFT 等价，误差 MAE < 1e-4。
 
 ---

@@ -93,7 +93,7 @@ class TrackFeatureCache:
 class ChunkFeatureBuilder:
     """分块特征缓存构建器，与 GPU 流水线共享 ChunkPlan。"""
 
-    def __init__(self, sr: int, hop_s: float = 0.05) -> None:
+    def __init__(self, sr: int, hop_s: float = 0.05, *, use_gpu: bool = False, device: Optional[str] = None) -> None:
         self.sr = sr
         self.hop_length = max(1, int(round(sr * hop_s)))
         self.hop_s = float(self.hop_length) / float(sr)
@@ -107,19 +107,40 @@ class ChunkFeatureBuilder:
         self._times: List[np.ndarray] = []
         self._mix_audio_segments: List[np.ndarray] = []
 
+        self.use_gpu = bool(use_gpu and torch is not None)
+        self._torch_device = None
+        self._torch_windows: Dict[str, Tensor] = {} if self.use_gpu else {}
+        if self.use_gpu:
+            device_str = device or ('cuda' if torch.cuda.is_available() else 'cpu')
+            if device_str.startswith('cuda') and not torch.cuda.is_available():
+                logger.warning('[ChunkFeatureBuilder] CUDA requested but not available; disabling GPU path.')
+                self.use_gpu = False
+            else:
+                self._torch_device = torch.device(device_str)
+
     def add_chunk(self, plan: ChunkPlan, mix_chunk: np.ndarray, sr: int) -> None:
         if mix_chunk.size == 0:
             return
 
-        # 计算分块特征
-        rms = librosa.feature.rms(y=mix_chunk, frame_length=self.frame_length, hop_length=self.hop_length)[0]
-        flat = librosa.feature.spectral_flatness(y=mix_chunk, hop_length=self.hop_length)[0]
-        onset_env = librosa.onset.onset_strength(y=mix_chunk, sr=sr, hop_length=self.hop_length)
-        onset_strength = onset_env.copy()
-        onset_frames_local = librosa.onset.onset_detect(onset_envelope=onset_env, sr=sr, hop_length=self.hop_length)
+        mix_chunk = _ensure_mono_np(np.asarray(mix_chunk, dtype=np.float32))
 
-        frame_times = librosa.frames_to_time(np.arange(len(rms)), sr=sr, hop_length=self.hop_length)
-        frame_times += plan.start_s
+        feature_data = None
+        if self.use_gpu:
+            try:
+                feature_data = self._compute_features_gpu(mix_chunk, sr)
+            except Exception as exc:
+                logger.warning("[ChunkFeatureBuilder] GPU feature path failed: %s; falling back to CPU.", exc)
+                self.use_gpu = False
+
+        if feature_data is None:
+            feature_data = self._compute_features_cpu(mix_chunk, sr)
+
+        rms = feature_data['rms']
+        flat = feature_data['flat']
+        onset_env = feature_data['onset_env']
+        onset_strength = feature_data['onset_strength']
+        onset_frames_local = feature_data['onset_frames']
+        frame_times = feature_data['frame_times'] + plan.start_s
 
         eff_start = plan.effective_start_s
         eff_end = plan.effective_end_s
@@ -141,7 +162,6 @@ class ChunkFeatureBuilder:
             if eff_start <= frame_time < eff_end:
                 self._onset_frames.append(global_frame)
 
-        # 保留混音片段以便最终 BPM/MDD 计算（去除 halo）
         eff_start_sample = int(round(eff_start * sr))
         eff_end_sample = int(round(eff_end * sr))
         chunk_start_sample = int(round(plan.start_s * sr))
@@ -149,6 +169,67 @@ class ChunkFeatureBuilder:
         local_end = local_start + (eff_end_sample - eff_start_sample)
         if local_end > local_start:
             self._mix_audio_segments.append(mix_chunk[local_start:local_end])
+
+    def _compute_features_cpu(self, mix_chunk: np.ndarray, sr: int) -> Dict[str, np.ndarray]:
+        rms = librosa.feature.rms(y=mix_chunk, frame_length=self.frame_length, hop_length=self.hop_length)[0]
+        flat = librosa.feature.spectral_flatness(y=mix_chunk, hop_length=self.hop_length)[0]
+        onset_env = librosa.onset.onset_strength(y=mix_chunk, sr=sr, hop_length=self.hop_length)
+        onset_strength = onset_env.copy()
+        onset_frames_local = librosa.onset.onset_detect(onset_envelope=onset_env, sr=sr, hop_length=self.hop_length)
+        frame_times = librosa.frames_to_time(np.arange(len(rms)), sr=sr, hop_length=self.hop_length)
+        return {
+            'rms': rms.astype(np.float32, copy=False),
+            'flat': flat.astype(np.float32, copy=False),
+            'onset_env': onset_env.astype(np.float32, copy=False),
+            'onset_strength': onset_strength.astype(np.float32, copy=False),
+            'onset_frames': np.asarray(onset_frames_local, dtype=np.int64),
+            'frame_times': frame_times.astype(np.float32, copy=False),
+        }
+
+    def _compute_features_gpu(self, mix_chunk: np.ndarray, sr: int) -> Dict[str, np.ndarray]:
+        if torch is None or self._torch_device is None:
+            return self._compute_features_cpu(mix_chunk, sr)
+        if mix_chunk.size < self.frame_length:
+            return self._compute_features_cpu(mix_chunk, sr)
+        device = self._torch_device
+        with torch.no_grad():
+            tensor = torch.as_tensor(mix_chunk, dtype=torch.float32, device=device)
+            window = self._get_torch_window(device)
+            stft = torch.stft(
+                tensor,
+                n_fft=self.frame_length,
+                hop_length=self.hop_length,
+                win_length=self.frame_length,
+                window=window,
+                center=True,
+                return_complex=True,
+            )
+            magnitude = stft.abs()
+        mag_np = magnitude.detach().cpu().numpy()
+        if mag_np.size == 0:
+            return self._compute_features_cpu(mix_chunk, sr)
+        rms = librosa.feature.rms(S=mag_np, hop_length=self.hop_length, center=True, power=2.0)[0]
+        flat = librosa.feature.spectral_flatness(S=mag_np, power=2.0)[0]
+        onset_env = librosa.onset.onset_strength(S=mag_np, sr=sr, hop_length=self.hop_length)
+        onset_strength = onset_env.copy()
+        onset_frames_local = librosa.onset.onset_detect(onset_envelope=onset_env, sr=sr, hop_length=self.hop_length)
+        frame_times = librosa.frames_to_time(np.arange(mag_np.shape[1]), sr=sr, hop_length=self.hop_length)
+        return {
+            'rms': rms.astype(np.float32, copy=False),
+            'flat': flat.astype(np.float32, copy=False),
+            'onset_env': onset_env.astype(np.float32, copy=False),
+            'onset_strength': onset_strength.astype(np.float32, copy=False),
+            'onset_frames': np.asarray(onset_frames_local, dtype=np.int64),
+            'frame_times': frame_times.astype(np.float32, copy=False),
+        }
+
+    def _get_torch_window(self, device: 'torch.device') -> 'Tensor':
+        key = str(device)
+        window = self._torch_windows.get(key)
+        if window is None:
+            window = torch.hann_window(self.frame_length, device=device, dtype=torch.float32)
+            self._torch_windows[key] = window
+        return window
 
     def finalize(self, full_mix_wave: np.ndarray) -> TrackFeatureCache:
         if not self._rms:

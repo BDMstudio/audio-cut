@@ -9,7 +9,7 @@ import logging
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 
@@ -18,6 +18,7 @@ from audio_cut.analysis.features_cache import (
     TrackFeatureCache,
     build_feature_cache,
 )
+from audio_cut.detectors.silero_chunk_vad import SileroChunkVAD
 from audio_cut.separation.backends import (
     DemucsPyTorchBackend,
     IVocalSeparatorBackend,
@@ -51,6 +52,7 @@ class SeparationResult:
     processing_time: float
     quality_metrics: Dict
     feature_cache: Optional[TrackFeatureCache] = None
+    vad_segments: Optional[List[Dict[str, float]]] = None
     gpu_meta: Dict = field(default_factory=dict)
     pipeline_used: bool = False
 
@@ -166,8 +168,9 @@ class EnhancedVocalSeparator:
 
         pipeline_ctx = self._ensure_pipeline_context(audio, gpu_context)
 
+        vad_segments: List[Dict[str, float]] = []
         try:
-            vocal, instrumental, feature_cache = self._separate_with_pipeline(audio, primary, pipeline_ctx)
+            vocal, instrumental, feature_cache, vad_segments = self._separate_with_pipeline(audio, primary, pipeline_ctx)
             pipeline_meta = pipeline_ctx.to_meta()
             pipeline_used = pipeline_ctx.enabled
         except Exception as exc:
@@ -178,7 +181,7 @@ class EnhancedVocalSeparator:
 
             fallback_backend, backend_name = self._resolve_fallback_backend(exc)
             cpu_ctx = self._build_cpu_context(float(len(audio)) / float(self.sample_rate) if self.sample_rate > 0 else 0.0)
-            vocal, instrumental, feature_cache = self._separate_with_pipeline(audio, fallback_backend, cpu_ctx)
+            vocal, instrumental, feature_cache, vad_segments = self._separate_with_pipeline(audio, fallback_backend, cpu_ctx)
             pipeline_meta = cpu_ctx.to_meta()
             pipeline_meta.setdefault("fallback_reason", str(exc))
             pipeline_used = cpu_ctx.enabled
@@ -195,6 +198,7 @@ class EnhancedVocalSeparator:
             processing_time=processing_time,
             quality_metrics=quality_metrics,
             feature_cache=feature_cache,
+            vad_segments=vad_segments,
             gpu_meta=pipeline_meta,
             pipeline_used=pipeline_used,
         )
@@ -297,7 +301,7 @@ class EnhancedVocalSeparator:
         audio: np.ndarray,
         backend: IVocalSeparatorBackend,
         gpu_context: PipelineContext,
-    ) -> Tuple[np.ndarray, Optional[np.ndarray], TrackFeatureCache]:
+    ) -> Tuple[np.ndarray, Optional[np.ndarray], TrackFeatureCache, List[Dict[str, float]]]:
         plans = gpu_context.plans
         sr = self.sample_rate
         total_samples = len(audio)
@@ -315,7 +319,14 @@ class EnhancedVocalSeparator:
         instrumental_accum = np.zeros(total_samples, dtype=np.float32)
         weight_accum = np.zeros(total_samples, dtype=np.float32)
 
-        feature_builder = ChunkFeatureBuilder(sr=sr)
+        feature_builder = ChunkFeatureBuilder(
+            sr=sr,
+            use_gpu=bool(gpu_context.enabled),
+            device=gpu_context.device if gpu_context.enabled else None,
+        )
+        vad_merge_gap_ms = float(get_config('advanced_vad.silero_merge_gap_ms', 120.0))
+        focus_pad_s = float(get_config('advanced_vad.focus_window_pad_s', 0.2))
+        chunk_vad = SileroChunkVAD(sample_rate=sr, merge_gap_ms=vad_merge_gap_ms, focus_pad_s=focus_pad_s)
         processed_chunks = 0
         gpu_context.gpu_meta.setdefault("gpu_pipeline_used", bool(gpu_context.enabled))
         gpu_context.gpu_meta.setdefault("gpu_pipeline_device", gpu_context.device)
@@ -336,6 +347,8 @@ class EnhancedVocalSeparator:
                 if sep_stream is not None and torch_cuda_available:
                     event = record_event(sep_stream)
                     wait_event(current_stream, event)
+
+            chunk_vad.process_chunk(plan, outputs.vocal, sr)
 
             effective_start = chunk_start + int(round(plan.halo_left_s * sr))
             effective_end = chunk_end - int(round(plan.halo_right_s * sr))
@@ -366,10 +379,17 @@ class EnhancedVocalSeparator:
         vocal = vocal_accum / weight_accum
         instrumental = (instrumental_accum / weight_accum) if np.any(instrumental_accum) else None
 
+        vad_segments = chunk_vad.finalize()
         feature_cache = feature_builder.finalize(audio)
         gpu_context.gpu_meta["gpu_pipeline_processed_chunks"] = processed_chunks
         gpu_context.gpu_meta["gpu_pipeline_used"] = bool(gpu_context.enabled)
-        return vocal.astype(np.float32), None if instrumental is None else instrumental.astype(np.float32), feature_cache
+        gpu_context.gpu_meta["silero_vad_segments"] = len(vad_segments)
+        return (
+            vocal.astype(np.float32),
+            None if instrumental is None else instrumental.astype(np.float32),
+            feature_cache,
+            vad_segments,
+        )
 
     def _estimate_confidence(self, vocal: np.ndarray, instrumental: Optional[np.ndarray], mix: np.ndarray) -> float:
         vocal_energy = float(np.mean(np.square(vocal))) if vocal.size else 0.0

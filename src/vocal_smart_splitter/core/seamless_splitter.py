@@ -150,6 +150,7 @@ class SeamlessSplitter:
             enable_mdd_enhancement=enable_mdd,
             original_audio=original_audio,
             feature_cache=feature_cache,
+            vad_segments=separation_result.vad_segments,
         )
 
         if not vocal_pauses:

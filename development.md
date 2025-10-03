@@ -54,7 +54,7 @@
 ## 7. 性能与复杂度基线
 - 分离阶段：MDX23 在 RTX 4090 上 ~0.6x 实时，CPU 回退 ~3.5x。
 - 检测 + 守卫：10 分钟素材在单核下约 12s；开启静音守卫会额外增加 ~8%。
-- 拼接误差：`test_cpu_baseline_perfect_reconstruction` 要求最大绝对误差 < 1e-8。
+- 拼接误差：`test_cpu_baseline_perfect_reconstruction` 要求最大绝对误差 <= 1e-12。
 
 ## 8. 当前进展与下一步
 - 已完成：v2.2 单次判决合流、守卫统计、片段调试输出、文档重写；TrackFeatureCache 接入主线；`audio_cut.cutting.finalize_cut_points` 接管 `_finalize_and_filter_cuts_v2`。
