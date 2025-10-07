@@ -38,6 +38,8 @@
 
 - [ ] 修复 `run_splitter --validate-reconstruction` KeyError：对齐 `split_audio_seamlessly` 返回结构并更新 `tests/test_seamless_reconstruction.py`。
 
+- [ ] 重写 `tests/test_pure_vocal_detection_v2.py`，替换 legacy Tester，接入 SeamlessSplitter v2.3 并纳入 pytest。
+
 ## 4. 验收标准
 - 默认配置：无 >10s 片段被遗漏；单次检测产出稳定；`test_cpu_baseline_perfect_reconstruction` 通过。
 - 静音守卫开启：守卫位移随参数调整可预测，无异常回跳（需人工试听不少于 10 首样本）。

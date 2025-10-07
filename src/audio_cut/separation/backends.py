@@ -118,6 +118,16 @@ class MDX23OnnxBackend(IVocalSeparatorBackend):
         self._perf_metrics: Dict[str, float] = {}
         self.reset_performance_metrics()
 
+        try:
+            output_type_pref = get_config('enhanced_separation.mdx23.output_type', 'auto')
+        except Exception:
+            output_type_pref = 'auto'
+        self._output_type_pref = str(output_type_pref).strip().lower() or 'auto'
+        if self._output_type_pref not in {'auto', 'vocal', 'instrumental'}:
+            logger.warning('[MDX23Onnx] 未知 output_type 配置 %s，回退 auto', self._output_type_pref)
+            self._output_type_pref = 'auto'
+        self._resolved_output_type: Optional[str] = None
+
     def sample_rate(self) -> int:  # noqa: D401
         return self._sr
 
@@ -150,7 +160,8 @@ class MDX23OnnxBackend(IVocalSeparatorBackend):
             raise FileNotFoundError(f"未在 {self._model_dir} 找到 ONNX 模型")
         model_path = onnx_files[0]
         self._model_path = model_path
-        logger.info("[MDX23Onnx] 使用模型: %s", model_path.name)
+        self._resolved_output_type = self._resolve_output_type(model_path)
+        logger.info("[MDX23Onnx] 使用模型: %s (output=%s)", model_path.name, self._resolved_output_type)
 
         self._create_session(self._provider)
 
@@ -183,6 +194,18 @@ class MDX23OnnxBackend(IVocalSeparatorBackend):
         if reset:
             self.reset_performance_metrics()
         return metrics
+
+    def _resolve_output_type(self, model_path: Path) -> str:
+        if self._output_type_pref == 'auto':
+            name = model_path.name.lower()
+            if any(tag in name for tag in ('vocal', 'vocals')) and not any(tag in name for tag in ('inst', 'instrumental', 'accomp')):
+                return 'vocal'
+            return 'instrumental'
+        return self._output_type_pref
+
+    def get_output_type(self) -> str:
+        resolved = self._resolved_output_type or self._output_type_pref
+        return resolved if resolved in {'vocal', 'instrumental'} else 'instrumental'
 
     def _record_perf(self, key: str, value: float) -> None:
         if key == 'max_alloc_bytes':
@@ -369,9 +392,13 @@ class MDX23OnnxBackend(IVocalSeparatorBackend):
             wave = wave[:, :original_len]
             mix_for_sub = mix_for_sub[:, :original_len]
 
-        # ONNX 模型输出的是伴奏估计，实际人声需由混音减去伴奏得到。
-        instrumental = wave
-        vocal = mix_for_sub - instrumental
+        output_type = self.get_output_type()
+        if output_type == 'vocal':
+            vocal = wave
+            instrumental = mix_for_sub - vocal
+        else:
+            instrumental = wave
+            vocal = mix_for_sub - instrumental
 
         vocal_mono = vocal.mean(axis=0)
         instrumental_mono = instrumental.mean(axis=0)

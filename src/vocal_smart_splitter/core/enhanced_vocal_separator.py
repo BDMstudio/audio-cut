@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 # File: src/vocal_smart_splitter/core/enhanced_vocal_separator.py
 # AI-SUMMARY: 分块化声部分离器，封装 MDX23 ONNX 与 Demucs 后端，支持 GPU 流水线、OLA 重建与特征缓存共享。
@@ -476,6 +476,9 @@ class EnhancedVocalSeparator:
             gpu_context.gpu_meta["gpu_pipeline_compute_ms"] = float(perf.get('compute_ms', 0.0))
             gpu_context.gpu_meta["gpu_pipeline_peak_mem_bytes"] = float(perf.get('max_alloc_bytes', 0.0))
             gpu_context.gpu_meta["gpu_pipeline_chunk_invocations"] = int(perf.get('chunks', 0.0))
+        output_type_getter = getattr(backend, 'get_output_type', None)
+        if callable(output_type_getter):
+            gpu_context.gpu_meta['mdx23_output_type'] = output_type_getter()
         gpu_context.capture_device_metrics()
         return (
             vocal.astype(np.float32),

@@ -29,7 +29,8 @@ enhanced_separation:
   backend: mdx23
   enable_fallback: true
   mdx23:
-    model_filename: Kim_Vocal_1.onnx  # 想用哪个模型写哪个 Kim_Inst.onnx/Kim_Vocal_1.onnx/Kim_Vocal_2.onnx
+    model_filename: Kim_Vocal_1.onnx  # 想用哪个模型写哪个 Kim_Inst.onnx/Kim_Vocal_1.onnx/Kim_Vocal_2.onnx，优先选择Kim_Vocal_1.onnx，其次Kim_Vocal_2.onnx
+    output_type: auto  # 输出完整分离 vocal 还是 inst，auto|vocal|instrumental，auto 会根据文件名自动识别
   demucs:
     compile: false
     warmup_seconds: 0.5

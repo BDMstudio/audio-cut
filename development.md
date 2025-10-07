@@ -52,7 +52,8 @@
 
 ## 6. 测试矩阵
 - unit：`test_cut_alignment`, `test_cutting_consistency`, `test_segment_labeling`, `test_pre_vocal_split`, `test_gpu_pipeline`, `test_chunk_feature_builder_gpu`, `test_chunk_feature_builder_stft_equivalence`, `test_silero_chunk_vad`, `test_pure_vocal_focus_windows`, `test_track_feature_cache`, `test_mdx23_path_resolution` 等覆盖算法细节与配置解析。
-- integration：`test_pipeline_v2_valley.py`、`tests/test_pure_vocal_detection_v2.py` 验证全流程与主要模式。
+- integration：`test_pipeline_v2_valley.py` 验证 v2.2 管线主路径。
+- legacy/manual：`tests/test_pure_vocal_detection_v2.py`、`tests/test_seamless_reconstruction.py` 仍保留旧接口，仅供手动对比，需迁移至 v2.3 结果结构后再纳入 CI。
 - contracts：`test_config_contracts.py`、`tests/contracts/test_valley_contract.py` 保证配置契约。
 - benchmarks：`tests/benchmarks/test_chunk_vs_full_equivalence.py` 输出 chunk vs full 误差报告。
 - performance：`tests/performance/test_valley_perf.py` 监控 MDD+VPP 耗时。

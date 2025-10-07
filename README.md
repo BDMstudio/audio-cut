@@ -11,7 +11,7 @@
 - **纯人声检测**：PureVocalPauseDetector 结合 F0、共振峰、RMS 能量与 MDD/BPM 自适应，标定可切分区间。
 - **守卫与补偿**：`audio_cut.cutting.refine.finalize_cut_points` 先在人声轨执行过零吸附+静音守卫，再在混音轨复用同一逻辑；SeamlessSplitter 汇总位移统计为 `guard_shift_stats`。
 - **片段标注**：SeamlessSplitter 以 `segment_{###}_{human|music}` 命名片段，并在结果字典的 `segment_classification_debug` 中记录活跃度与判决原因；当前判决仅依赖 `vocal_activity_ratio` 阈值，marker/energy 投票字段暂作为调试占位输出 None。
-- **高精度输出**：24-bit WAV，端到端验证 `tests/test_seamless_reconstruction.py` + 样本级基线 `tests/unit/test_cpu_baseline_perfect_reconstruction.py` 均约束拼接误差 <= 1e-12。
+- **高精度输出**：24-bit WAV；`tests/unit/test_cpu_baseline_perfect_reconstruction.py` 仍约束样本级拼接误差 <= 1e-12；端到端脚本 `tests/test_seamless_reconstruction.py` 尚未迁移至 v2.3 返回结构，需重构后再启用。
 - **特征缓存复用**：`audio_cut.analysis.TrackFeatureCache` 在分离后构建一次，供 PureVocalPauseDetector、MDD 增强与守卫流程共享 BPM/MDD/RMS 序列。
 - **分块 VAD 与焦点窗口**：`audio_cut.detectors.SileroChunkVAD` 合并跨块语音段并为 PureVocalPauseDetector 构建 ±pad 焦点窗口，只在关键区间运行昂贵特征分析。
 
@@ -62,7 +62,7 @@
   - `enforce_quiet_cut.enable`: 默认 false，开启后使用 `win_ms/guard_db/search_right_ms/floor_percentile` 执行静音守卫。
 - `vocal_separation.*`: HPSS 预过滤参数；`enhanced_separation.backend` 的默认值在 `config_backup_original.yaml` 中可查。
 
-基于不同分发环境，可通过 `FORCE_SEPARATION_BACKEND` 强制指定 `mdx23`/`demucs_v4`。
+如需强制选择分离后端，请在配置文件设置 `enhanced_separation.force_backend`，或导出 `VSS__ENHANCED_SEPARATION__FORCE_BACKEND=mdx23|demucs_v4` 覆盖默认值。
 
 ## 调参指引
 - **切点过少 / 片段过长**
