@@ -1,7 +1,7 @@
 <!-- File: todo.md -->
 <!-- AI-SUMMARY: 项目任务状态看板，展示已完成事项、进行中任务、待办与 Codex 行动。 -->
 
-# todo.md — 项目开发进度与任务清单（更新于 2025-09-26）
+# todo.md — 项目开发进度与任务清单（更新于 2025-10-04）
 
 ## 0. 说明
 - 状态标记：`[x] 已完成` / `[/] 进行中` / `[ ] 未开始`
@@ -12,18 +12,30 @@
 - [x] 守卫参数可配置化：`quality_control.enforce_quiet_cut.{win_ms, guard_db, search_right_ms, floor_percentile}` 支持覆盖默认值。
 - [x] README 补充 “调参指南（VPP + BPM）”，清理二次检测文案与多余日志路径说明。
 - [x] 输出结构统一：`segments_vocal/` 产出 24-bit 人声片段，与伴奏对齐；主目录保留完整人声/伴奏。
-
+- [x] 文档对齐：重写 README / development.md / PRD 交叉验证细节与插图，并同步 chunk vs full 基线说明（更新至 2025-10-04）。
+- [x] Chunk vs full 真实模型基准：`tests/benchmarks/test_chunk_vs_full_equivalence.py` 已补真实模型路径并生成 `chunk_vs_full_real.{json,md}`。
+- [x] Silero/VAD/特征跨块测试矩阵：`tests/unit/test_silero_chunk_vad.py`、`test_chunk_feature_builder_gpu.py`、`test_chunk_feature_builder_stft_equivalence.py` 覆盖短隙合并与帧一致性。
+- [x] GPU 性能报表与文档：`scripts/bench/run_gpu_cpu_baseline.py` + `scripts/bench/README_gpu_pipeline.md` 输出字段解释与 PR 基线模板。
 ## 2. 进行中（Doing）
-- [/] 文档对齐：重写 README / development.md / PRD 交叉验证细节与插图。
+
 - [/] 同类型母带回放：收集长句、说唱、电音、现场、对白等基线素材，验证守卫与判定稳健性。
 
 ## 3. 待办（Backlog）
+
 - [ ] 汇总 `segment_classification_debug` 样本，检验 presence/energy 阈值在不同风格的适配情况。
+
+- [ ] 多 GPU 与 `--strict-gpu` 模式：验证一机多卡分配、失败策略与监控字段。
+
 - [ ] 建立 VPP 统计与对标数据集，覆盖自动调参 (slow/medium/fast) 的真实样本分布。
+
 - [ ] 准备一套端到端测试集（快歌/抒情/电子/直播/对白），记录片段数量与跨度基线。
+
 - [ ] BPM 自适应的 clamp/multipliers 回归：验证在极端节拍下的鲁棒性并产出图表。
+
 - [ ] 质量日志强化：记录守卫右移、边界缩进、被最小间隔过滤的候选数量等指标。
+
 - [ ] README 扩充 “常见素材调参示例”，覆盖 BPM 驱动而非 profile 预设的调优路径。
+
 - [ ] 修复 `run_splitter --validate-reconstruction` KeyError：对齐 `split_audio_seamlessly` 返回结构并更新 `tests/test_seamless_reconstruction.py`。
 
 ## 4. 验收标准

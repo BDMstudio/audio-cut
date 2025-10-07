@@ -1,0 +1,14 @@
+# File: src/audio_cut/config/profiles/pop.yaml
+# AI-SUMMARY: Schema v3 pop 预设，保持默认节奏与守卫平衡。
+
+profile: pop
+comment: Pop profile keeps defaults with a slightly tighter guard window.
+overrides:
+  threshold:
+    base_ratio: 0.26
+  adapt:
+    bpm_strength: 0.45
+  guard:
+    max_shift_ms: 160.0
+  nms:
+    topk: 4

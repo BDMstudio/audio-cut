@@ -6,12 +6,18 @@
 from __future__ import annotations
 
 import logging
+from contextlib import nullcontext
 from dataclasses import dataclass, field
 from typing import Callable, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 
 from audio_cut.utils.gpu_pipeline import ChunkPlan
+
+try:  # optional torch dependency for GPU stream coordination
+    import torch
+except Exception:  # pragma: no cover - torch may be unavailable
+    torch = None  # type: ignore
 
 logger = logging.getLogger(__name__)
 
@@ -47,7 +53,14 @@ class SileroChunkVAD:
             self.inference_fn = lambda audio: []  # type: ignore[assignment]
             return self.inference_fn
 
-    def process_chunk(self, plan: ChunkPlan, vocal_chunk: np.ndarray, sr: int) -> None:
+    def process_chunk(
+        self,
+        plan: ChunkPlan,
+        vocal_chunk: np.ndarray,
+        sr: int,
+        *,
+        stream: Optional["torch.cuda.Stream"] = None,
+    ) -> None:
         """执行当前 chunk 的 VAD，保留有效区间，并缓存至全局时间轴。"""
 
         if vocal_chunk.size == 0:
@@ -59,8 +72,17 @@ class SileroChunkVAD:
         if infer_fn is None:
             return
 
+        run_in_stream = stream is not None and torch is not None and torch.cuda.is_available()
+        if run_in_stream:
+            stream_ctx = torch.cuda.stream(stream)  # type: ignore[attr-defined]
+        else:
+            stream_ctx = nullcontext()
+
         try:
-            timestamps = infer_fn(vocal_chunk)
+            with stream_ctx:
+                timestamps = infer_fn(vocal_chunk)
+            if run_in_stream:
+                stream.synchronize()  # type: ignore[union-attr]
         except Exception as exc:  # pragma: no cover - 运行时异常降级
             logger.error("SileroChunkVAD chunk 推理失败: %s", exc, exc_info=True)
             return
@@ -79,12 +101,17 @@ class SileroChunkVAD:
             start_s = base_time + (start_sample / float(self.sample_rate))
             end_s = base_time + (end_sample / float(self.sample_rate))
 
-            start_s = max(start_s, effective_start)
-            end_s = min(end_s, effective_end)
-            if end_s - start_s <= 1e-6:
+            if end_s <= effective_start or start_s >= effective_end:
+                continue
+            if start_s < effective_start < end_s:
+                adjusted_start = start_s
+            else:
+                adjusted_start = max(start_s, effective_start)
+            adjusted_end = min(end_s, effective_end)
+            if adjusted_end - adjusted_start <= 1e-6:
                 continue
 
-            self._segments.append((start_s, end_s))
+            self._segments.append((adjusted_start, adjusted_end))
 
         self._segments.sort(key=lambda item: item[0])
         self._finalized = None

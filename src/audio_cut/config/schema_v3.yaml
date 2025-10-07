@@ -1,0 +1,21 @@
+# File: src/audio_cut/config/schema_v3.yaml
+# AI-SUMMARY: 精简版 Schema v3 配置，仅保留核心调参与默认值。
+
+version: 3
+name: default
+comment: Minimal configuration for Vocal Smart Splitter schema v3.
+audio:
+  sample_rate: 44100
+  channels: 1
+min_pause_s: 0.5
+min_gap_s: 1.0
+guard:
+  max_shift_ms: 150.0
+  floor_db: -60.0
+threshold:
+  base_ratio: 0.26
+adapt:
+  bpm_strength: 0.4
+  mdd_strength: 0.2
+nms:
+  topk: 4

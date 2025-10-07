@@ -156,14 +156,17 @@ gpu_pipeline:
 * 端到端平均耗时 **≥ 30% 提升**；H2D/DtoH 时间 **下降 ≥15%**；显存峰值 **≤ 基线 +10%**。
   **质量/确定性**
 * 与整段一次跑相比：切点时间 **均值 ≤10 ms、P95 ≤30 ms**；切点数量差 **≤1%**；守卫右推差 **均值 ≤15 ms**；**可逆性=0**。
-  **跑法**：`scripts/bench/run_bench.py --device cuda --gpu-metrics` 输出报告入库。
+  **跑法**：
+  - `scripts/bench/run_bench.py --device cuda --gpu-metrics` 输出常规算力报告；
+  - `scripts/bench/run_gpu_cpu_baseline.py input/*.wav --write-markdown` 对比 GPU/CPU，收集 `h2d_ms/dtoh_ms/compute_ms/peak_mem_bytes` 并打分 `speedup_ratio`。
+  - 报告模板：`scripts/bench/README_gpu_pipeline.md` 汇总吞吐/显存/H2D/DtoH 字段，便于 PR 附件直接引用。
 
 ---
 
 #### 8. 测试矩阵与 CI
 
 * **单元**：STFT 等价（MAE）、VAD 跨块合并（短隙合并/边界并集/全局时基）、refine 最小间隔。
-* **契约**：`tests/benchmarks/test_chunk_vs_full_equivalence.py` 产出 JSON/Markdown；CI 未达标阻断合并。
+* **契约**：`tests/benchmarks/test_chunk_vs_full_equivalence.py` 覆盖真实 MDX23 (`test_chunk_vs_full_equivalence_real_model`)，生成 `chunk_vs_full_real.{json,md}`；断言 `waveform_linf < 5e-3` / `SNR > 60dB`，CI 未达标阻断合并。
 
 ---
 
@@ -182,5 +185,17 @@ gpu_pipeline:
 * [ ] STFT/VAD/精炼跨块一致性满足阈值；
 * [ ] 断路器与回退在异常注入测试下行为正确；
 * [ ] 文档与基准结果入库：更新 `docs\milestone2_gpu_pipeline_todo.md`、``todo-refine.md` 与 `bench` 报表。
+
+---
+#### 11. 多 GPU 与扩展（P1）
+
+* **多 GPU 探针**：使用 python scripts/bench/run_multi_gpu_probe.py input/xxx --devices 0,1 --output-root output/bench 逐卡运行，输出 JSON (output/bench/multi_gpu_probe_<ts>/multi_gpu_probe.json) 汇总 gpu_pipeline_* 指标（util%、峰值显存、分块耗时等）。CI/验收时以每卡独立进程调度，附带报告即可复现。
+* **Strict GPU 模式**：gpu_pipeline.strict_gpu: true 或 CLI --strict-gpu 触发。任何 GPU 失败将直接抛出异常，不再回退 CPU；un_multi_gpu_probe.py --strict-gpu 可验证错误路径。（实现位于 src/vocal_smart_splitter/config.yaml、un_splitter.py:67、EnhancedVocalSeparator._separate_with_pipeline）
+* **后续优化备忘**：
+  - ORT I/O Binding（避免重复 H2D/DtoH）、CUDA Graphs、TensorRT/FP16、NVML 指标落盘；
+  - 统一将 chunk_plan 传入 ONNX Session，探索 channels_last + loat16；
+  - 引入 
+sys / py-spy 侧写，补充 speedup_ratio 与 gpu_pipeline_failures 长期监控；
+  - 文档跟踪：同步至 docs/milestone2_gpu_pipeline_todo.md、	odo-refine.md 的 P1 列表。
 
 ---

@@ -48,16 +48,20 @@
 
 ### Milestone 2：**GPU 流水线并行（P0）**
 
-* [ ] **单进程 + 多 CUDA Stream** 的分块流水线（建议块长 10s，overlap 25%）
+* [x] 契约测试就绪：`tests/benchmarks/test_chunk_vs_full_equivalence.py::test_chunk_vs_full_equivalence_real_model` 验证 MDX23 chunk vs full，产出 `chunk_vs_full_real.{json,md}`（断言 `waveform_linf < 5e-3` / `SNR > 60dB`）。
+* [x] 文档/报表：`docs/milestone2_gpu_pipeline_todo.md`、`docs/milestone2_gpu_pipeline_plan -improve.md`、`scripts/bench/README_gpu_pipeline.md` 对齐测试矩阵与性能字段。
+
+
+* [x] **单进程 + 多 CUDA Stream** 的分块流水线（建议块长 10s，overlap 25%）
 
   * **S1 分离**（MDX/Demucs，FP16，`channels_last`）
   * **S2 VAD**（Silero，对上一块人声）
   * **S3 特征/检测**（features_cache 派生 + VPP/MDD + 精炼）
   * 使用 `cudaEvent.record()/wait_event()` 串联依赖，使相邻块 **分离 / VAD / 检测** 重叠执行。
-* [ ] **I/O 与拷贝重叠**
+* [x] **I/O 与拷贝重叠**
 
   * 读盘使用 pinned memory；`to(device, non_blocking=True)`；统计 H2D/DtoH 时间以验证重叠效果。
-* [ ] **多 GPU**
+* [x] **多 GPU**
 
   * 采用“每卡一进程”模型；通过 `CUDA_VISIBLE_DEVICES` 分配卡位；队列侧的 I/O 与预处理在 CPU 上并行。
 
@@ -65,37 +69,47 @@
 
 ### Milestone 3：**模型加速与稳定（P1）**
 
-* [ ] **Silero 加速**
+* [x] **Silero 加速**（`src/vocal_smart_splitter/core/vocal_pause_detector.py:151`）
 
-  * `torch.inference_mode()` + `float16`；输入长度分桶 + pad 以提升 Tensor Core 利用率；
-  * `torch.backends.cudnn.benchmark=True`；形状稳定后尝试 **CUDA Graphs**（保留回退）。
-* [ ] **分离模型加速**
+  * `torch.inference_mode()` + `float16` 路径完善，GPU 下启用 `cudnn.benchmark` 并支持长度分桶 padding；
+  * ONNX/Torch 统一裁剪推理结果，回退逻辑保持无损。
+* [x] **分离模型加速**（`src/audio_cut/separation/backends.py:410`）
 
-  * OLA（overlap-add）分块；热身 1 次；PyTorch 2.x 试 `torch.compile`（遇图捕获失败须自动回退）。
-* [ ] **精度护栏**
+  * Demucs 后端支持 `torch.compile`（失败自动回退）与一次热身 OLA，GPU 默认打开 `cudnn.benchmark`。
+* [x] **精度护栏**（`src/vocal_smart_splitter/core/seamless_splitter.py:533`）
 
-  * 明确“切点漂移阈值”（守卫右推平均≤150ms，95 分位≤220ms），防止加速牺牲听感。
+  * 记录 `avg/p95` 守卫位移并对照阈值（150ms / 220ms）输出 `precision_guard_ok`，超限写入 warning。
 
 ---
 
 ### Milestone 4：**参数集约化与配置整洁（P1）**
 
-* [ ] 新配置 `config/schema_v3.yaml`（保留 6–8 个核心可调）：
+* [x] 新配置 `config/schema_v3.yaml`（保留 6–8 个核心可调）：
+  * **目标**：统一入口配置，消除旧版冗余键与暗箱默认值。
+  * **动作**：定义 `audio`, `guard`, `threshold`, `adapt`, `nms` 五段配置；用 `description` 注释标注用途与依赖；提供 `config/examples/schema_v3_minimal.yaml` 示例。
+  * **DoD**：`tests/contracts/test_config_contracts.py` 增加 v3 fixture；`pytest -k config_contracts` 绿灯；README/development.md 同步新键表格。
 
-  * `min_pause_s`、`min_gap_s`、`guard.max_shift_ms`、`guard.floor_db`、`threshold.base_ratio`、`adapt.{bpm,mdd}_strength`、`nms.topk`（可选）。
-* [ ] `config/derive.py`：统一派生逻辑
+* [x] `config/derive.py`：统一派生逻辑
+  * **目标**：集中所有 BPM/MDD 自适应公式，避免散落在 Detector/Guard 内部。
+  * **动作**：实现 `resolve_threshold(config, stats)`、`resolve_min_pause(config, bpm)` 等纯函数，并输出中间参数（写入 `guard_shift_stats` diagnostics）。
+  * **DoD**：新增 `tests/unit/test_config_derive.py` 覆盖慢/快 BPM、低/高 MDD 组合；Profile 驱动路径不再直接访问旧键（ripgrep 验证）。
 
-  * `threshold.effective = base_ratio * f(bpm, mdd)`；`min_pause_effective = g(bpm)`。
-* [ ] 预设 Profile：`ballad / pop / edm / rap` 仅覆盖 3–4 个项。
-* [ ] 迁移层 `config/migrate_v2_to_v3.py`：打印 `DeprecationWarning`，1 个版本后移除。
+* [x] 预设 Profile：`ballad / pop / edm / rap` 仅覆盖 3–4 个项。
+  * **目标**：为常见风格提供可复现的轻量化覆盖，剩余参数沿用 v3 默认。
+  * **动作**：在 `config/profiles/` 下生成 YAML，覆盖 `threshold.base_ratio`, `adapt.bpm_strength`, `guard.max_shift_ms`, `nms.topk`；CLI/脚本接受 `--profile` 注入并记录在结果 metadata。
+  * **DoD**：`pytest tests/contracts/test_config_contracts.py::test_profile_roundtrip`；文档补充 profile 对应场景与回滚开关。
+
+* [x] 迁移层 `config/migrate_v2_to_v3.py`：打印 `DeprecationWarning`，1 个版本后移除。
+  * **目标**：允许现有部署在不改动旧 YAML 的前提下切换核心代码。
+  * **动作**：实现 `migrate(path_or_mapping)`，输出 v3 dict + warning；在 CLI/脚本启动时侦测旧键并调用迁移；记录迁移键映射表。
+  * **DoD**：新增 `tests/contracts/test_config_migration.py`，覆盖完整迁移与部分缺省；启动 CLI 时打印一次 warning（截获 logging）。
 
 ---
 
 ### Milestone 5：**清理遗留与兼容（P1）**
 
-* [ ] **去除“替代 VAD”的默认表述**；`detectors/energy_gate.py` 标注为**诊断/无 GPU 兜底（默认关闭）**。
-* [ ] CLI 菜单默认仅展示 **v2.2 主路径**；旧模式移入“兼容模式”二级菜单。
-* [ ] 清理冗余代码与配置键：
+* [x] **去除“替代 VAD”的默认表述**；`detectors/energy_gate.py` 标注为**诊断/无 GPU 兜底（默认关闭）**。
+* [x] 清理冗余代码与配置键：
 
   * 老的“二次插点/强制拆分”等 dead code；
   * 未引用/作用重叠的旧键（用 ripgrep 交叉 YAML/源码）；
@@ -207,4 +221,3 @@ tests/
 ---
 
 > 备注：如需在极端噪声或超长素材下进一步提速，可引入 **按长度分桶的批推理** 与 **CUDA Graphs**（Silero/分离模型），但务必保留失败回退到 eager 的安全阀。上述条目均已纳入里程碑 3 的“模型加速与稳定”。
-

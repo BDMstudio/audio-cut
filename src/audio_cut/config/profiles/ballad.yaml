@@ -1,0 +1,14 @@
+# File: src/audio_cut/config/profiles/ballad.yaml
+# AI-SUMMARY: Schema v3 ballad 预设，仅调整关键人声判定参数。
+
+profile: ballad
+comment: Smooth ballad tuning with longer pauses and relaxed guard.
+overrides:
+  min_pause_s: 0.6
+  min_gap_s: 1.2
+  threshold:
+    base_ratio: 0.24
+  adapt:
+    bpm_strength: 0.3
+  guard:
+    max_shift_ms: 220.0

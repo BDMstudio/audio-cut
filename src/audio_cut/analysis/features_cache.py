@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import logging
 import math
+from contextlib import nullcontext
 from dataclasses import dataclass
 from typing import Dict, List, Optional
 
@@ -118,7 +119,14 @@ class ChunkFeatureBuilder:
             else:
                 self._torch_device = torch.device(device_str)
 
-    def add_chunk(self, plan: ChunkPlan, mix_chunk: np.ndarray, sr: int) -> None:
+    def add_chunk(
+        self,
+        plan: ChunkPlan,
+        mix_chunk: np.ndarray,
+        sr: int,
+        *,
+        stream: Optional["torch.cuda.Stream"] = None,
+    ) -> None:
         if mix_chunk.size == 0:
             return
 
@@ -127,7 +135,7 @@ class ChunkFeatureBuilder:
         feature_data = None
         if self.use_gpu:
             try:
-                feature_data = self._compute_features_gpu(mix_chunk, sr)
+                feature_data = self._compute_features_gpu(mix_chunk, sr, stream=stream)
             except Exception as exc:
                 logger.warning("[ChunkFeatureBuilder] GPU feature path failed: %s; falling back to CPU.", exc)
                 self.use_gpu = False
@@ -186,25 +194,37 @@ class ChunkFeatureBuilder:
             'frame_times': frame_times.astype(np.float32, copy=False),
         }
 
-    def _compute_features_gpu(self, mix_chunk: np.ndarray, sr: int) -> Dict[str, np.ndarray]:
+    def _compute_features_gpu(
+        self,
+        mix_chunk: np.ndarray,
+        sr: int,
+        *,
+        stream: Optional["torch.cuda.Stream"] = None,
+    ) -> Dict[str, np.ndarray]:
         if torch is None or self._torch_device is None:
             return self._compute_features_cpu(mix_chunk, sr)
         if mix_chunk.size < self.frame_length:
             return self._compute_features_cpu(mix_chunk, sr)
         device = self._torch_device
+        stream_ctx = nullcontext()
+        if stream is not None and torch.cuda.is_available():
+            stream_ctx = torch.cuda.stream(stream)
         with torch.no_grad():
-            tensor = torch.as_tensor(mix_chunk, dtype=torch.float32, device=device)
-            window = self._get_torch_window(device)
-            stft = torch.stft(
-                tensor,
-                n_fft=self.frame_length,
-                hop_length=self.hop_length,
-                win_length=self.frame_length,
-                window=window,
-                center=True,
-                return_complex=True,
-            )
-            magnitude = stft.abs()
+            with stream_ctx:
+                tensor = torch.as_tensor(mix_chunk, dtype=torch.float32, device=device)
+                window = self._get_torch_window(device)
+                stft = torch.stft(
+                    tensor,
+                    n_fft=self.frame_length,
+                    hop_length=self.hop_length,
+                    win_length=self.frame_length,
+                    window=window,
+                    center=True,
+                    return_complex=True,
+                )
+                magnitude = stft.abs()
+            if stream is not None and torch.cuda.is_available():
+                stream.synchronize()
         mag_np = magnitude.detach().cpu().numpy()
         if mag_np.size == 0:
             return self._compute_features_cpu(mix_chunk, sr)
@@ -241,14 +261,26 @@ class ChunkFeatureBuilder:
         onset_envelope = np.concatenate(self._onset_env)
         onset_strength = np.concatenate(self._onset_strength)
         frame_times = np.concatenate(self._times)
-        onset_frames = np.array(sorted(set(self._onset_frames)), dtype=int)
+        frame_indices = np.round(frame_times / self.hop_s).astype(int)
+        unique_idx, first_idx = np.unique(frame_indices, return_index=True)
+        order = np.argsort(unique_idx)
+        unique_idx = unique_idx[order]
+        first_idx = first_idx[order]
+
+        rms_series = rms_series[first_idx].astype(np.float32, copy=False)
+        spectral_flatness = spectral_flatness[first_idx].astype(np.float32, copy=False)
+        onset_envelope = onset_envelope[first_idx].astype(np.float32, copy=False)
+        onset_strength = onset_strength[first_idx].astype(np.float32, copy=False)
+        frame_times = unique_idx.astype(np.float32) * self.hop_s
+        onset_frames_set = set(self._onset_frames)
+        onset_frames = np.array(sorted(idx for idx in unique_idx if idx in onset_frames_set), dtype=int)
 
         mix_wave = np.concatenate(self._mix_audio_segments) if self._mix_audio_segments else full_mix_wave
 
         bpm_analyzer = BPMAnalyzer(self.sr)
         bpm_features = bpm_analyzer.extract_bpm_features(mix_wave)
 
-        tempo_curve = librosa.beat.tempo(
+        tempo_curve = librosa.feature.rhythm.tempo(
             onset_envelope=onset_envelope,
             sr=self.sr,
             hop_length=self.hop_length,
@@ -332,7 +364,7 @@ def _build_feature_cache_numpy(mix_wave: np.ndarray, sr: int, hop_length: int, h
     bpm_analyzer = BPMAnalyzer(sr)
     bpm_features = bpm_analyzer.extract_bpm_features(mix_wave)
 
-    tempo_curve = librosa.beat.tempo(
+    tempo_curve = librosa.feature.rhythm.tempo(
         onset_envelope=onset_envelope,
         sr=sr,
         hop_length=hop_length,
@@ -415,7 +447,7 @@ def _build_feature_cache_torch(mix_wave: np.ndarray, sr: int, hop_length: int, h
     bpm_analyzer = BPMAnalyzer(sr)
     bpm_features = bpm_analyzer.extract_bpm_features(mix_wave)
 
-    tempo_curve = librosa.beat.tempo(
+    tempo_curve = librosa.feature.rhythm.tempo(
         onset_envelope=onset_envelope,
         sr=sr,
         hop_length=hop_length,
@@ -475,3 +507,4 @@ def build_feature_cache(
             logger.warning('GPU features_cache 失败，回退到 CPU。原因: %s', exc)
 
     return _build_feature_cache_numpy(mix_wave, sr, hop_length, hop_s)
+

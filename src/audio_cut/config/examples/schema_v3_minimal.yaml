@@ -1,0 +1,19 @@
+# File: src/audio_cut/config/examples/schema_v3_minimal.yaml
+# AI-SUMMARY: Schema v3 示例，展示如何以少量键定义配置。
+
+version: 3
+name: minimal-demo
+audio:
+  sample_rate: 48000
+min_pause_s: 0.45
+min_gap_s: 0.9
+guard:
+  max_shift_ms: 180.0
+  floor_db: -58.0
+threshold:
+  base_ratio: 0.28
+adapt:
+  bpm_strength: 0.5
+  mdd_strength: 0.25
+nms:
+  topk: 5

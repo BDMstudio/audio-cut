@@ -11,7 +11,8 @@ import logging
 import os
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
+from typing import Dict, Optional
+import time
 
 from contextlib import nullcontext
 
@@ -114,6 +115,8 @@ class MDX23OnnxBackend(IVocalSeparatorBackend):
         self._ort_config = ort_config or OrtExecutionConfig()
         self._cuda_failed = False
         self._input_signature: Optional[dict] = None
+        self._perf_metrics: Dict[str, float] = {}
+        self.reset_performance_metrics()
 
     def sample_rate(self) -> int:  # noqa: D401
         return self._sr
@@ -164,6 +167,28 @@ class MDX23OnnxBackend(IVocalSeparatorBackend):
         spec.loader.exec_module(module)
         self._mdx_module = module
         self._init_chunk_model(self._execution_device)
+        self.reset_performance_metrics()
+
+    def reset_performance_metrics(self) -> None:
+        self._perf_metrics = {
+            'h2d_ms': 0.0,
+            'dtoh_ms': 0.0,
+            'compute_ms': 0.0,
+            'chunks': 0.0,
+            'max_alloc_bytes': 0.0,
+        }
+
+    def get_performance_metrics(self, *, reset: bool = False) -> Dict[str, float]:
+        metrics = dict(self._perf_metrics)
+        if reset:
+            self.reset_performance_metrics()
+        return metrics
+
+    def _record_perf(self, key: str, value: float) -> None:
+        if key == 'max_alloc_bytes':
+            self._perf_metrics[key] = max(self._perf_metrics.get(key, 0.0), float(value))
+        else:
+            self._perf_metrics[key] = self._perf_metrics.get(key, 0.0) + float(value)
 
     def _create_session(self, provider: str) -> None:
         if self._model_path is None:
@@ -291,14 +316,26 @@ class MDX23OnnxBackend(IVocalSeparatorBackend):
             device = torch.device(device_str)
             with stream_ctx:
                 batch_tensor = torch.from_numpy(batch)
-                if device.type == "cuda":
+                is_cuda = device.type == "cuda" and torch.cuda.is_available()
+                if is_cuda:
+                    torch.cuda.synchronize(device)
+                    start_ms = time.perf_counter()
                     batch_tensor = batch_tensor.pin_memory().to(device, non_blocking=non_blocking)
+                    torch.cuda.synchronize(device)
+                    self._record_perf('h2d_ms', (time.perf_counter() - start_ms) * 1000.0)
                 else:
                     batch_tensor = batch_tensor.to(device)
+
+                if is_cuda:
+                    torch.cuda.synchronize(device)
+                compute_start = time.perf_counter()
                 stft_tensor = self._chunk_model.stft(batch_tensor)
                 onnx_input = stft_tensor.detach().cpu().numpy()
                 run_inputs = {self._onnx_input: onnx_input}
             outputs = self._session.run(None, run_inputs)[0]
+            if is_cuda:
+                torch.cuda.synchronize(device)
+                self._record_perf('compute_ms', (time.perf_counter() - compute_start) * 1000.0)
             return outputs
 
         use_cuda = self._provider == "CUDAExecutionProvider" and torch.cuda.is_available() and not self._cuda_failed
@@ -315,8 +352,15 @@ class MDX23OnnxBackend(IVocalSeparatorBackend):
             output_tensor = torch.from_numpy(ort_output).to(device)
             wave_tensor = self._chunk_model.istft(output_tensor)
             wave_cpu = wave_tensor[:, :, trim:-trim].transpose(0, 1).reshape(2, -1)
-            if device.type == "cuda":
-                wave = wave_cpu.to("cpu", non_blocking=non_blocking).numpy()
+            if device.type == "cuda" and torch.cuda.is_available():
+                torch.cuda.synchronize(device)
+                start_ms = time.perf_counter()
+                wave_host = wave_cpu.to("cpu", non_blocking=non_blocking)
+                torch.cuda.synchronize(device)
+                self._record_perf('dtoh_ms', (time.perf_counter() - start_ms) * 1000.0)
+                wave = wave_host.numpy()
+                alloc = torch.cuda.max_memory_allocated(device)
+                self._record_perf('max_alloc_bytes', alloc)
             else:
                 wave = wave_cpu.numpy()
         wave = wave[:, :chunk_size]
@@ -325,11 +369,13 @@ class MDX23OnnxBackend(IVocalSeparatorBackend):
             wave = wave[:, :original_len]
             mix_for_sub = mix_for_sub[:, :original_len]
 
-        vocal = wave
-        instrumental = mix_for_sub - vocal
+        # ONNX 模型输出的是伴奏估计，实际人声需由混音减去伴奏得到。
+        instrumental = wave
+        vocal = mix_for_sub - instrumental
 
         vocal_mono = vocal.mean(axis=0)
         instrumental_mono = instrumental.mean(axis=0)
+        self._record_perf('chunks', 1.0)
         return SeparationOutputs(vocal=vocal_mono.astype(np.float32), instrumental=instrumental_mono.astype(np.float32))
 
 
@@ -341,6 +387,15 @@ class DemucsPyTorchBackend(IVocalSeparatorBackend):
         self._model = None
         self._sr = 44100
         self._device_preference = "cuda"
+        self._warmed_up = False
+        self._compiled = False
+        demucs_cfg: Dict[str, object] = {}
+        try:
+            demucs_cfg = get_config('enhanced_separation.demucs', {})
+        except Exception:  # pragma: no cover - config may miss section
+            demucs_cfg = {}
+        self._compile_enabled = bool(demucs_cfg.get('compile', False))
+        self._warmup_seconds = float(demucs_cfg.get('warmup_seconds', 0.5))
 
     def sample_rate(self) -> int:  # noqa: D401
         return self._sr
@@ -361,6 +416,22 @@ class DemucsPyTorchBackend(IVocalSeparatorBackend):
         self._device_preference = target
         self._model.to(device)
         self._model.eval()
+        if device.type == 'cuda':
+            try:
+                torch.backends.cudnn.benchmark = True
+            except Exception:  # pragma: no cover - defensive
+                pass
+
+        if self._compile_enabled and hasattr(torch, "compile"):
+            try:
+                self._model = torch.compile(self._model)  # type: ignore[assignment]
+                self._compiled = True
+                logger.info("[DemucsBackend] torch.compile 已启用")
+            except Exception as exc:  # pragma: no cover - graph capture 失败
+                self._compiled = False
+                logger.warning("[DemucsBackend] torch.compile 失败，回退 eager: %s", exc)
+
+        self._warmed_up = False
 
     def infer_chunk(self, mix_chunk: np.ndarray, **kwargs) -> SeparationOutputs:
         if self._model is None:
@@ -378,7 +449,18 @@ class DemucsPyTorchBackend(IVocalSeparatorBackend):
 
         tensor = torch.from_numpy(mix_stereo).float().unsqueeze(0).to(device)
 
-        with torch.no_grad():
+        if device.type == 'cuda' and (not self._warmed_up) and self._warmup_seconds > 0.0:
+            warmup_frames = max(int(self._warmup_seconds * self._sr), tensor.shape[-1])
+            warmup = torch.zeros((1, mix_stereo.shape[0], warmup_frames), dtype=tensor.dtype, device=device)
+            try:
+                with torch.inference_mode():
+                    apply_model(self._model, warmup, shifts=1, overlap=0.25)
+            except Exception as exc:  # pragma: no cover - warmup defensive
+                logger.warning("[DemucsBackend] warmup 失败: %s", exc)
+            finally:
+                self._warmed_up = True
+
+        with torch.inference_mode():
             sources = apply_model(self._model, tensor, shifts=1, overlap=0.25)
         vocals = sources[:, 0]
         accompaniment = tensor[:, 0] - vocals

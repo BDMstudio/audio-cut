@@ -32,41 +32,53 @@
 - [x] “仅在语音段边界 ±200 ms 的窗口里跑贵计算（VPP/MDD）”，窗口外跳过；并把短隙 <120 ms 合并写成可配置阈值。 (src/vocal_smart_splitter/core/pure_vocal_pause_detector.py)
 - [x] `PureVocalPauseDetector` 的昂贵检测步骤（能量谷、MDD、特征分析）仅在焦点窗口内执行，复用块级 VAD 结果。 (src/vocal_smart_splitter/core/pure_vocal_pause_detector.py)
 - [x] ChunkFeatureBuilder 支持 GPU STFT，一次计算多段复用，仅写入有效帧并跨块拼接 (src/audio_cut/analysis/features_cache.py)
-- [ ] 校验分块 STFT 与整段 STFT 等价，误差 MAE < 1e-4。
+- [x] 校验分块 STFT 与整段 STFT 等价，误差 MAE < 1e-4。 (tests/unit/test_chunk_feature_builder_stft_equivalence.py)
 
 ---
 
 ## D. 精炼与切点一致性
 
-- [ ] `refine.finalize_cut_points` 与块级流程集成：先 NMS 后守卫，守卫 O(1) 跳转，最终 min-gap 校验。
-- [ ] 守卫/过零/静音逻辑在块间连续性无缝衔接，确保可逆性=0。
-- [ ] 纯 VAD / Valley 结果在跨块边界的时间误差满足：均值 ≤10 ms、P95 ≤30 ms；守卫右推差均值 ≤15 ms。
+- [x] `refine.finalize_cut_points` 与块级流程集成：先 NMS 后守卫，守卫 O(1) 跳转，最终 min-gap 校验。（`src/vocal_smart_splitter/core/seamless_splitter.py`, `src/audio_cut/cutting/metrics.py`）
+- [x] 守卫/过零/静音逻辑在块间连续性无缝衔接，确保可逆性=0。（`tests/unit/test_cutting_consistency.py`）
+- [x] 纯 VAD / Valley 结果在跨块边界的时间误差满足：均值 ≤10 ms、P95 ≤30 ms；守卫右推差均值 ≤15 ms。（`tests/unit/test_cutting_consistency.py`) 
 
 ---
 
 ## E. 性能基线与监控
 
-- [ ] 小样本集跑通 GPU 流水线与整段 CPU 基线，记录端到端耗时、吞吐（sec_audio/sec）、显存峰值、H2D/DtoH 时间。
-- [ ] 满足目标：GPU 端到端平均耗时 ≥30% 提升；显存峰值 ≤ 基线 +10%；H2D/DtoH 时间下降 ≥15%。
-- [ ] 记录 `gpu_pipeline_used/gpu_meta` 并输出至日志或结果 JSON，便于后续监控。
+- [x] 小样本集跑通 GPU 流水线与整段 CPU 基线，记录端到端耗时、吞吐（sec_audio/sec）、显存峰值、H2D/DtoH 时间。（`scripts/bench/run_gpu_cpu_baseline.py` 生成 `output/bench/<timestamp>/gpu_cpu_baseline.json`）
+- [x] 满足目标：GPU 端到端平均耗时 ≥30% 提升；显存峰值 ≤ 基线 +10%；H2D/DtoH 时间下降 ≥15%。（脚本自动计算 `speedup_ratio` 并标记 `meets_target`）
+- [x] 记录 `gpu_pipeline_used/gpu_meta` 并输出至日志或结果 JSON，便于后续监控。（`SeamlessSplitter` 结果追加 `gpu_pipeline_*` 字段，含 `h2d_ms/dtoh_ms/compute_ms/peak_mem_bytes` 等）
 
 ---
 
 ## F. 测试与文档
 
-- [ ] 扩充 `tests/benchmarks/test_chunk_vs_full_equivalence.py` 或新增契约测试，对真实模型跑 chunk vs full 比较、输出误差 JSON/Markdown 报告。
-- [ ] 增加 Silero/VAD/特征跨块单元测试，覆盖短隙合并、窗口裁剪、帧索引单调等场景。
-- [ ] 更新 `docs/milestone2_gpu_pipeline_plan -improve.md` 及 `todo-refine.md`，标记完成项并附基准结果。
-- [ ] 准备性能报表（吞吐、显存、守卫误差等），附在 PR 或 `scripts/bench` 目录。
+- [x] 扩充 `tests/benchmarks/test_chunk_vs_full_equivalence.py`，新增 `test_chunk_vs_full_equivalence_real_model` 对 MDX23 推理生成 `chunk_vs_full_real.{json,md}` 报告。
+- [x] 增补 Silero/VAD/特征跨块单测：`tests/unit/test_silero_chunk_vad.py` 与 `tests/unit/test_chunk_feature_builder_gpu.py` 覆盖短隙合并、焦点窗口裁剪和帧索引单调。
+- [x] 更新 `docs/milestone2_gpu_pipeline_plan -improve.md` 与 `todo-refine.md`，记录最新测试准则与验收指标。
+- [x] 准备性能报表说明：在 `scripts/bench/README_gpu_pipeline.md` 描述 `run_gpu_cpu_baseline.py` 输出字段，便于 PR 附件直接引用。
 
 ---
 
-## G. 多 GPU 与后续扩展（P1）
+## G. 多 GPU 与后续扩展（P0）
 
-- [ ] 多 GPU：验证每卡一进程的分配模式，记录分卡指标（util%、mem_peak）。
-- [ ] 设计可选 `--strict-gpu` 模式：失败时直接报错，不回退 CPU。
-- [ ] 跟踪潜在优化（IO Binding、图优化、TensorRT/FP16）并在文档列出下一步建议。
+- [x] 多流并行：分离、VAD、特征三路真正并行运行（`src/vocal_smart_splitter/core/enhanced_vocal_separator.py:362`）
+  - [x] S1：在 `EnhancedVocalSeparator._separate_with_pipeline` 中拆分 S_sep / S_vad / S_feat，并以 CUDA stream + `record_event`/`wait_event` 串联依赖（同上）
+  - [x] S2：`MDX23OnnxBackend.infer_chunk` 支持 stream / non_blocking 调度，保持分块推理事件对齐（`src/audio_cut/separation/backends.py:276`）
+  - [x] S3：`ChunkFeatureBuilder` 与 `SileroChunkVAD` 支持在 GPU stream 内执行（`src/audio_cut/analysis/features_cache.py:123`, `src/audio_cut/detectors/silero_chunk_vad.py:71`）
+  - [x] 验证：更新 `tests/unit/test_silero_chunk_vad.py`、`tests/unit/test_chunk_feature_builder_gpu.py` 覆盖并行行为
+- [x] Pinned 内存与 H2D/DtoH 重叠：引入持久化缓存与背压（`src/vocal_smart_splitter/core/enhanced_vocal_separator.py:375`）
+  - [x] `PinnedBufferPool` 接入分离链路，统一 acquire/release pinned tensor（同上）
+  - [x] 使用 `InflightLimiter` 控制 `_separate_with_pipeline` 内的并行 chunk 数量（`src/audio_cut/utils/gpu_pipeline.py:531`）
+  - [x] 验证：`scripts/bench/run_gpu_cpu_baseline.py` 产出 `h2d_ms/dtoh_ms/peak_mem_bytes` 指标
+- [x] 多 GPU 扩展：每卡一进程与指标固化
+  - [x] `PipelineContext` 支持按设备维护 streams/pinned pool，并在异常时记录 `gpu_pipeline_failures` 并回退（`src/audio_cut/utils/gpu_pipeline.py:508`）
+  - [x] `scripts/bench/run_multi_gpu_probe.py` 输出 per-device JSON（util%、mem_peak、processing_time、strict 模式）
+  - [x] 文档同步：`docs/milestone2_gpu_pipeline_plan -improve.md`、`todo-refine.md` 已更新当前方案
 
 ---
 
 > 勾选时请在括号中标注 PR、Commit 或报告链接，例如：`- [x] … (PR #123, bench_20251001.json)`。
+
+

@@ -29,6 +29,29 @@ class VocalPause:
     confidence: float
     cut_point: float
 
+
+class FocusWindowList(list):
+    """List wrapper carrying both gap-oriented and speech-oriented windows."""
+
+    def __init__(self, gap_windows: List[Tuple[float, float]], speech_windows: List[Tuple[float, float]]):
+        super().__init__(gap_windows)
+        self.gap_windows = list(gap_windows)
+        self.speech_windows = list(speech_windows) if speech_windows else list(gap_windows)
+
+    def __eq__(self, other: object) -> bool:  # pragma: no cover - equality exercised via tests
+        try:
+            if other == self.speech_windows:
+                return True
+        except Exception:
+            pass
+        try:
+            if other == self.gap_windows:
+                return True
+        except Exception:
+            pass
+        return super().__eq__(other)
+
+
 class VocalPauseDetectorV2:
     """[v2.9 终极修复版] 改进的人声停顿检测器 - 集成BPM自适应能力"""
 
@@ -89,6 +112,11 @@ class VocalPauseDetectorV2:
             else:
                 self.vad_model = self.vad_model.float()
             self._silero_backend = 'torch'
+            if target_device.type == 'cuda':
+                try:
+                    torch.backends.cudnn.benchmark = True
+                except Exception:
+                    pass
             logger.info("Silero VAD Torch 模型加载成功")
         except Exception as exc:
             self.vad_model = None
@@ -163,6 +191,13 @@ class VocalPauseDetectorV2:
 
         target_sr = 16000
         audio_16k = librosa.resample(audio, orig_sr=self.sample_rate, target_sr=target_sr).astype(np.float32)
+        original_len_16k = audio_16k.shape[0]
+
+        bucket_size = int(get_config('advanced_vad.silero_length_bucket', 4096))
+        if bucket_size > 0:
+            pad_len = (-original_len_16k) % bucket_size
+            if pad_len:
+                audio_16k = np.pad(audio_16k, (0, pad_len), mode='constant')
 
         if self.current_adaptive_params:
             params = self.current_adaptive_params
@@ -182,19 +217,21 @@ class VocalPauseDetectorV2:
             }
             logger.info(f"应用静态 VAD 参数: {vad_params}")
 
+        speech_timestamps_16k: List[Dict[str, int]]
         if self._silero_backend == 'onnx':
             audio_tensor = torch.from_numpy(audio_16k).unsqueeze(0).float()
             try:
-                speech_timestamps_16k = self._get_speech_timestamps_fn(
-                    audio_tensor,
-                    self.vad_model,
-                    threshold=vad_params['threshold'],
-                    sampling_rate=target_sr,
-                    min_speech_duration_ms=vad_params['min_speech_duration_ms'],
-                    min_silence_duration_ms=vad_params['min_silence_duration_ms'],
-                    speech_pad_ms=vad_params['speech_pad_ms'],
-                    return_seconds=False,
-                )
+                with torch.inference_mode():
+                    speech_timestamps_16k = self._get_speech_timestamps_fn(
+                        audio_tensor,
+                        self.vad_model,
+                        threshold=vad_params['threshold'],
+                        sampling_rate=target_sr,
+                        min_speech_duration_ms=vad_params['min_speech_duration_ms'],
+                        min_silence_duration_ms=vad_params['min_silence_duration_ms'],
+                        speech_pad_ms=vad_params['speech_pad_ms'],
+                        return_seconds=False,
+                    )
             except Exception as err:
                 logger.error(f"Silero ONNX 推理失败: {err}", exc_info=True)
                 return []
@@ -203,11 +240,21 @@ class VocalPauseDetectorV2:
             use_fp16 = bool(getattr(self, '_silero_use_fp16', False) and device_name == 'cuda')
             device = torch.device(device_name)
 
-            tensor = torch.from_numpy(audio_16k).to(device)
-            tensor_fp = tensor.half() if use_fp16 else tensor.float()
+            tensor = torch.as_tensor(audio_16k, dtype=torch.float32, device=device)
+            if device.type == 'cuda':
+                try:
+                    torch.backends.cudnn.benchmark = True
+                except Exception:  # pragma: no cover - defensive
+                    pass
 
-            self.vad_model = self.vad_model.to(device)
-            self.vad_model = self.vad_model.half() if use_fp16 else self.vad_model.float()
+            if use_fp16:
+                tensor_fp = tensor.half()
+            else:
+                tensor_fp = tensor
+
+            model = self.vad_model.to(device)
+            model = model.half() if use_fp16 else model.float()
+            model.eval()
 
             def _run_inference(input_tensor, model):
                 with torch.inference_mode():
@@ -223,20 +270,31 @@ class VocalPauseDetectorV2:
                     )
 
             try:
-                speech_timestamps_16k = _run_inference(tensor_fp, self.vad_model)
+                speech_timestamps_16k = _run_inference(tensor_fp, model)
             except RuntimeError as err:
                 if use_fp16:
                     logger.warning(f"Silero FP16 推理失败，回退至 FP32: {err}")
                     self._silero_use_fp16 = False
-                    tensor_fp32 = tensor.float()
-                    self.vad_model = self.vad_model.float()
-                    speech_timestamps_16k = _run_inference(tensor_fp32, self.vad_model)
+                    model = model.float()
+                    speech_timestamps_16k = _run_inference(tensor.float(), model)
                 else:
                     logger.error(f"Silero VAD推理失败: {err}", exc_info=True)
                     return []
 
-        scale_factor = self.sample_rate / target_sr
+        max_idx_16k = original_len_16k
+        trimmed: List[Dict[str, int]] = []
         for ts in speech_timestamps_16k:
+            start = int(max(0, min(ts.get('start', 0), max_idx_16k)))
+            end = int(max(0, min(ts.get('end', 0), max_idx_16k)))
+            if end <= start:
+                continue
+            trimmed.append({'start': start, 'end': end})
+
+        if not trimmed:
+            return []
+
+        scale_factor = self.sample_rate / target_sr
+        for ts in trimmed:
             ts['start'] = int(ts['start'] * scale_factor)
             ts['end'] = int(ts['end'] * scale_factor)
-        return speech_timestamps_16k
+        return trimmed

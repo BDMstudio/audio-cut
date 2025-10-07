@@ -7,6 +7,14 @@ import os
 import yaml
 import logging
 from typing import Dict, Any, Optional
+
+from audio_cut.config.derive import (
+    build_legacy_overrides,
+    load_default_schema,
+    merge_schema,
+    schema_from_mapping,
+    is_v3_schema,
+)
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -34,6 +42,28 @@ def _deep_merge_dict(base: Dict[str, Any], override: Optional[Dict[str, Any]]) -
         else:
             result[key] = value
     return result
+
+
+def _merge_schema_v3(base: Dict[str, Any], mapping: Dict[str, Any]) -> Dict[str, Any]:
+    """Apply schema v3 overrides on top of legacy configuration."""
+
+    default_schema = load_default_schema()
+    try:
+        if mapping.get("version") == 3:
+            schema = merge_schema(default_schema, mapping)
+        else:
+            partial = mapping.get("overrides", mapping)
+            schema = merge_schema(default_schema, partial)
+    except Exception:
+        schema = schema_from_mapping(mapping)
+
+    overrides = build_legacy_overrides(schema)
+    # Ensure meta fields co-exist even when legacy base misses them.
+    meta = overrides.get("meta", {})
+    meta.setdefault("schema_source", mapping.get("name", schema.name))
+    overrides["meta"] = meta
+
+    return _deep_merge_dict(base, overrides)
 
 
 def _parse_env_value(raw: str) -> Any:
@@ -95,13 +125,25 @@ class ConfigManager:
 
             external_path = os.environ.get('VSS_EXTERNAL_CONFIG_PATH')
             if external_path:
-                external_config = _load_yaml_file(Path(external_path))
-                config = _deep_merge_dict(config, external_config)
+                external_raw = _load_yaml_file(Path(external_path))
+                if is_v3_schema(external_raw) or (
+                    isinstance(external_raw, dict)
+                    and is_v3_schema(external_raw.get('overrides', {}))
+                ):
+                    config = _merge_schema_v3(config, external_raw)
+                else:
+                    config = _deep_merge_dict(config, external_raw)
 
             explicit_path = Path(self.config_path)
             if explicit_path.resolve() != base_path.resolve():
-                explicit_config = _load_yaml_file(explicit_path)
-                config = _deep_merge_dict(config, explicit_config)
+                explicit_raw = _load_yaml_file(explicit_path)
+                if is_v3_schema(explicit_raw) or (
+                    isinstance(explicit_raw, dict)
+                    and is_v3_schema(explicit_raw.get('overrides', {}))
+                ):
+                    config = _merge_schema_v3(config, explicit_raw)
+                else:
+                    config = _deep_merge_dict(config, explicit_raw)
 
             config = _apply_env_overrides(config)
 

@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import logging
 import time
+from contextlib import nullcontext
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -312,7 +313,10 @@ class EnhancedVocalSeparator:
             torch = None  # type: ignore
 
         torch_cuda_available = bool(torch and torch.cuda.is_available())
-        sep_stream = gpu_context.streams.s_sep if gpu_context.use_streams and torch_cuda_available else None
+        use_streams = gpu_context.use_streams and torch_cuda_available
+        sep_stream = gpu_context.streams.s_sep if use_streams else None
+        vad_stream = gpu_context.streams.s_vad if use_streams else None
+        feat_stream = gpu_context.streams.s_feat if use_streams else None
         current_stream = torch.cuda.current_stream() if torch_cuda_available else None
 
         vocal_accum = np.zeros(total_samples, dtype=np.float32)
@@ -331,45 +335,119 @@ class EnhancedVocalSeparator:
         gpu_context.gpu_meta.setdefault("gpu_pipeline_used", bool(gpu_context.enabled))
         gpu_context.gpu_meta.setdefault("gpu_pipeline_device", gpu_context.device)
 
-        for plan in plans:
-            chunk_start = max(0, int(round(plan.start_s * sr)))
-            chunk_end = min(total_samples, int(round(plan.end_s * sr)))
-            chunk = audio[chunk_start:chunk_end]
-            if chunk.size == 0:
-                continue
+        backend_perf_reset = getattr(backend, 'reset_performance_metrics', None)
+        if callable(backend_perf_reset):
+            backend_perf_reset()
 
-            with gpu_context.acquire_inflight():
-                outputs = backend.infer_chunk(
-                    chunk,
-                    stream=sep_stream if gpu_context.enabled else None,
-                    non_blocking=True,
+        if torch is not None and torch.cuda.is_available() and gpu_context.enabled:
+            reset_ctx = nullcontext()
+            if isinstance(gpu_context.device, str) and gpu_context.device.startswith("cuda"):
+                try:
+                    reset_ctx = torch.cuda.device(gpu_context.device)
+                except Exception:  # pragma: no cover - 设备上下文不可用
+                    reset_ctx = nullcontext()
+            with reset_ctx:
+                try:
+                    torch.cuda.reset_peak_memory_stats()
+                except Exception:  # pragma: no cover - defensive
+                    pass
+
+        device_ctx = nullcontext()
+        if torch_cuda_available and isinstance(gpu_context.device, str) and gpu_context.device.startswith("cuda"):
+            try:
+                device_ctx = torch.cuda.device(gpu_context.device)
+            except Exception:  # pragma: no cover - defensive
+                device_ctx = nullcontext()
+
+        with device_ctx:
+            sep_event = None
+            vad_event = None
+
+            for plan in plans:
+                chunk_start = max(0, int(round(plan.start_s * sr)))
+                chunk_end = min(total_samples, int(round(plan.end_s * sr)))
+                raw_chunk = audio[chunk_start:chunk_end]
+                if raw_chunk.size == 0:
+                    continue
+
+                chunk = np.ascontiguousarray(raw_chunk, dtype=np.float32)
+
+                pinned_tensor = None
+                pinned_slice = None
+                if (
+                    gpu_context.pinned_pool is not None
+                    and torch is not None
+                    and torch_cuda_available
+                ):
+                    try:
+                        pinned_tensor = gpu_context.pinned_pool.acquire_view((chunk.size,))
+                    except Exception:
+                        pinned_tensor = None
+                    if pinned_tensor is not None:
+                        pinned_tensor[: chunk.size].copy_(torch.from_numpy(chunk.reshape(-1)))
+                        pinned_slice = pinned_tensor[: chunk.size]
+                        chunk_input = pinned_slice.view(chunk.shape).cpu().numpy()
+                    else:
+                        chunk_input = chunk
+                else:
+                    chunk_input = chunk
+
+                try:
+                    with gpu_context.acquire_inflight():
+                        outputs = backend.infer_chunk(
+                            chunk_input,
+                            stream=sep_stream if gpu_context.enabled else None,
+                            non_blocking=True,
+                        )
+                    if sep_stream is not None and torch_cuda_available:
+                        sep_event = record_event(sep_stream)
+                        if current_stream is not None and sep_event is not None:
+                            wait_event(current_stream, sep_event)
+                finally:
+                    if pinned_tensor is not None and gpu_context.pinned_pool is not None:
+                        gpu_context.pinned_pool.release(pinned_tensor)
+
+                if vad_stream is not None and sep_event is not None:
+                    wait_event(vad_stream, sep_event)
+                chunk_vad.process_chunk(
+                    plan,
+                    outputs.vocal,
+                    sr,
+                    stream=vad_stream if gpu_context.enabled else None,
                 )
-                if sep_stream is not None and torch_cuda_available:
-                    event = record_event(sep_stream)
-                    wait_event(current_stream, event)
+                if vad_stream is not None and torch_cuda_available:
+                    vad_event = record_event(vad_stream)
+                else:
+                    vad_event = None
 
-            chunk_vad.process_chunk(plan, outputs.vocal, sr)
+                effective_start = chunk_start + int(round(plan.halo_left_s * sr))
+                effective_end = chunk_end - int(round(plan.halo_right_s * sr))
+                effective_end = max(effective_start, min(total_samples, effective_end))
 
-            effective_start = chunk_start + int(round(plan.halo_left_s * sr))
-            effective_end = chunk_end - int(round(plan.halo_right_s * sr))
-            effective_end = max(effective_start, min(total_samples, effective_end))
+                local_start = effective_start - chunk_start
+                local_end = local_start + (effective_end - effective_start)
+                effective_vocal = outputs.vocal[local_start:local_end]
+                effective_instr = outputs.instrumental[local_start:local_end] if outputs.instrumental is not None else None
 
-            local_start = effective_start - chunk_start
-            local_end = local_start + (effective_end - effective_start)
-            effective_vocal = outputs.vocal[local_start:local_end]
-            effective_instr = outputs.instrumental[local_start:local_end] if outputs.instrumental is not None else None
+                if effective_vocal.size != 0:
+                    vocal_accum[effective_start:effective_end] += effective_vocal
+                    weight_accum[effective_start:effective_end] += 1.0
 
-            if effective_vocal.size == 0:
-                continue
+                    if effective_instr is not None:
+                        instrumental_accum[effective_start:effective_end] += effective_instr
 
-            vocal_accum[effective_start:effective_end] += effective_vocal
-            weight_accum[effective_start:effective_end] += 1.0
+                    if feat_stream is not None and vad_event is not None:
+                        wait_event(feat_stream, vad_event)
+                    feature_builder.add_chunk(
+                        plan,
+                        chunk,
+                        sr,
+                        stream=feat_stream if gpu_context.enabled else None,
+                    )
+                    processed_chunks += 1
 
-            if effective_instr is not None:
-                instrumental_accum[effective_start:effective_end] += effective_instr
-
-            feature_builder.add_chunk(plan, chunk, sr)
-            processed_chunks += 1
+                    if feat_stream is not None and torch_cuda_available:
+                        record_event(feat_stream)
 
         flush_outputs = backend.flush()
         if flush_outputs is not None:
@@ -380,10 +458,25 @@ class EnhancedVocalSeparator:
         instrumental = (instrumental_accum / weight_accum) if np.any(instrumental_accum) else None
 
         vad_segments = chunk_vad.finalize()
+        if torch_cuda_available and gpu_context.enabled:
+            try:
+                torch.cuda.synchronize()
+            except Exception:  # pragma: no cover - defensive
+                pass
+
         feature_cache = feature_builder.finalize(audio)
         gpu_context.gpu_meta["gpu_pipeline_processed_chunks"] = processed_chunks
         gpu_context.gpu_meta["gpu_pipeline_used"] = bool(gpu_context.enabled)
         gpu_context.gpu_meta["silero_vad_segments"] = len(vad_segments)
+        backend_perf_get = getattr(backend, 'get_performance_metrics', None)
+        if callable(backend_perf_get):
+            perf = backend_perf_get(reset=True)
+            gpu_context.gpu_meta["gpu_pipeline_h2d_ms"] = float(perf.get('h2d_ms', 0.0))
+            gpu_context.gpu_meta["gpu_pipeline_dtoh_ms"] = float(perf.get('dtoh_ms', 0.0))
+            gpu_context.gpu_meta["gpu_pipeline_compute_ms"] = float(perf.get('compute_ms', 0.0))
+            gpu_context.gpu_meta["gpu_pipeline_peak_mem_bytes"] = float(perf.get('max_alloc_bytes', 0.0))
+            gpu_context.gpu_meta["gpu_pipeline_chunk_invocations"] = int(perf.get('chunks', 0.0))
+        gpu_context.capture_device_metrics()
         return (
             vocal.astype(np.float32),
             None if instrumental is None else instrumental.astype(np.float32),
