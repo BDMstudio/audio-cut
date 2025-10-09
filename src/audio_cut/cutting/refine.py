@@ -5,7 +5,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Dict, Iterable, List, Optional, Sequence
 
 import numpy as np
@@ -50,6 +50,7 @@ class CutRefineResult:
     final_points: List[CutPoint]
     sample_boundaries: List[int]
     adjustments: List[CutAdjustment]
+    suppressed_points: List[CutPoint] = field(default_factory=list)
 
 @dataclass
 class QuietGuardLookup:
@@ -306,6 +307,13 @@ def finalize_cut_points(
         window_s=nms_window_s,
     )
 
+    kept_ids = {id(p) for p in pruned}
+    suppressed_points = [
+        CutPoint(t=float(point.t), score=float(point.score), kind=point.kind)
+        for point in base_candidates
+        if id(point) not in kept_ids
+    ]
+
     vocal_lookup = _prepare_quiet_lookup(vocal, sr, guard_win_ms, floor_db) if enable_vocal_guard else None
     mix_lookup = _prepare_quiet_lookup(mix, sr, guard_win_ms, floor_db) if enable_mix_guard else None
 
@@ -399,7 +407,7 @@ def finalize_cut_points(
     sample_boundaries.append(len(mix))
     sample_boundaries = sorted(set(sample_boundaries))
 
-    return CutRefineResult(final_points, sample_boundaries, kept_adjustments)
+    return CutRefineResult(final_points, sample_boundaries, kept_adjustments, suppressed_points)
 
 
 

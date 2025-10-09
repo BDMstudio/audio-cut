@@ -16,7 +16,18 @@ import soundfile as sf
 
 from audio_cut.analysis import TrackFeatureCache, build_feature_cache
 from audio_cut.utils.gpu_pipeline import PipelineConfig, PipelineContext, build_pipeline_context
-from audio_cut.cutting.refine import CutContext, CutPoint, finalize_cut_points
+from audio_cut.cutting.refine import (
+    CutAdjustment,
+    CutContext,
+    CutPoint,
+    CutRefineResult,
+    finalize_cut_points,
+)
+from audio_cut.cutting.segment_layout_refiner import (
+    Segment as SegmentLayoutItem,
+    derive_layout_config,
+    refine_layout,
+)
 
 from ..utils.config_manager import get_config
 from ..utils.audio_processor import AudioProcessor
@@ -44,6 +55,8 @@ class SeamlessSplitter:
         self._last_segment_classification_debug: List[Dict[str, Any]] = []
         self._last_guard_shift_stats: Dict[str, float] = self._blank_guard_stats()
         self._last_guard_adjustments: List[Dict[str, float]] = []
+        self._last_guard_adjustments_raw: List[CutAdjustment] = []
+        self._last_suppressed_cut_points: List[CutPoint] = []
         self._precision_guard_ok: bool = True
         logger.info(f"无缝分割器统一指挥中心初始化完成 (SR: {self.sample_rate}) - 已加载纯人声检测器")
 
@@ -222,11 +235,13 @@ class SeamlessSplitter:
             cut_candidates.append((t, 1.0))
             protected_marker_samples.add(int(round(t * self.sample_rate)))
 
-        final_cut_points = self._finalize_and_filter_cuts_v2(
+        refine_result = self._finalize_and_filter_cuts_v2(
             cut_candidates,
             original_audio,
             pure_vocal_audio=vocal_track
         )
+        self._last_suppressed_cut_points = list(refine_result.suppressed_points or [])
+        final_cut_points = sorted(set(refine_result.sample_boundaries))
 
         if protected_marker_samples:
             total_samples = len(original_audio)
@@ -258,6 +273,74 @@ class SeamlessSplitter:
             original_audio=original_audio
         )
         classification_debug = list(getattr(self, '_last_segment_classification_debug', []))
+
+        layout_cfg_raw = get_config('segment_layout', {}) or {}
+        if isinstance(layout_cfg_raw, dict):
+            layout_cfg_raw = dict(layout_cfg_raw)
+        else:
+            layout_cfg_raw = {}
+        fallback_micro = get_config('quality_control.segment_min_mix_piece', None)
+        if fallback_micro is not None:
+            layout_cfg_raw.setdefault('micro_merge_s', float(fallback_micro))
+            layout_cfg_raw.setdefault('enable', bool(float(fallback_micro) > 0.0))
+        fallback_max = get_config('quality_control.segment_max_duration', None)
+        if fallback_max is not None:
+            layout_cfg_raw.setdefault('soft_max_s', float(fallback_max))
+        layout_cfg_raw.setdefault('min_gap_s', float(get_config('quality_control.min_split_gap', 1.0)))
+
+        layout_config = derive_layout_config(
+            layout_cfg_raw,
+            feature_cache,
+            sample_rate=self.sample_rate,
+        )
+        layout_applied = False
+        if layout_config.enable and len(final_cut_points) > 2:
+            boundaries_sec = [sample / float(self.sample_rate) for sample in final_cut_points]
+            layout_segments = [
+                SegmentLayoutItem(
+                    start=boundaries_sec[i],
+                    end=boundaries_sec[i + 1],
+                    kind='human' if segment_vocal_flags[i] else 'music',
+                )
+                for i in range(len(boundaries_sec) - 1)
+            ]
+            layout_result = refine_layout(
+                layout_segments,
+                self._last_guard_adjustments_raw,
+                config=layout_config,
+                sample_rate=self.sample_rate,
+                suppressed_cut_points=self._last_suppressed_cut_points,
+                features=feature_cache,
+            )
+            if layout_result.segments:
+                layout_boundaries_sec = [layout_result.segments[0].start]
+                layout_boundaries_sec.extend(seg.end for seg in layout_result.segments)
+                sample_count = len(original_audio)
+                updated_cut_points: List[int] = []
+                for t in layout_boundaries_sec:
+                    sample_idx = int(round(t * self.sample_rate))
+                    sample_idx = max(0, min(sample_idx, sample_count))
+                    updated_cut_points.append(sample_idx)
+                if updated_cut_points:
+                    updated_cut_points[0] = 0
+                    updated_cut_points[-1] = sample_count
+                updated_cut_points = sorted(set(updated_cut_points))
+                if updated_cut_points != final_cut_points:
+                    layout_applied = True
+                final_cut_points = updated_cut_points if updated_cut_points else final_cut_points
+                self._set_guard_adjustments(layout_result.adjustments)
+                self._last_suppressed_cut_points = list(layout_result.suppressed_points or [])
+                segment_vocal_flags = self._classify_segments_vocal_presence(
+                    vocal_track,
+                    final_cut_points,
+                    marker_segments=markers.get('vocal_presence_segments'),
+                    pure_music_segments=markers.get('pure_music_segments'),
+                    instrumental_audio=instrumental_audio,
+                    original_audio=original_audio
+                )
+                classification_debug = list(getattr(self, '_last_segment_classification_debug', []))
+        else:
+            layout_applied = False
         segments, segment_vocal_flags, merged_debug = self._split_at_sample_level(
             original_audio,
             final_cut_points,
@@ -312,6 +395,8 @@ class SeamlessSplitter:
             'segment_classification_debug': getattr(self, '_last_segment_classification_debug', []),
             'guard_shift_stats': self._get_guard_shift_stats(),
             'guard_adjustments': guard_adjustments,
+            'segment_layout_applied': bool(layout_applied),
+            'suppressed_cut_points_sec': [float(cut.t) for cut in self._last_suppressed_cut_points],
             'cut_points_samples': cuts_samples,
             'cut_points_sec': cuts_seconds,
             'precision_guard_ok': bool(self._precision_guard_ok),
@@ -470,14 +555,13 @@ class SeamlessSplitter:
         cut_candidates,
         audio_for_split: np.ndarray,
         pure_vocal_audio: Optional[np.ndarray] = None
-    ) -> List[int]:
+    ) -> CutRefineResult:
         """Refined candidate filtering: leverage shared refiner for guards/NMS."""
 
         sr = self.sample_rate
         if sr <= 0 or audio_for_split.size == 0:
-            self._last_guard_shift_stats = self._blank_guard_stats()
-            self._precision_guard_ok = True
-            return [0, len(audio_for_split)]
+            self._set_guard_adjustments([])
+            return CutRefineResult([], [0, len(audio_for_split)], [])
 
         points: List[CutPoint] = []
         if isinstance(cut_candidates, list) and cut_candidates:
@@ -494,9 +578,8 @@ class SeamlessSplitter:
                     points.append(CutPoint(t=float(t), score=1.0))
 
         if not points:
-            self._last_guard_shift_stats = self._blank_guard_stats()
-            self._precision_guard_ok = True
-            return [0, len(audio_for_split)]
+            self._set_guard_adjustments([])
+            return CutRefineResult([], [0, len(audio_for_split)], [])
 
         min_gap_s = float(get_config('quality_control.min_split_gap', 1.0))
         try:
@@ -549,54 +632,12 @@ class SeamlessSplitter:
             enable_vocal_guard=(guard_enabled and use_vocal_guard),
         )
 
-        adjustments = result.adjustments
-        if adjustments:
-            total_shifts = [adj.final_shift_ms for adj in adjustments]
-            vocal_shifts = [adj.guard_shift_ms for adj in adjustments]
-            mix_shifts = [adj.final_shift_ms - adj.guard_shift_ms for adj in adjustments]
-
-            def _avg_abs(values: List[float]) -> float:
-                return float(sum(abs(v) for v in values) / len(values)) if values else 0.0
-
-            def _avg_positive(values: List[float]) -> float:
-                positives = [v for v in values if v > 0]
-                return float(sum(positives) / len(positives)) if positives else 0.0
-
-            def _percentile_abs(values: List[float], percentile: float) -> float:
-                if not values:
-                    return 0.0
-                arr = np.abs(np.asarray(values, dtype=float))
-                return float(np.percentile(arr, percentile))
-
-            self._last_guard_shift_stats = {
-                'avg_shift_ms': _avg_abs(total_shifts),
-                'max_shift_ms': float(max((abs(v) for v in total_shifts), default=0.0)),
-                'avg_guard_only_shift_ms': _avg_positive(total_shifts),
-                'avg_vocal_guard_shift_ms': _avg_positive(vocal_shifts),
-                'avg_mix_guard_shift_ms': _avg_positive(mix_shifts),
-                'p95_shift_ms': _percentile_abs(total_shifts, 95.0),
-                'count': len(adjustments),
-            }
-            self._precision_guard_ok = (
-                self._last_guard_shift_stats['avg_shift_ms'] <= PRECISION_GUARD_AVG_MS
-                and self._last_guard_shift_stats['p95_shift_ms'] <= PRECISION_GUARD_P95_MS
-            )
-            if not self._precision_guard_ok:
-                logger.warning(
-                    "[PrecisionGuard] 守卫位移超过阈值: avg=%.2fms (<=%.2f), p95=%.2fms (<=%.2f)",
-                    self._last_guard_shift_stats['avg_shift_ms'],
-                    PRECISION_GUARD_AVG_MS,
-                    self._last_guard_shift_stats['p95_shift_ms'],
-                    PRECISION_GUARD_P95_MS,
-                )
-        else:
-            self._last_guard_shift_stats = self._blank_guard_stats()
-            self._precision_guard_ok = True
-
-        self._last_guard_adjustments = [asdict(adj) for adj in adjustments]
+        kept_adjustments = list(result.adjustments or [])
+        self._set_guard_adjustments(kept_adjustments)
 
         boundaries = result.sample_boundaries or [0, len(audio_for_split)]
-        return sorted(set(boundaries))
+        unique_boundaries = sorted(set(boundaries))
+        return CutRefineResult(result.final_points, unique_boundaries, kept_adjustments, result.suppressed_points)
     def _split_at_sample_level(
         self,
         audio: np.ndarray,
@@ -899,6 +940,55 @@ class SeamlessSplitter:
             'count': 0,
         }
 
+    def _set_guard_adjustments(self, adjustments: List[CutAdjustment]) -> None:
+        adjustments_list = list(adjustments or [])
+        self._last_guard_adjustments_raw = adjustments_list
+        self._last_guard_adjustments = [asdict(adj) for adj in adjustments_list]
+
+        if not adjustments_list:
+            self._last_guard_shift_stats = self._blank_guard_stats()
+            self._precision_guard_ok = True
+            return
+
+        total_shifts = [adj.final_shift_ms for adj in adjustments_list]
+        vocal_shifts = [adj.guard_shift_ms for adj in adjustments_list]
+        mix_shifts = [adj.final_shift_ms - adj.guard_shift_ms for adj in adjustments_list]
+
+        def _avg_abs(values: List[float]) -> float:
+            return float(sum(abs(v) for v in values) / len(values)) if values else 0.0
+
+        def _avg_positive(values: List[float]) -> float:
+            positives = [v for v in values if v > 0]
+            return float(sum(positives) / len(positives)) if positives else 0.0
+
+        def _percentile_abs(values: List[float], percentile: float) -> float:
+            if not values:
+                return 0.0
+            arr = np.abs(np.asarray(values, dtype=float))
+            return float(np.percentile(arr, percentile))
+
+        self._last_guard_shift_stats = {
+            'avg_shift_ms': _avg_abs(total_shifts),
+            'max_shift_ms': float(max((abs(v) for v in total_shifts), default=0.0)),
+            'avg_guard_only_shift_ms': _avg_positive(total_shifts),
+            'avg_vocal_guard_shift_ms': _avg_positive(vocal_shifts),
+            'avg_mix_guard_shift_ms': _avg_positive(mix_shifts),
+            'p95_shift_ms': _percentile_abs(total_shifts, 95.0),
+            'count': len(adjustments_list),
+        }
+        self._precision_guard_ok = (
+            self._last_guard_shift_stats['avg_shift_ms'] <= PRECISION_GUARD_AVG_MS
+            and self._last_guard_shift_stats['p95_shift_ms'] <= PRECISION_GUARD_P95_MS
+        )
+        if not self._precision_guard_ok:
+            logger.warning(
+                "[PrecisionGuard] 守卫位移超过阈值: avg=%.2fms (<=%.2f), p95=%.2fms (<=%.2f)",
+                self._last_guard_shift_stats['avg_shift_ms'],
+                PRECISION_GUARD_AVG_MS,
+                self._last_guard_shift_stats['p95_shift_ms'],
+                PRECISION_GUARD_P95_MS,
+            )
+
     def _get_guard_adjustments(self) -> List[Dict[str, float]]:
         adjustments = getattr(self, '_last_guard_adjustments', None)
         if not adjustments:
@@ -914,9 +1004,8 @@ class SeamlessSplitter:
     def _create_single_segment_result(self, audio: np.ndarray, input_path: str, output_dir: str, reason: str, is_vocal: bool = True, gpu_meta: Optional[Dict[str, Any]] = None) -> Dict:
         """当无法分割时，创建单个片段的结果"""
         logger.warning(f"{reason}，将输出为单个文件。")
-        self._last_guard_shift_stats = self._blank_guard_stats()
-        self._precision_guard_ok = True
-        self._last_guard_adjustments = []
+        self._set_guard_adjustments([])
+        self._last_suppressed_cut_points = []
         sample_count = audio.shape[-1] if hasattr(audio, 'shape') else len(audio)
         duration_s = float(sample_count) / float(self.sample_rate) if self.sample_rate > 0 else 0.0
         saved_files = self._save_segments([audio], output_dir, segment_is_vocal=[is_vocal])

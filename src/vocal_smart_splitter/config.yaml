@@ -154,7 +154,7 @@ quality_control:
   segment_vocal_threshold_db: -50.0
   # Pure-vocal occupancy ratio used for _human/_music suffix selection
   segment_vocal_activity_ratio: 0.1
-  segment_min_mix_pace: 2.0        # 最小合并参考数值 (s)
+  segment_min_mix_piece: 2.0        # 最小合并参考数值 (s)
   # Segment classification voting thresholds (see SeamlessSplitter._classify_segments_vocal_presence)
   high_presence_ratio: 0.6 # 建议 0.6~0.7
   segment_vocal_overlap_ratio: 0.35
@@ -174,6 +174,13 @@ quality_control:
     search_right_ms: 150
     floor_percentile: 5
     floor_db_override: null
+
+segment_layout:
+  enable: true
+  micro_merge_s: 2.0
+  soft_min_s: 6.0
+  soft_max_s: 18.0
+  min_gap_s: 1.0
 
 vocal_separation:
   hpss_margin: 2.0

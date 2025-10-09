@@ -14,6 +14,13 @@ from .refine import (
     finalize_cut_points,
 )
 from .metrics import compute_cut_time_diffs_ms, summarize_diffs
+from .segment_layout_refiner import (
+    Segment,
+    LayoutConfig,
+    LayoutResult,
+    derive_layout_config,
+    refine_layout,
+)
 
 __all__ = [
     'CutPoint',
@@ -26,4 +33,9 @@ __all__ = [
     'finalize_cut_points',
     'compute_cut_time_diffs_ms',
     'summarize_diffs',
+    'Segment',
+    'LayoutConfig',
+    'LayoutResult',
+    'derive_layout_config',
+    'refine_layout',
 ]
