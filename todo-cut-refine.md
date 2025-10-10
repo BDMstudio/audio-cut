@@ -133,7 +133,7 @@ if cfg.segment_layout.enable:
   * 遍历 `segments`，对 `dur < micro_merge_s` 的段执行**无条件合并**：计算左右两侧 **`merge_cost`**，选择代价更小的一侧合并。
   * 边界条件：若只有一侧可合并（首尾段），则合并该侧。
 
-* [ ] **B：软最小合并（堆驱动）**
+* [x] **B：软最小合并（堆驱动）**
 
   * 构建小根堆 `(dur, idx)`，循环：
 
@@ -142,7 +142,7 @@ if cfg.segment_layout.enable:
     * **只有当总代价 < 阈值**（可用 `pause_strength < 0.35` 且 `energy_jump_db_pos < 6dB` 的布尔门限）才执行合并；
     * 合并后更新受影响的邻居到堆；支持级联直至所有段 `≥ soft_min_s` 或不可合并。
 
-* [ ] **C：软最大救援切分**
+* [x] **C：软最大救援切分**
 
   * 对 `dur > soft_max_s` 的段，调用 `pick_rescue_cut`：
 
@@ -151,11 +151,11 @@ if cfg.segment_layout.enable:
     * 保障 `min_gap_s`：新切点与两侧切点间隔必须 ≥ `min_gap_s`；
     * 一次救援完成后可继续检查右段是否仍 > `soft_max_s`。
 
-* [ ] **D：最终 min-gap 校验**
+* [x] **D：最终 min-gap 校验**
 
   * 统一跑一次 `enforce_min_gap`，确保守卫右推后的边界也不触碰。
 
-* [ ] **（可选）E：节拍吸附**
+* [x] **（可选）E：节拍吸附**
 
   * 若 `beat_snap_ms > 0` 且 BPM 可信，将最终切点向最近的节拍网格吸附（限制在 ±`beat_snap_ms` 内），吸附后再次执行 `min-gap` 校验。
 

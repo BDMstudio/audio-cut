@@ -1,36 +1,33 @@
 ﻿# File: src/vocal_smart_splitter/config.yaml
 # AI-SUMMARY: Global config for audio IO, pause detection thresholds, and quality gates
-# 说明：仅保留当前代码真实读取的关键参数，默认值为通用人声切分基线。
+# Normalized configuration for Vocal Smart Splitter (v2.x)
+# Focus: Pure vocal detection with BPM/MDD/VPP adaptation and weighted NMS
 
 audio:
-  sample_rate: 44100        # 输入/输出采样率（与模型一致，切勿随意修改）
-  channels: 1               # 处理为单声道
+  sample_rate: 44100
+  channels: 1
   format: wav
   quality: 320
 
-analysis:
-  features_cache:
-    device: auto            # auto|cpu|cuda：特征缓存构建优先使用的设备
-
 gpu_pipeline:
-  enable: true              # true 启用 CUDA 分块流水线，false 全程 CPU
-  prefer_device: cuda       # 指定默认 GPU（如 cuda:0/cuda:1）；CPU 服务器可改为 cpu
-  chunk_seconds: 10.0       # 每个子块长度（秒），块越大越逼近整段，但显存占用更高
-  overlap_seconds: 2.5      # 子块间重叠时长，避免块边界伪影
-  halo_seconds: 0.5         # halo 区域长度，提升块拼接平滑度
-  align_hop: 4096           # 对齐步长，需与模型 STFT hop 匹配
-  use_cuda_streams: true    # true 时启用多 CUDA stream 并行
+  enable: true
+  prefer_device: cuda
+  chunk_seconds: 10.0
+  overlap_seconds: 2.5
+  halo_seconds: 0.5
+  align_hop: 4096
+  use_cuda_streams: true
   prefetch_pinned_buffers: 2
   inflight_chunks_limit: 2
-  strict_gpu: false         # true 时 GPU 失败直接报错，不回退 CPU
+  strict_gpu: false
   ort:
     graph_optimization_level: basic
     cudnn_conv_algo_search: HEURISTIC
     disable_trt: true
 
 enhanced_separation:
-  backend: mdx23            # mdx23|demucs_v4|auto
-  enable_fallback: true     # 主后端失败时尝试 Demucs 兜底
+  backend: mdx23
+  enable_fallback: true
   mdx23:
     model_filename: Kim_Vocal_1.onnx  # 想用哪个模型写哪个 Kim_Inst.onnx/Kim_Vocal_1.onnx/Kim_Vocal_2.onnx，优先选择Kim_Vocal_1.onnx，其次Kim_Vocal_2.onnx
     output_type: auto  # 输出完整分离 vocal 还是 inst，auto|vocal|instrumental，auto 会根据文件名自动识别
@@ -51,8 +48,8 @@ pure_vocal_detection:
   # Relative energy valleys (robust defaults)
   enable_relative_energy_mode: true
   # 提高相对阈值以产生更充足且更“长”的能量谷候选，避免遗留超长段
-  peak_relative_threshold_ratio: 0.22   # recommended 0.16–0.22
-  rms_relative_threshold_ratio: 0.26    # recommended 0.20–0.26
+  peak_relative_threshold_ratio: 0.26   # recommended 0.16–0.22
+  rms_relative_threshold_ratio: 0.32    # recommended 0.20–0.26
 
   # BPM/MDD-driven adaptation of relative thresholds
   relative_threshold_adaptation:
@@ -68,10 +65,10 @@ pure_vocal_detection:
       base: 1.0
       gain: 0.2
 
-  # VPP (Vocal Pause Profile) adaptation — 仅在歌唱片段内；不包含伴奏
+  # VPP (Vocal Pause Profile) adaptation — only within singing blocks; exclude interludes
   pause_stats_adaptation:
     enable: true
-    delta_db: 10.0               # voice_active = floor_db + delta_db
+    delta_db: 3.0               # voice_active = floor_db + delta_db
     morph_close_ms: 150         # close then open (run-length morphology)
     morph_open_ms: 50
     sing_block_min_s: 2.0
@@ -93,7 +90,7 @@ pure_vocal_detection:
     # 强化“长谷优先”，保持安静度为次要因子
     w_len: 0.7
     w_quiet: 0.3
-    w_flat: 0.5
+    w_flat: 0.1
     use_weighted_nms: true
     merge_close_ms: 300           # 合并更近的碎谷，提升候选质量
     max_raw_candidates: 1200      # 能量谷原始候选上限，防爆炸
@@ -106,65 +103,85 @@ advanced_vad:
   focus_merge_gap_s: 0.12
   silero_length_bucket: 4096
 
+spectral_classifier:
+  breath_threshold: 0.3
+  pause_threshold: 0.7
+  uncertain_range: [0.3, 0.7]
+  f0_weight: 0.25
+  formant_weight: 0.20
+  spectral_weight: 0.20
+  duration_weight: 0.20
+  energy_weight: 0.15
+
 musical_dynamic_density:
+  enable: true
   energy_weight: 0.5
   spectral_weight: 0.3
   onset_weight: 0.2
   threshold_multiplier: 0.2
   max_multiplier: 1.4
   min_multiplier: 0.6
+  chorus_detection:
+    enable: true
+    energy_threshold: 0.55
+    density_threshold: 0.75
+    multiplier: 1.1
+  segment_analysis:
+    window_overlap: 0.5
+    smoothing_factor: 0.3
+    min_segment_duration: 8.0
+
 quality_control:
-  validate_split_points: true       # true 时执行 min_split_gap、边界检测等基础校验
-  min_pause_at_split: 1.0           # 切点附近需要满足的最小停顿时长（秒）
-  min_split_gap: 1.0                # 最终切点之间最小间隔（秒）
-  min_vocal_content_ratio: 0.4      # 片段中人声占比低于该值将被视为音乐段
-  max_silence_ratio: 0.3            # 片段中静音占比上限
+  validate_split_points: true
+  # adaptive (may be overridden by BPM layer if present)
+  min_pause_at_split: 1.0
+  # 降低最小切点间隔，让一次检测能保留更多“足够分散”的切点
+  min_split_gap: 1.0
+  # static constraints
+  min_vocal_content_ratio: 0.4
+  max_silence_ratio: 0.3
+  enable_zero_crossing_align: true
   fade_in_duration: 0.0
   fade_out_duration: 0.0
   normalize_audio: false
   remove_click_noise: false
   smooth_transitions: false
-  segment_min_duration: 4.0
-  segment_max_duration: 17.0
+  # Length strategy: 终筛阶段仅依赖 min_split_gap 过滤；segment_min_duration 用于 VPP 候选上限，segment_max_duration 目前未启用
+  segment_min_duration: 6.0     # VPP 候选上限参考值 (s)
+  segment_max_duration: 18.0    # 预留参数，暂未启用自动切分
+  # Pure-music splitting: min duration threshold (seconds). 0 = disabled (default).
   pure_music_min_duration: 6.0
   segment_vocal_threshold_db: -50.0
+  # Pure-vocal occupancy ratio used for _human/_music suffix selection
   segment_vocal_activity_ratio: 0.1
-  segment_min_mix_piece: 2.0
+  segment_min_mix_piece: 2.0        # 最小合并参考数值 (s)
+  # Segment classification voting thresholds (see SeamlessSplitter._classify_segments_vocal_presence)
+  high_presence_ratio: 0.6 # 建议 0.6~0.7
+  segment_vocal_overlap_ratio: 0.35
+  segment_music_overlap_ratio: 0.55
+  segment_vocal_energy_ratio: 0.6
+  segment_music_energy_ratio: 0.4
+  segment_noise_margin_db: 6.0
+  segment_vocal_presence_ratio: 0.35
+  segment_music_presence_ratio: 0.15
+
+  # Quiet guard override (optional)
   enforce_quiet_cut:
-    enable: false
-    win_ms: 80
-    guard_db: 2.5
-    search_right_ms: 300
-    floor_percentile: 0.5
-    floor_db_override: null
-  local_boundary_refine:
     enable: true
-    search_radius_ms: 500
-    window_ms: 5
-    min_drop_db: 5.0
+    win_ms: 80
+    # 略微放宽守卫余量并缩短右推距离，减少被推到边界导致的长段残留
+    guard_db: 2.5
+    search_right_ms: 150
+    floor_percentile: 5
+    floor_db_override: null
 
 segment_layout:
-  enable: true                    # 是否启用段落后处理（微碎片合并、软最小/最大、节拍吸附）
-  micro_merge_s: 2.0              # <2s 的段直接合并到邻居
-  soft_min_s: 4.0                 # 低于 soft_min_s 的段按成本函数尝试合并
-  soft_max_s: 17.0                # 高于 soft_max_s 的段尝试寻找救援切点重新拆分
-  min_gap_s: 1.0                  # 合并/救援后的最小段间距约束
-  beat_snap_ms: 0                # 节拍吸附窗口（毫秒）；设 0 关闭吸附
-
-vocal_pause_splitting:
-  enable_bpm_adaptation: false    # legacy V2.0 流程开关，默认关闭
-  local_rms_window_ms: 25
-  silence_floor_percentile: 5
-  silence_floor_allowance: 0.0
-  lookahead_guard_ms: 120
-  head_offset: 0.0
-  tail_offset: 0.0
-  voice_threshold: 0.5
-  bpm_adaptive_settings:
-    pause_duration_multipliers:
-      slow_song_multiplier: 1.0
-      medium_song_multiplier: 1.0
-      fast_song_multiplier: 1.0
+  enable: true
+  micro_merge_s: 2.0
+  soft_min_s: 6.0
+  soft_max_s: 18.0
+  min_gap_s: 1.0
+  beat_snap_ms: 80
 
 vocal_separation:
   hpss_margin: 2.0
@@ -178,34 +195,36 @@ vocal_separation:
   min_vocal_ratio: 0.15
   max_noise_ratio: 0.3
 
+output:
+  directory: './output'
+  naming_pattern: 'segment_{index:03d}'
+  include_metadata: true
+  save_debug_info: true
+  save_separated_vocal: false
+  save_breath_map: false
+  save_analysis_report: true
+
+logging:
+  level: 'INFO'
+  file: 'smart_splitter.log'
+  format: '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+  max_file_size: '10MB'
+  backup_count: 3
+
 # 可选：BPM 自适应核心参数覆盖（若启用自适应层，以下覆盖将被使用）
 bpm_adaptive_core:
   pause_duration_beats:
     slow: 1.5
     medium: 1.0
-    fast: 0.6
+    fast: 0.6       # 快歌允许更短的“最小停顿”认定
     very_fast: 0.5
   split_gap_phrases:
-    slow: 1.6
-    medium: 1.2
-    fast: 0.8
-    very_fast: 0.6
+    slow: 4
+    medium: 3
+    fast: 2         # 快歌降低分割间隙（按乐句/拍计算），避免遗留超长段
+    very_fast: 2
   speech_pad_beats:
     slow: 0.8
     medium: 0.5
     fast: 0.3
     very_fast: 0.2
-  tempo_categories: {}
-  complexity_compensation:
-    base_factor: 1.0
-    complexity_boost: 0.0
-    instrument_boost: 0.0
-    min_instruments: 0
-
-output:
-  directory: "./output"
-
-logging:
-  level: "INFO"
-  file: "smart_splitter.log"
-  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"

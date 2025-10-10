@@ -287,6 +287,7 @@ class SeamlessSplitter:
         if fallback_max is not None:
             layout_cfg_raw.setdefault('soft_max_s', float(fallback_max))
         layout_cfg_raw.setdefault('min_gap_s', float(get_config('quality_control.min_split_gap', 1.0)))
+        layout_cfg_raw.setdefault('beat_snap_ms', float(get_config('segment_layout.beat_snap_ms', 0.0) or 0.0))
 
         layout_config = derive_layout_config(
             layout_cfg_raw,
@@ -294,7 +295,7 @@ class SeamlessSplitter:
             sample_rate=self.sample_rate,
         )
         layout_applied = False
-        if layout_config.enable and len(final_cut_points) > 2:
+        if layout_config.enable and len(final_cut_points) >= 2:
             boundaries_sec = [sample / float(self.sample_rate) for sample in final_cut_points]
             layout_segments = [
                 SegmentLayoutItem(
@@ -341,6 +342,29 @@ class SeamlessSplitter:
                 classification_debug = list(getattr(self, '_last_segment_classification_debug', []))
         else:
             layout_applied = False
+
+        # 额外的局部波谷优化（关闭守卫时用于微调边界）
+        local_refine_cfg = get_config('quality_control.local_boundary_refine', {}) or {}
+        if local_refine_cfg.get('enable') and len(final_cut_points) >= 2:
+            refined_points = self._refine_boundaries_local_valley(
+                final_cut_points,
+                vocal_track,
+                local_refine_cfg,
+                min_gap_s=float(get_config('quality_control.min_split_gap', 1.0)),
+            )
+            if refined_points != final_cut_points:
+                final_cut_points = refined_points
+                layout_applied = True
+                segment_vocal_flags = self._classify_segments_vocal_presence(
+                    vocal_track,
+                    final_cut_points,
+                    marker_segments=markers.get('vocal_presence_segments'),
+                    pure_music_segments=markers.get('pure_music_segments'),
+                    instrumental_audio=instrumental_audio,
+                    original_audio=original_audio
+                )
+                classification_debug = list(getattr(self, '_last_segment_classification_debug', []))
+
         segments, segment_vocal_flags, merged_debug = self._split_at_sample_level(
             original_audio,
             final_cut_points,
@@ -1000,6 +1024,57 @@ class SeamlessSplitter:
         if not stats:
             return self._blank_guard_stats()
         return dict(stats)
+
+    def _refine_boundaries_local_valley(
+        self,
+        sample_boundaries: List[int],
+        vocal_audio: np.ndarray,
+        cfg: Dict[str, Any],
+        *,
+        min_gap_s: float,
+    ) -> List[int]:
+        if vocal_audio is None or vocal_audio.size == 0 or len(sample_boundaries) <= 2:
+            return sample_boundaries
+
+        sr = float(self.sample_rate)
+        radius = max(1, int(float(cfg.get('search_radius_ms', 200)) / 1000.0 * sr))
+        win = max(1, int(float(cfg.get('window_ms', 20)) / 1000.0 * sr))
+        drop_db = float(cfg.get('min_drop_db', 3.0))
+        min_gap_samples = max(1, int(min_gap_s * sr))
+
+        refined = list(sample_boundaries)
+        for idx in range(1, len(refined) - 1):
+            center = refined[idx]
+            start = max(0, center - radius)
+            end = min(len(vocal_audio), center + radius)
+            segment = vocal_audio[start:end]
+            if segment.size <= win:
+                continue
+
+            sq = np.square(segment.astype(np.float64))
+            kernel = np.ones(win, dtype=np.float64) / float(win)
+            rms = np.sqrt(np.convolve(sq, kernel, mode='valid') + 1e-12)
+            if rms.size == 0:
+                continue
+            rms_db = 20.0 * np.log10(rms + 1e-12)
+
+            original_idx = int(np.clip(center - start - win // 2, 0, rms_db.size - 1))
+            original_db = rms_db[original_idx]
+            valley_idx = int(np.argmin(rms_db))
+            valley_db = rms_db[valley_idx]
+
+            if (original_db - valley_db) < drop_db:
+                continue
+
+            candidate = start + valley_idx + win // 2
+            if candidate <= refined[idx - 1] + min_gap_samples:
+                continue
+            if candidate >= refined[idx + 1] - min_gap_samples:
+                continue
+
+            refined[idx] = candidate
+
+        return refined
 
     def _create_single_segment_result(self, audio: np.ndarray, input_path: str, output_dir: str, reason: str, is_vocal: bool = True, gpu_meta: Optional[Dict[str, Any]] = None) -> Dict:
         """当无法分割时，创建单个片段的结果"""
