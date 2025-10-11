@@ -50,6 +50,8 @@
 - Schema v3：`src/audio_cut/config/schema_v3.yaml` + `config/profiles/*` 只保留 6–8 个核心键，通过 `audio_cut.config.derive` 自动派生 legacy 配置并写入 `meta.schema_version/profile`，迁移脚本 `config/migrate_v2_to_v3.py` 用于将旧 YAML 映射到新格式。
 - `output.format` 默认使用 wav，可通过 `output.mp3` 等子节配置导出参数；新增 `audio_export` 工具集成统一写入逻辑。
 - segment_layout.* 默认开启段落后处理，可通过 micro_merge_s/soft_min_s/soft_max_s/min_gap_s/beat_snap_ms 控制碎片合并、救援切分与节拍吸附；结果字段提供 segment_layout_applied 统计支撑。
+- `_save_segments` appends `_X.X` (seconds, one decimal place) to exported filenames for easier QA cross-check.
+- _save_segments �����������Ƭ������Ҫ���� _X.X ʱ�����׺（��，��һλ���֣��������������������）
 - CPU 兜底：`audio_cut.detectors.energy_gate` 作为纯能量门控诊断工具保留，默认关闭，仅在 Silero 不可用或 CI CPU 验证时手动调用。
 - 兼容模式：`run_splitter --compat-config v2` 会自动迁移 `config/default.yaml`，并在运行结果的 `meta.compat_config` 标记来源，确保旧部署可平滑过渡一个版本周期。
 

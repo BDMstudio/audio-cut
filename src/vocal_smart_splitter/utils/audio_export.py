@@ -79,7 +79,10 @@ def export_audio(
 
     key = ensure_supported_format(format_name)
     fmt = _FORMATS[key]
-    export_path = base_path.with_suffix(f".{fmt.extension}")
+    if base_path.suffix:
+        export_path = base_path.parent / f"{base_path.name}.{fmt.extension}"
+    else:
+        export_path = base_path.with_suffix(f".{fmt.extension}")
     export_options = build_export_options(key, options)
     fmt.writer(export_path, audio, sample_rate, export_options)
     return export_path

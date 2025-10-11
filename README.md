@@ -37,7 +37,8 @@
 ## 输出结构
 - `segment_###_{human|music}.wav`：混音片段。
 - `segments_vocal/segment_###_{human|music}_vocal.wav`：对应人声片段。
-- `<stem>_v2.2_mdd_vocal_full.wav` / `<stem>_v2.2_mdd_instrumental.wav`：全长人声与伴奏。
+- 片段文件名会在末尾附加 `_X.X`（秒）标记当前片段时长，保留一位小数便于快速核对切点。
+- `<stem>_v2.2_mdd_vocal_full_*.wav` / `<stem>_v2.2_mdd_instrumental_*.wav`：全长人声与伴奏，亦追加 `_X.X` 秒数后缀。
 - `segment_classification_debug` 以列表形式返回给调用者；CLI 如需 JSON 可自行落盘（当前脚本默认仅打印）。
 - 结果字典包含 guard_shift_stats 汇总守卫位移统计，可按需打印或落盘分析。
 - 额外返回 `cut_points_samples` / `cut_points_sec` 以及 `guard_adjustments`，便于校验块级与整段流程的一致性。

@@ -420,13 +420,19 @@ class SeamlessSplitter:
             debug_entries=classification_debug,
         )
         segment_durations = [len(seg) / float(self.sample_rate) for seg in segments]
+        segment_durations_map = {i: duration for i, duration in enumerate(segment_durations)}
         if merged_debug is not None:
             classification_debug = merged_debug
             self._last_segment_classification_debug = merged_debug
         else:
             self._last_segment_classification_debug = classification_debug
 
-        mix_segment_files = self._save_segments(segments, output_dir, segment_is_vocal=segment_vocal_flags)
+        mix_segment_files = self._save_segments(
+            segments,
+            output_dir,
+            segment_is_vocal=segment_vocal_flags,
+            duration_map=segment_durations_map,
+        )
 
         vocal_segments, _, _ = self._split_at_sample_level(vocal_track, final_cut_points)
         vocal_segment_files = self._save_segments(
@@ -434,14 +440,16 @@ class SeamlessSplitter:
             output_dir,
             segment_is_vocal=segment_vocal_flags,
             subdir='segments_vocal',
-            file_suffix='_vocal'
+            file_suffix='_vocal',
+            duration_map=segment_durations_map,
         )
 
         saved_files = mix_segment_files + vocal_segment_files
 
         # 5. 保存完整的分离文件
         input_name = Path(input_path).stem
-        full_vocal_base = Path(output_dir) / f"{input_name}_{mode}_vocal_full"
+        full_vocal_duration = len(vocal_track) / float(self.sample_rate)
+        full_vocal_base = Path(output_dir) / f"{input_name}_{mode}_vocal_full_{full_vocal_duration:.1f}"
         full_vocal_path = export_audio(
             vocal_track,
             self.sample_rate,
@@ -452,7 +460,8 @@ class SeamlessSplitter:
         saved_files.append(str(full_vocal_path))
 
         if separation_result.instrumental_track is not None:
-            full_instrumental_base = Path(output_dir) / f"{input_name}_{mode}_instrumental"
+            instrumental_duration = len(separation_result.instrumental_track) / float(self.sample_rate)
+            full_instrumental_base = Path(output_dir) / f"{input_name}_{mode}_instrumental_{instrumental_duration:.1f}"
             full_instrumental_path = export_audio(
                 separation_result.instrumental_track,
                 self.sample_rate,
@@ -524,7 +533,8 @@ class SeamlessSplitter:
 
         input_name = Path(input_path).stem
         saved_files = []
-        vocal_base = Path(output_dir) / f"{input_name}_vocal"
+        vocal_duration = len(separation_result.vocal_track) / float(self.sample_rate)
+        vocal_base = Path(output_dir) / f"{input_name}_vocal_{vocal_duration:.1f}"
         vocal_path = export_audio(
             separation_result.vocal_track,
             self.sample_rate,
@@ -535,7 +545,8 @@ class SeamlessSplitter:
         saved_files.append(str(vocal_path))
 
         if separation_result.instrumental_track is not None:
-            instrumental_base = Path(output_dir) / f"{input_name}_instrumental"
+            instrumental_duration = len(separation_result.instrumental_track) / float(self.sample_rate)
+            instrumental_base = Path(output_dir) / f"{input_name}_instrumental_{instrumental_duration:.1f}"
             instrumental_path = export_audio(
                 separation_result.instrumental_track,
                 self.sample_rate,
@@ -1015,6 +1026,7 @@ class SeamlessSplitter:
         *,
         subdir: Optional[str] = None,
         file_suffix: str = '',
+        duration_map: Optional[Dict[int, float]] = None,
     ) -> List[str]:
         """保存分割片段，根据当前导出格式写出文件。"""
         base_dir = Path(output_dir)
@@ -1028,8 +1040,17 @@ class SeamlessSplitter:
             if segment_is_vocal is not None and i < len(segment_is_vocal):
                 is_vocal = bool(segment_is_vocal[i])
 
+            duration_s = None
+            if duration_map and i in duration_map:
+                duration_s = max(0.0, float(duration_map[i]))
+
             label = 'human' if is_vocal else 'music'
-            output_base = base_dir / f"segment_{i + 1:03d}_{label}{file_suffix}"
+            suffix = file_suffix
+            if duration_s is not None:
+                formatted = f"_{duration_s:.1f}"
+                suffix = f"{file_suffix}{formatted}" if file_suffix else formatted
+
+            output_base = base_dir / f"segment_{i + 1:03d}_{label}{suffix}"
             exported_path = export_audio(
                 segment_audio,
                 self.sample_rate,
