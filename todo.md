@@ -1,7 +1,7 @@
 <!-- File: todo.md -->
 <!-- AI-SUMMARY: 项目任务状态看板，展示已完成事项、进行中任务、待办与 Codex 行动。 -->
 
-# todo.md — 项目开发进度与任务清单（更新于 2025-10-04）
+# todo.md —— 项目开发进度与任务清单（更新于 2025-10-09）
 
 ## 0. 说明
 - 状态标记：`[x] 已完成` / `[/] 进行中` / `[ ] 未开始`
@@ -16,13 +16,16 @@
 - [x] Chunk vs full 真实模型基准：`tests/benchmarks/test_chunk_vs_full_equivalence.py` 已补真实模型路径并生成 `chunk_vs_full_real.{json,md}`。
 - [x] Silero/VAD/特征跨块测试矩阵：`tests/unit/test_silero_chunk_vad.py`、`test_chunk_feature_builder_gpu.py`、`test_chunk_feature_builder_stft_equivalence.py` 覆盖短隙合并与帧一致性。
 - [x] GPU 性能报表与文档：`scripts/bench/run_gpu_cpu_baseline.py` + `scripts/bench/README_gpu_pipeline.md` 输出字段解释与 PR 基线模板。
+- [x] 段落布局精炼：segment_layout_refiner 已在主流程启用，完成碎片合并/软最小/救援切分，并输出 segment_layout_applied/suppressed_cut_points_sec 调试字段。
 ## 2. 进行中（Doing）
 
 - [/] 同类型母带回放：收集长句、说唱、电音、现场、对白等基线素材，验证守卫与判定稳健性。
 
+- [/] segment_layout 回归验收：收集碎片率、救援切分命中率与守卫偏移基线，补充自动化报表。
 ## 3. 待办（Backlog）
 
 - [ ] 汇总 `segment_classification_debug` 样本，检验 presence/energy 阈值在不同风格的适配情况。
+- [ ] segment_layout 调参指南：梳理 micro_merge_s/soft_min_s/soft_max_s/min_gap_s/beat_snap_ms 等参数的常见设置与回归范围。
 
 - [ ] 多 GPU 与 `--strict-gpu` 模式：验证一机多卡分配、失败策略与监控字段。
 

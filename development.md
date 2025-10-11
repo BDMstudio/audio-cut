@@ -29,8 +29,9 @@
 - (3) `SileroChunkVAD.process_chunk` 按 chunk 计划执行 Silero 推理，剪裁 halo 区并合并跨块时间段；同时 `ChunkFeatureBuilder` 在 GPU 上缓存 STFT/RMS 序列以供后续检测复用。
 - (4) `PureVocalPauseDetector.detect_pure_vocal_pauses` 复用焦点窗口与特征缓存运行相对能量 + MDD/BPM/VPP 自适应，必要时退回全特征评估。
 - (5) `audio_cut.cutting.finalize_cut_points` 承接候选，先按权重执行 NMS，再在人声/混音轨应用静音守卫、最小间隔并生成守卫位移统计。
-- (6) `SeamlessSplitter._classify_segments_vocal_presence` 以 RMS 活跃度估算 `_human/_music` 标签；marker/energy 投票字段保留占位用于后续扩展。
-- (7) `_save_segments` 写出 24-bit WAV、完整人声/伴奏，并输出 `cut_points_*`、`guard_adjustments` 与 `gpu_meta` 诊断信息。
+- (6) `SeamlessSplitter._classify_segments_vocal_presence` 以 RMS 活跃度估算 `_human/_music` 标签，作为后续段落布局与导出的初判基线。
+- (7) `segment_layout_refiner.refine_layout` 结合守卫调整、被抑制切点与特征缓存执行微碎片合并、软最小合并与软最大救援切分；如启用 `quality_control.local_boundary_refine` 会在更新边界后重新分类。
+- (8) `_save_segments` 写出 24-bit WAV、完整人声/伴奏，并输出 `cut_points_*`、`guard_adjustments` 与 `gpu_meta` 诊断信息。
 ## 4. 核心模块要点
 - SeamlessSplitter：统一入口；缓存 `segment_classification_debug`、`guard_shift_stats` 与每个 `guard_adjustment`，确保 GPU 块级与整段流程可量化对齐。
 - EnhancedVocalSeparator：封装 MDX23/Demucs，解析 `PipelineConfig` 并在 GPU 模式下累计 `h2d_ms/dtoh_ms/compute_ms/peak_mem_bytes`，通过 `gpu_meta` 向外暴露诊断信息。
@@ -47,6 +48,8 @@
 - 守卫默认关闭；当项目需要零爆音保障时，应同步开启 `quality_control.enforce_quiet_cut.enable` 与 `save_analysis_report` 便于验收。
 - `segment_vocal_activity_ratio` 设 0.10，若测试集中出现误判，应通过单元测试验证新的阈值后再调整。
 - Schema v3：`src/audio_cut/config/schema_v3.yaml` + `config/profiles/*` 只保留 6–8 个核心键，通过 `audio_cut.config.derive` 自动派生 legacy 配置并写入 `meta.schema_version/profile`，迁移脚本 `config/migrate_v2_to_v3.py` 用于将旧 YAML 映射到新格式。
+- `output.format` 默认使用 wav，可通过 `output.mp3` 等子节配置导出参数；新增 `audio_export` 工具集成统一写入逻辑。
+- segment_layout.* 默认开启段落后处理，可通过 micro_merge_s/soft_min_s/soft_max_s/min_gap_s/beat_snap_ms 控制碎片合并、救援切分与节拍吸附；结果字段提供 segment_layout_applied 统计支撑。
 - CPU 兜底：`audio_cut.detectors.energy_gate` 作为纯能量门控诊断工具保留，默认关闭，仅在 Silero 不可用或 CI CPU 验证时手动调用。
 - 兼容模式：`run_splitter --compat-config v2` 会自动迁移 `config/default.yaml`，并在运行结果的 `meta.compat_config` 标记来源，确保旧部署可平滑过渡一个版本周期。
 
@@ -67,10 +70,10 @@
 - 性能脚本：`python scripts/bench/run_gpu_cpu_baseline.py` 对比吞吐/H2D/DtoH，`python scripts/bench/run_multi_gpu_probe.py` 记录逐卡指标。
 ## 8. 当前进展与下一步
 - 已完成：GPU 多流流水线（streams/pinned/inflight）、Silero 分块 VAD、ChunkFeatureBuilder GPU 缓存、守卫统计，以及 chunk vs full 真实模型基准与文档同步；`audio_cut.cutting.finalize_cut_points` 接管精炼主路径。
+- 已完成：segment_layout_refiner 段落后处理已接入，生成微碎片合并/软最小合并/救援切分结果，并在结果字典暴露 segment_layout_applied 与 suppressed_cut_points 指标。
 - 进行中：同类型母带回放基线、`--strict-gpu` 策略与质量守则对照表（Milestone 2-G1/G2）。
 - 待规划：IO Binding / TensorRT / FP16 优化与运行时参数监控工具。
 ## 9. 环境与工具
 - Python 3.10+，PyTorch + librosa + numpy/scipy/soundfile。
 - `pip install -e .[dev]` 提供开发依赖（pytest/black/flake8）。
 - Windows + PowerShell/WSL 均可运行；外部模型位于 `MVSEP-MDX23-music-separation-model/`。
-

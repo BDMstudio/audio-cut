@@ -24,6 +24,10 @@ sys.path.insert(0, str(project_root / 'src'))
 
 from src.vocal_smart_splitter.core.seamless_splitter import SeamlessSplitter
 from src.vocal_smart_splitter.utils.config_manager import get_config
+from src.vocal_smart_splitter.utils.audio_export import (
+    get_supported_formats,
+    ensure_supported_format,
+)
 
 # --- (保留 find_audio_files, check_system_status, select_backend 等所有用户交互函数，无需改动) ---
 
@@ -76,6 +80,42 @@ def select_processing_mode():
     except ValueError:
         print("[ERROR] 输入无效，使用默认MDD v2.2模式")
         return 'v2.2_mdd'
+
+
+def select_output_format(default_format: str) -> str:
+    """选择输出格式（模块化扩展接口）"""
+    formats = get_supported_formats()
+    default_key = ensure_supported_format(default_format)
+    format_map = {fmt.name.lower(): fmt for fmt in formats}
+    index_map = {idx: fmt for idx, fmt in enumerate(formats, 1)}
+
+    print("\n" + "=" * 60)
+    print("选择输出格式")
+    print("=" * 60)
+    for idx, fmt in index_map.items():
+        is_default = "(默认)" if fmt.name.lower() == default_key else ""
+        print(f"  {idx}. {fmt.name.upper():<6} -> .{fmt.extension} {fmt.description} {is_default}")
+
+    prompt = f"请选择输出格式 (输入序号或名称，直接回车沿用 {default_key.upper()}): "
+    selection = input(prompt).strip().lower()
+    if not selection:
+        return default_key
+
+    chosen_format = None
+    if selection.isdigit():
+        chosen_format = index_map.get(int(selection))
+    else:
+        try:
+            chosen_key = ensure_supported_format(selection)
+            chosen_format = format_map.get(chosen_key)
+        except ValueError:
+            chosen_format = None
+
+    if chosen_format is None:
+        print("[WARN] 输入无效，沿用默认格式。")
+        return default_key
+
+    return chosen_format.name.lower()
 def main():
     """主函数 - 重构为纯传令兵模式"""
     # 轻量日志配置：让核心模块的INFO日志在控制台可见
@@ -103,6 +143,12 @@ def main():
 
     print(f"[SELECT] 选择文件: {selected_file.name}")
     processing_mode = select_processing_mode()
+    try:
+        default_format = ensure_supported_format(get_config('output.format', 'wav'))
+    except ValueError:
+        default_format = 'wav'
+    export_format = select_output_format(default_format)
+    print(f"[SELECT] 输出格式: {export_format}")
     
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     output_dir = project_root / "output" / f"quick_{processing_mode}_{timestamp}"
@@ -124,7 +170,8 @@ def main():
         result = splitter.split_audio_seamlessly(
             str(selected_file), 
             str(output_dir), 
-            mode=processing_mode
+            mode=processing_mode,
+            export_format=export_format
         )
         
         if result.get('success'):

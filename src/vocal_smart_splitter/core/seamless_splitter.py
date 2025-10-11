@@ -12,7 +12,6 @@ from typing import List, Dict, Optional, Tuple, Any
 from pathlib import Path
 import time
 import tempfile
-import soundfile as sf
 
 from audio_cut.analysis import TrackFeatureCache, build_feature_cache
 from audio_cut.utils.gpu_pipeline import PipelineConfig, PipelineContext, build_pipeline_context
@@ -30,6 +29,11 @@ from audio_cut.cutting.segment_layout_refiner import (
 )
 
 from ..utils.config_manager import get_config
+from ..utils.audio_export import (
+    build_export_options,
+    ensure_supported_format,
+    export_audio,
+)
 from ..utils.audio_processor import AudioProcessor
 from .pure_vocal_pause_detector import PureVocalPauseDetector
 from .quality_controller import QualityController
@@ -58,22 +62,66 @@ class SeamlessSplitter:
         self._last_guard_adjustments_raw: List[CutAdjustment] = []
         self._last_suppressed_cut_points: List[CutPoint] = []
         self._precision_guard_ok: bool = True
+        default_export_format = ensure_supported_format(get_config('output.format', 'wav'))
+        self._export_format = default_export_format
+        self._export_options = build_export_options(
+            default_export_format,
+            get_config(f'output.{default_export_format}', {})
+        )
         logger.info(f"无缝分割器统一指挥中心初始化完成 (SR: {self.sample_rate}) - 已加载纯人声检测器")
 
-    def split_audio_seamlessly(self, input_path: str, output_dir: str, mode: str = 'v2.2_mdd') -> Dict:
+    def split_audio_seamlessly(
+        self,
+        input_path: str,
+        output_dir: str,
+        mode: str = 'v2.2_mdd',
+        export_format: Optional[str] = None,
+        export_options: Optional[Dict[str, Any]] = None,
+    ) -> Dict:
         """执行无缝分割的主入口，支持纯人声分离与 v2.2 MDD 模式"""
         logger.info(f"开始无缝分割: {input_path} (模式: {mode})")
 
-        try:
-            if mode == 'vocal_separation':
-                return self._process_vocal_separation_only(input_path, output_dir)
-            if mode != 'v2.2_mdd':
-                logger.warning(f"未知模式 {mode}，使用默认 v2.2 MDD 模式")
-            return self._process_pure_vocal_split(input_path, output_dir, 'v2.2_mdd')
+        previous_format = self._export_format
+        previous_options = self._export_options
+        requested_format = export_format or get_config('output.format', previous_format)
 
-        except Exception as e:
-            logger.error(f"无缝分割失败: {e}", exc_info=True)
-            return {'success': False, 'error': str(e), 'input_file': input_path}
+        try:
+            try:
+                effective_format = ensure_supported_format(requested_format)
+            except ValueError:
+                logger.warning(
+                    '[EXPORT] Unsupported export format %s, fallback to %s.',
+                    requested_format,
+                    previous_format,
+                )
+                effective_format = previous_format
+
+            config_overrides = get_config(f'output.{effective_format}', {})
+            if not isinstance(config_overrides, dict):
+                config_overrides = {}
+
+            merged_options = build_export_options(
+                effective_format,
+                config_overrides,
+                export_options,
+            )
+            self._export_format = effective_format
+            self._export_options = merged_options
+            logger.info(f"[EXPORT] active format: {self._export_format}")
+
+            try:
+                if mode == 'vocal_separation':
+                    return self._process_vocal_separation_only(input_path, output_dir)
+                if mode != 'v2.2_mdd':
+                    logger.warning(f"Unknown mode {mode}, default to v2.2_mdd")
+                return self._process_pure_vocal_split(input_path, output_dir, 'v2.2_mdd')
+
+            except Exception as e:
+                logger.error(f"split failed: {e}", exc_info=True)
+                return {'success': False, 'error': str(e), 'input_file': input_path}
+        finally:
+            self._export_format = previous_format
+            self._export_options = previous_options
     def _load_and_resample_if_needed(self, input_path: str):
         """加载音频并根据需要重采样"""
         original_audio, sr = self.audio_processor.load_audio(input_path, normalize=False)
@@ -393,14 +441,26 @@ class SeamlessSplitter:
 
         # 5. 保存完整的分离文件
         input_name = Path(input_path).stem
-        full_vocal_file = Path(output_dir) / f"{input_name}_{mode}_vocal_full.wav"
-        sf.write(full_vocal_file, vocal_track, self.sample_rate, subtype='PCM_24')
-        saved_files.append(str(full_vocal_file))
+        full_vocal_base = Path(output_dir) / f"{input_name}_{mode}_vocal_full"
+        full_vocal_path = export_audio(
+            vocal_track,
+            self.sample_rate,
+            full_vocal_base,
+            self._export_format,
+            options=self._export_options,
+        )
+        saved_files.append(str(full_vocal_path))
 
         if separation_result.instrumental_track is not None:
-            full_instrumental_file = Path(output_dir) / f"{input_name}_{mode}_instrumental.wav"
-            sf.write(full_instrumental_file, separation_result.instrumental_track, self.sample_rate, subtype='PCM_24')
-            saved_files.append(str(full_instrumental_file))
+            full_instrumental_base = Path(output_dir) / f"{input_name}_{mode}_instrumental"
+            full_instrumental_path = export_audio(
+                separation_result.instrumental_track,
+                self.sample_rate,
+                full_instrumental_base,
+                self._export_format,
+                options=self._export_options,
+            )
+            saved_files.append(str(full_instrumental_path))
 
         total_time = time.time() - overall_start_time
 
@@ -464,14 +524,26 @@ class SeamlessSplitter:
 
         input_name = Path(input_path).stem
         saved_files = []
-        vocal_file = Path(output_dir) / f"{input_name}_vocal.wav"
-        sf.write(vocal_file, separation_result.vocal_track, self.sample_rate, subtype='PCM_24')
-        saved_files.append(str(vocal_file))
+        vocal_base = Path(output_dir) / f"{input_name}_vocal"
+        vocal_path = export_audio(
+            separation_result.vocal_track,
+            self.sample_rate,
+            vocal_base,
+            self._export_format,
+            options=self._export_options,
+        )
+        saved_files.append(str(vocal_path))
 
         if separation_result.instrumental_track is not None:
-            instrumental_file = Path(output_dir) / f"{input_name}_instrumental.wav"
-            sf.write(instrumental_file, separation_result.instrumental_track, self.sample_rate, subtype='PCM_24')
-            saved_files.append(str(instrumental_file))
+            instrumental_base = Path(output_dir) / f"{input_name}_instrumental"
+            instrumental_path = export_audio(
+                separation_result.instrumental_track,
+                self.sample_rate,
+                instrumental_base,
+                self._export_format,
+                options=self._export_options,
+            )
+            saved_files.append(str(instrumental_path))
 
         processing_time = time.time() - start_time
 
@@ -935,21 +1007,38 @@ class SeamlessSplitter:
         flags = self._classify_segments_vocal_presence(vocal_audio, [0, len(vocal_audio)])
         return bool(flags[0]) if flags else False
 
-    def _save_segments(self, segments: List[np.ndarray], output_dir: str, segment_is_vocal: Optional[List[bool]] = None, *, subdir: Optional[str] = None, file_suffix: str = '') -> List[str]:
-        """保存分割后的片段，并根据人声识别结果命名"""
+    def _save_segments(
+        self,
+        segments: List[np.ndarray],
+        output_dir: str,
+        segment_is_vocal: Optional[List[bool]] = None,
+        *,
+        subdir: Optional[str] = None,
+        file_suffix: str = '',
+    ) -> List[str]:
+        """保存分割片段，根据当前导出格式写出文件。"""
         base_dir = Path(output_dir)
         if subdir:
             base_dir = base_dir / subdir
             base_dir.mkdir(parents=True, exist_ok=True)
-        saved_files = []
+
+        saved_files: List[str] = []
         for i, segment_audio in enumerate(segments):
             is_vocal = True
             if segment_is_vocal is not None and i < len(segment_is_vocal):
                 is_vocal = bool(segment_is_vocal[i])
+
             label = 'human' if is_vocal else 'music'
-            output_path = base_dir / f"segment_{i+1:03d}_{label}{file_suffix}.wav"
-            sf.write(output_path, segment_audio, self.sample_rate, subtype='PCM_24')
-            saved_files.append(str(output_path))
+            output_base = base_dir / f"segment_{i + 1:03d}_{label}{file_suffix}"
+            exported_path = export_audio(
+                segment_audio,
+                self.sample_rate,
+                output_base,
+                self._export_format,
+                options=self._export_options,
+            )
+            saved_files.append(str(exported_path))
+
         return saved_files
 
     @staticmethod
