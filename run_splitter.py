@@ -41,12 +41,16 @@ def setup_logging(verbose: bool = False) -> None:
     )
 
 
-def create_timestamped_output_dir() -> str:
-    """创建时间戳命名的输出目录"""
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    output_dir = project_root / "output" / f"job_{timestamp}"
+def create_output_dir_for(input_path: Path) -> str:
+    """按照 <原音频名>_<日期>_<时间> 的规则创建输出目录"""
+    now = datetime.now()
+    date_part = now.strftime("%Y%m%d")
+    time_part = now.strftime("%H%M%S")
+    dirname = f"{date_part}_{time_part}_{input_path.stem}"
+    output_dir = project_root / "output" / dirname
     output_dir.mkdir(parents=True, exist_ok=True)
     return str(output_dir)
+
 
 
 def main() -> None:
@@ -107,7 +111,7 @@ def main() -> None:
         logger.error(f"输入文件不存在: {input_path}")
         sys.exit(1)
 
-    output_dir = create_timestamped_output_dir()
+    output_dir = create_output_dir_for(input_path)
     logger.info(f"输出目录: {output_dir}")
 
     runtime_overrides = {}

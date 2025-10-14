@@ -1,7 +1,7 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 # File: src/vocal_smart_splitter/core/seamless_splitter.py
-# AI-SUMMARY: 无缝分割主流程，调度分离、停顿检测与切点精炼并桥接轨道特征缓存。
+# AI-SUMMARY: Orchestrates seamless splitting, covering separation, pause detection, cut refinement, and feature cache reuse.
 
 import os
 import numpy as np
@@ -45,15 +45,12 @@ PRECISION_GUARD_AVG_MS = 150.0
 PRECISION_GUARD_P95_MS = 220.0
 
 class SeamlessSplitter:
-    """
-    [v2.3 统一指挥中心]
-    无缝分割器 - 负责编排所有分割模式的唯一引擎。
-    """
+    """Unified seam-splitting orchestrator (v2.3). Handles every split mode through a single entry point."""
 
     def __init__(self, sample_rate: int = 44100):
         self.sample_rate = sample_rate
         self.audio_processor = AudioProcessor(sample_rate)
-        self.pure_vocal_detector = PureVocalPauseDetector(sample_rate)  # 用于v2.2模式
+        self.pure_vocal_detector = PureVocalPauseDetector(sample_rate)  # default to v2.2 configuration
         self.quality_controller = QualityController(sample_rate)
         self.separator = EnhancedVocalSeparator(sample_rate)
         self._last_segment_classification_debug: List[Dict[str, Any]] = []
@@ -68,7 +65,7 @@ class SeamlessSplitter:
             default_export_format,
             get_config(f'output.{default_export_format}', {})
         )
-        logger.info(f"无缝分割器统一指挥中心初始化完成 (SR: {self.sample_rate}) - 已加载纯人声检测器")
+        logger.info("SeamlessSplitter orchestrator initialized (sample_rate=%d) - PureVocalPauseDetector ready", self.sample_rate)
 
     def split_audio_seamlessly(
         self,
@@ -78,8 +75,8 @@ class SeamlessSplitter:
         export_format: Optional[str] = None,
         export_options: Optional[Dict[str, Any]] = None,
     ) -> Dict:
-        """执行无缝分割的主入口，支持纯人声分离与 v2.2 MDD 模式"""
-        logger.info(f"开始无缝分割: {input_path} (模式: {mode})")
+        """Run the seamless splitting pipeline. Supports pure vocal separation and v2.2 MDD mode."""
+        logger.info("Start seamless split: %s (mode: %s)", input_path, mode)
 
         previous_format = self._export_format
         previous_options = self._export_options
@@ -123,22 +120,22 @@ class SeamlessSplitter:
             self._export_format = previous_format
             self._export_options = previous_options
     def _load_and_resample_if_needed(self, input_path: str):
-        """加载音频并根据需要重采样"""
+        """Load audio and resample when necessary."""
         original_audio, sr = self.audio_processor.load_audio(input_path, normalize=False)
         if sr != self.sample_rate:
-            logger.info(f"音频采样率 {sr}Hz 与目标 {self.sample_rate}Hz 不符，将进行重采样。")
+            logger.info("Resample from %d Hz to target %d Hz", sr, self.sample_rate)
             original_audio = librosa.resample(original_audio, orig_sr=sr, target_sr=self.sample_rate)
         return original_audio
 
     def _process_pure_vocal_split(self, input_path: str, output_dir: str, mode: str) -> Dict:
         """
-        [v2.9 终极修正版] 处理v2.2 MDD模式的核心逻辑
+        Core flow for v2.2 MDD mode (v2.9 adjustments)
         关键修复: 调用新的双音频输入接口，确保音乐分析在 original_audio 上，而VAD检测在 vocal_track 上。
         """
-        logger.info(f"[{mode.upper()}] 执行纯人声分割流程...")
+        logger.info("[%s] Running pure vocal split pipeline...", mode.upper())
         overall_start_time = time.time()
 
-        # 1. 加载音频
+        # 1. Load audio
         original_audio = self._load_and_resample_if_needed(input_path)
 
         gpu_cfg = self._get_gpu_pipeline_config()
@@ -148,7 +145,7 @@ class SeamlessSplitter:
                 gpu_context = self._build_gpu_pipeline_context(original_audio, gpu_cfg)
             except Exception as exc:
                 gpu_context = None
-                logger.warning("[GPU Pipeline] 初始化失败，回退 CPU: %s", exc, exc_info=True)
+                logger.warning("[GPU Pipeline] initialization failed, falling back to CPU: %s", exc, exc_info=True)
 
         if gpu_context and gpu_context.enabled:
             logger.info(
@@ -159,8 +156,8 @@ class SeamlessSplitter:
         else:
             logger.info("[GPU Pipeline] disabled; continue with CPU path.")
 
-        # 2. 高质量人声分离
-        logger.info(f"[{mode.upper()}-STEP1] 执行高质量人声分离...")
+        # 2. Perform vocal separation
+        logger.info("[%s-STEP1] Performing vocal separation...", mode.upper())
         separation_start = time.time()
         separation_result = self.separator.separate_for_detection(
             original_audio,
@@ -172,14 +169,14 @@ class SeamlessSplitter:
             gpu_meta = dict(separation_result.gpu_meta or {})
             failure = {
                 'success': False,
-                'error': '��������ʧ��',
+                'error': 'vocal_track_missing',
                 'input_file': input_path,
             }
             failure.update(gpu_meta)
             return failure
 
         vocal_track = separation_result.vocal_track
-        logger.info(f"[{mode.upper()}-STEP1] 人声分离完成 - 后端: {separation_result.backend_used}, 质量: {separation_result.separation_confidence:.3f}, 耗时: {separation_time:.1f}s")
+        logger.info("[%s-STEP1] Separation completed - backend=%s, confidence=%.3f, time=%.1fs", mode.upper(), separation_result.backend_used, separation_result.separation_confidence, separation_time)
 
         gpu_meta = dict(separation_result.gpu_meta or {})
         if gpu_meta.get('gpu_pipeline_used'):
@@ -194,10 +191,10 @@ class SeamlessSplitter:
                 gpu_meta.get('fallback_reason', gpu_meta.get('gpu_pipeline_failures', 'n/a')),
             )
 
-        # 3. 关键修复：使用正确的PureVocalPauseDetector进行停顿检测
-        logger.info(f"[{mode.upper()}-STEP2] 使用PureVocalPauseDetector在[纯人声轨道]上进行多维特征检测...")
+        # 3. Detect pauses with PureVocalPauseDetector
+        logger.info("[%s-STEP2] Running PureVocalPauseDetector on the vocal track...", mode.upper())
 
-        # 检查是否为v2.2 MDD模式
+        # Determine whether we are in v2.2 MDD mode
         enable_mdd = (mode == 'v2.2_mdd')
         feature_cache: Optional[TrackFeatureCache] = separation_result.feature_cache
         if feature_cache is None:
@@ -226,7 +223,7 @@ class SeamlessSplitter:
                 original_audio,
                 input_path,
                 output_dir,
-                "δ�ڴ��������ҵ�ͣ��",
+                "no_pause_candidates",
                 is_vocal=has_vocal,
                 gpu_meta=gpu_meta,
             )
@@ -239,7 +236,7 @@ class SeamlessSplitter:
                 center_time = (pause.start_time + pause.end_time) / 2
                 cut_points_samples.append(int(center_time * self.sample_rate))
 
-        logger.info(f"[{mode.upper()}-STEP3] 生成{len(cut_points_samples)}个候选分割点")
+        logger.info("[%s-STEP3] Produced %d candidate split points", mode.upper(), len(cut_points_samples))
         # 将样本点转换为(time, score)形式，暂以score=confidence占位（若有）
         cut_candidates = []
         markers = getattr(separation_result, 'quality_metrics', {}) or {}
@@ -252,7 +249,7 @@ class SeamlessSplitter:
         for p in vocal_pauses:
             t = float(getattr(p, 'cut_point', (p.start_time + p.end_time)/2))
             s = float(getattr(p, 'confidence', 1.0))
-            # 过滤疑似间奏的超长静默
+            # Filter long pauses that resemble interludes.
             dur = float(getattr(p, 'duration', (p.end_time - p.start_time)))
             interlude_min_s = get_config('pure_vocal_detection.pause_stats_adaptation.interlude_min_s', 4.0)
             if False and dur >= interlude_min_s:
@@ -260,7 +257,7 @@ class SeamlessSplitter:
             cut_candidates.append((t, s))
 
 
-        # 纯音乐（无人声）长区间 → 加入边界（极简方案：只看无人声时长阈值）
+        # Pure music (no vocal) intervals -> inject split boundaries when exceeding the threshold.
         try:
             min_pure_music = float(get_config('quality_control.pure_music_min_duration', 0.0))
         except Exception:
@@ -268,14 +265,14 @@ class SeamlessSplitter:
         if min_pure_music > 0.0:
             spans = self._find_no_vocal_runs(vocal_track, min_pure_music)
             if spans:
-                logger.info(f"[{mode.upper()}-STEP3] 纯音乐无人声区间: {len(spans)} 段满足 >= {min_pure_music:.2f}s")
+                logger.info("[%s-STEP3] Found %d pure music spans >= %.2fs", mode.upper(), len(spans), min_pure_music)
             else:
-                logger.info(f"[{mode.upper()}-STEP3] 未发现满足 >= {min_pure_music:.2f}s 的无人声区间，自动跳过")
+                logger.info("[%s-STEP3] No pure music spans >= %.2fs detected; skipping", mode.upper(), min_pure_music)
             for a, b in spans:
                 cut_candidates.append((float(a), 1.0))
                 cut_candidates.append((float(b), 1.0))
         else:
-            logger.info(f"[{mode.upper()}-STEP3] 纯音乐无人声检测未启用 (quality_control.pure_music_min_duration<=0)")
+            logger.info("[%s-STEP3] Pure music detection disabled (quality_control.pure_music_min_duration <= 0)", mode.upper())
         audio_duration = len(original_audio) / self.sample_rate
         for t in marker_times:
             if t <= 0.0 or t >= audio_duration:
@@ -391,7 +388,7 @@ class SeamlessSplitter:
         else:
             layout_applied = False
 
-        # 额外的局部波谷优化（关闭守卫时用于微调边界）
+        # Optional local valley refinement (used to fine-tune boundaries when guards are disabled).
         local_refine_cfg = get_config('quality_control.local_boundary_refine', {}) or {}
         if local_refine_cfg.get('enable') and len(final_cut_points) >= 2:
             refined_points = self._refine_boundaries_local_valley(
@@ -446,7 +443,7 @@ class SeamlessSplitter:
 
         saved_files = mix_segment_files + vocal_segment_files
 
-        # 5. 保存完整的分离文件
+        # 5. Save full-length separated files
         input_name = Path(input_path).stem
         full_vocal_duration = len(vocal_track) / float(self.sample_rate)
         full_vocal_base = Path(output_dir) / f"{input_name}_{mode}_vocal_full_{full_vocal_duration:.1f}"
@@ -521,15 +518,15 @@ class SeamlessSplitter:
         return ctx
 
     def _process_vocal_separation_only(self, input_path: str, output_dir: str) -> Dict:
-        """处理纯人声分离模式"""
-        logger.info("[VOCAL_SEPARATION] 执行纯人声分离...")
+        """Process vocal separation only mode."""
+        logger.info("[VOCAL_SEPARATION] Running vocal-only separation...")
         start_time = time.time()
         self._precision_guard_ok = True
         original_audio = self._load_and_resample_if_needed(input_path)
         separation_result = self.separator.separate_for_detection(original_audio)
 
         if separation_result.vocal_track is None:
-            return {'success': False, 'error': '人声分离失败', 'input_file': input_path}
+            return {'success': False, 'error': 'vocal_separation_failed', 'input_file': input_path}
 
         input_name = Path(input_path).stem
         saved_files = []
@@ -573,15 +570,15 @@ class SeamlessSplitter:
 
     def _find_no_vocal_runs(self, vocal_audio: np.ndarray, min_duration: float):
         """
-        基于人声轨的能量包络构造 voice_active 掩码，提取连续“无人声”区间（秒）。
+        Construct a voice-active mask from the vocal track energy envelope and gather continuous "no-vocal" intervals (seconds).
         修复：改用鲁棒阈值（噪底与人声分布中值之间的中点）+ 轻度形态学，避免阈值过低导致全程“活跃”。
         """
         sr = self.sample_rate
         hop = max(1, int(0.01 * sr))  # 10ms
-        # RMS 包络 → dB
+        # RMS envelope -> dB
         rms = librosa.feature.rms(y=vocal_audio, hop_length=hop)[0]
         db = 20.0 * np.log10(rms + 1e-12)
-        # 鲁棒阈值：在噪声地板与人声上分位之间取中点
+        # Robust threshold: midpoint between noise floor and vocal upper percentile
         try:
             noise_pct = float(get_config('quality_control.enforce_quiet_cut.floor_percentile', 10))
         except Exception:
@@ -596,7 +593,7 @@ class SeamlessSplitter:
         thr_mid = 0.5 * (noise_db + voice_db)
         thr_db = max(noise_db + delta_db, thr_mid)
         active = db > thr_db
-        # 轻度形态学：闭后开（毫秒 → 帧）
+        # Light morphology: close then open (milliseconds -> frames)
         close_ms = int(get_config('pure_vocal_detection.pause_stats_adaptation.morph_close_ms', 150))
         open_ms = int(get_config('pure_vocal_detection.pause_stats_adaptation.morph_open_ms', 50))
         frame_sec = hop / float(sr)
@@ -631,7 +628,7 @@ class SeamlessSplitter:
         active = fill_false_runs(active, close_k)
         active = remove_true_runs(active, open_k)
         inactive = ~active
-        # 帧时间轴
+        # Frame timeline
         times = librosa.frames_to_time(np.arange(len(rms)), sr=sr, hop_length=hop)
         spans = []
         in_run = False
@@ -645,7 +642,7 @@ class SeamlessSplitter:
                 if end_t - start_t >= float(min_duration):
                     spans.append((start_t, end_t))
                 in_run = False
-        # 收尾
+        # Finalize
         if in_run:
             end_t = float(len(vocal_audio) / float(sr))
             if end_t - start_t >= float(min_duration):
@@ -1012,7 +1009,7 @@ class SeamlessSplitter:
         self._last_segment_classification_debug = debug_entries
         return flags
     def _estimate_vocal_presence(self, vocal_audio: np.ndarray) -> bool:
-        """估算给定人声轨整体是否包含人声"""
+        """Estimate whether the provided vocal track contains human vocal presence."""
         if vocal_audio is None or getattr(vocal_audio, 'size', 0) == 0:
             return False
         flags = self._classify_segments_vocal_presence(vocal_audio, [0, len(vocal_audio)])
@@ -1028,7 +1025,7 @@ class SeamlessSplitter:
         file_suffix: str = '',
         duration_map: Optional[Dict[int, float]] = None,
     ) -> List[str]:
-        """保存分割片段，根据当前导出格式写出文件。"""
+        """Persist split segments using the configured export format."""
         base_dir = Path(output_dir)
         if subdir:
             base_dir = base_dir / subdir
@@ -1116,7 +1113,7 @@ class SeamlessSplitter:
         )
         if not self._precision_guard_ok:
             logger.warning(
-                "[PrecisionGuard] 守卫位移超过阈值: avg=%.2fms (<=%.2f), p95=%.2fms (<=%.2f)",
+                "[PrecisionGuard] shift exceeds threshold: avg=%.2fms (<=%.2f), p95=%.2fms (<=%.2f)",
                 self._last_guard_shift_stats['avg_shift_ms'],
                 PRECISION_GUARD_AVG_MS,
                 self._last_guard_shift_stats['p95_shift_ms'],
@@ -1187,8 +1184,8 @@ class SeamlessSplitter:
         return refined
 
     def _create_single_segment_result(self, audio: np.ndarray, input_path: str, output_dir: str, reason: str, is_vocal: bool = True, gpu_meta: Optional[Dict[str, Any]] = None) -> Dict:
-        """当无法分割时，创建单个片段的结果"""
-        logger.warning(f"{reason}，将输出为单个文件。")
+        """Create a single-segment result when splitting fails."""
+        logger.warning("%s; exporting as a single file.", reason)
         self._set_guard_adjustments([])
         self._last_suppressed_cut_points = []
         sample_count = audio.shape[-1] if hasattr(audio, 'shape') else len(audio)
