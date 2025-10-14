@@ -31,6 +31,27 @@ Vocal Smart Splitter 支持高保真声部拆分、纯人声检测，以及带 M
    可按需追加 `--validate-reconstruction`、`--gpu-device cuda:1|cpu`、`--strict-gpu`、`--profile ...`、`--compat-config v2`。
 4. 输出目录统一为 `output/<日期>_<时间>_<原音频名>/`（例如 `20241010_153045_song`），单文件与批处理遵循同一规则。
 
+## 模块化调用（作为子模块嵌入）
+- 通过 `audio_cut.api.separate_and_segment(...)` 可在上层项目中直接调用整套流水线（分离→切分→布局→导出→Manifest）。
+- 调用示例：
+  ```python
+  from audio_cut.api import separate_and_segment
+
+  manifest = separate_and_segment(
+      input_uri="input/song.mp3",
+      export_dir="output/song_job",
+      mode="v2.2_mdd",
+      device="cuda:0",
+      export_types=("vocal", "human_segments", "music_segments"),
+      layout={"micro_merge_s": 2.0, "soft_min_s": 6.0, "soft_max_s": 18.0},
+      strict_gpu=True,
+      export_manifest=True,
+  )
+  ```
+- Manifest 默认写入 `SegmentManifest.json`，包含音频哈希/时长、导出计划、切点与守卫统计、片段列表及导出资产相对路径（详见 `audio-cut封装为模块.md`）。
+- `export_types` 控制导出资产：`vocal`（全量人声）、`instrumental`（全量伴奏）、`human_segments`（人声片段）、`music_segments`（混音片段）。未指定时默认导出全部。
+- 返回结果中的 `export_plan` 字段会列出实际执行计划；如模型缺少伴奏分离会自动剔除 `instrumental` 并写入日志。
+
 ## 输出结构
 - `segment_###_{human|music}_*.wav`：混音片段，文件名追加 `_X.X`（秒，保留 1 位小数）表示片段时长。
 - `segments_vocal/segment_###_{human|music}_vocal_*.wav`：对应人声片段，同样追加 `_X.X` 时长后缀。
@@ -88,6 +109,9 @@ Vocal Smart Splitter 支持高保真声部拆分、纯人声检测，以及带 M
   ```
 
 ## 更新记录
+- **2025-10-12**
+  - 新增 `audio_cut.api.separate_and_segment` 统一 API，可生成标准 Manifest 并在外部工程内复用。
+  - `SeamlessSplitter` 增强导出计划控制，补充 `full_vocal_file`/`full_instrumental_file` 等元数据。
 - **2025-10-10**
   - quick_start 增加批处理模式；输出目录统一使用 `<日期>_<时间>_<原音频名>` 命名。
   - 导出文件名统一附带 `_X.X`（秒）后缀，便于 QA 对照。

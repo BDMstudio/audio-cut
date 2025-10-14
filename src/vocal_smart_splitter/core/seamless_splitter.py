@@ -8,7 +8,7 @@ import numpy as np
 import librosa
 import logging
 from dataclasses import asdict
-from typing import List, Dict, Optional, Tuple, Any
+from typing import List, Dict, Optional, Tuple, Any, Sequence, Iterable, Set
 from pathlib import Path
 import time
 import tempfile
@@ -67,6 +67,52 @@ class SeamlessSplitter:
         )
         logger.info("SeamlessSplitter orchestrator initialized (sample_rate=%d) - PureVocalPauseDetector ready", self.sample_rate)
 
+    @staticmethod
+    def _normalize_export_plan(
+        plan: Optional[Sequence[str]],
+        *,
+        default: Iterable[str],
+    ) -> Set[str]:
+        """Normalize export plan tokens to internal flags."""
+
+        alias_map = {
+            'vocal': {'full_vocal'},
+            'full_vocal': {'full_vocal'},
+            'vocal_full': {'full_vocal'},
+            'instrumental': {'full_instrumental'},
+            'full_instrumental': {'full_instrumental'},
+            'instrumental_full': {'full_instrumental'},
+            'human_segments': {'vocal_segments'},
+            'vocal_segments': {'vocal_segments'},
+            'human': {'vocal_segments'},
+            'music_segments': {'mix_segments'},
+            'mix_segments': {'mix_segments'},
+            'music': {'mix_segments'},
+        }
+
+        if plan is None:
+            return {item for item in default}
+
+        normalized: Set[str] = set()
+        for raw in plan:
+            if raw is None:
+                continue
+            token = str(raw).strip().lower()
+            if not token:
+                continue
+            if token == 'all':
+                normalized.update(default)
+                continue
+            mapped = alias_map.get(token)
+            if mapped:
+                normalized.update(mapped)
+                continue
+            normalized.add(token)
+
+        if not normalized:
+            normalized.update(default)
+        return normalized
+
     def split_audio_seamlessly(
         self,
         input_path: str,
@@ -74,6 +120,7 @@ class SeamlessSplitter:
         mode: str = 'v2.2_mdd',
         export_format: Optional[str] = None,
         export_options: Optional[Dict[str, Any]] = None,
+        export_plan: Optional[Sequence[str]] = None,
     ) -> Dict:
         """Run the seamless splitting pipeline. Supports pure vocal separation and v2.2 MDD mode."""
         logger.info("Start seamless split: %s (mode: %s)", input_path, mode)
@@ -108,10 +155,19 @@ class SeamlessSplitter:
 
             try:
                 if mode == 'vocal_separation':
-                    return self._process_vocal_separation_only(input_path, output_dir)
+                    return self._process_vocal_separation_only(
+                        input_path,
+                        output_dir,
+                        export_plan=export_plan,
+                    )
                 if mode != 'v2.2_mdd':
                     logger.warning(f"Unknown mode {mode}, default to v2.2_mdd")
-                return self._process_pure_vocal_split(input_path, output_dir, 'v2.2_mdd')
+                return self._process_pure_vocal_split(
+                    input_path,
+                    output_dir,
+                    'v2.2_mdd',
+                    export_plan=export_plan,
+                )
 
             except Exception as e:
                 logger.error(f"split failed: {e}", exc_info=True)
@@ -127,7 +183,14 @@ class SeamlessSplitter:
             original_audio = librosa.resample(original_audio, orig_sr=sr, target_sr=self.sample_rate)
         return original_audio
 
-    def _process_pure_vocal_split(self, input_path: str, output_dir: str, mode: str) -> Dict:
+    def _process_pure_vocal_split(
+        self,
+        input_path: str,
+        output_dir: str,
+        mode: str,
+        *,
+        export_plan: Optional[Sequence[str]] = None,
+    ) -> Dict:
         """
         Core flow for v2.2 MDD mode (v2.9 adjustments)
         关键修复: 调用新的双音频输入接口，确保音乐分析在 original_audio 上，而VAD检测在 vocal_track 上。
@@ -424,49 +487,70 @@ class SeamlessSplitter:
         else:
             self._last_segment_classification_debug = classification_debug
 
-        mix_segment_files = self._save_segments(
-            segments,
-            output_dir,
-            segment_is_vocal=segment_vocal_flags,
-            duration_map=segment_durations_map,
+        export_flags = self._normalize_export_plan(
+            export_plan,
+            default=('mix_segments', 'vocal_segments', 'full_vocal', 'full_instrumental'),
         )
 
-        vocal_segments, _, _ = self._split_at_sample_level(vocal_track, final_cut_points)
-        vocal_segment_files = self._save_segments(
-            vocal_segments,
-            output_dir,
-            segment_is_vocal=segment_vocal_flags,
-            subdir='segments_vocal',
-            file_suffix='_vocal',
-            duration_map=segment_durations_map,
-        )
+        saved_files: List[str] = []
 
-        saved_files = mix_segment_files + vocal_segment_files
+        mix_segment_files: List[str] = []
+        if 'mix_segments' in export_flags:
+            mix_segment_files = self._save_segments(
+                segments,
+                output_dir,
+                segment_is_vocal=segment_vocal_flags,
+                duration_map=segment_durations_map,
+            )
+            saved_files.extend(mix_segment_files)
+
+        vocal_segment_files: List[str] = []
+        if 'vocal_segments' in export_flags:
+            vocal_segments, _, _ = self._split_at_sample_level(vocal_track, final_cut_points)
+            vocal_segment_files = self._save_segments(
+                vocal_segments,
+                output_dir,
+                segment_is_vocal=segment_vocal_flags,
+                subdir='segments_vocal',
+                file_suffix='_vocal',
+                duration_map=segment_durations_map,
+            )
+            saved_files.extend(vocal_segment_files)
 
         # 5. Save full-length separated files
         input_name = Path(input_path).stem
-        full_vocal_duration = len(vocal_track) / float(self.sample_rate)
-        full_vocal_base = Path(output_dir) / f"{input_name}_{mode}_vocal_full_{full_vocal_duration:.1f}"
-        full_vocal_path = export_audio(
-            vocal_track,
-            self.sample_rate,
-            full_vocal_base,
-            self._export_format,
-            options=self._export_options,
-        )
-        saved_files.append(str(full_vocal_path))
-
-        if separation_result.instrumental_track is not None:
-            instrumental_duration = len(separation_result.instrumental_track) / float(self.sample_rate)
-            full_instrumental_base = Path(output_dir) / f"{input_name}_{mode}_instrumental_{instrumental_duration:.1f}"
-            full_instrumental_path = export_audio(
-                separation_result.instrumental_track,
+        full_vocal_file: Optional[str] = None
+        if 'full_vocal' in export_flags:
+            full_vocal_duration = len(vocal_track) / float(self.sample_rate)
+            full_vocal_base = Path(output_dir) / f"{input_name}_{mode}_vocal_full_{full_vocal_duration:.1f}"
+            full_vocal_path = export_audio(
+                vocal_track,
                 self.sample_rate,
-                full_instrumental_base,
+                full_vocal_base,
                 self._export_format,
                 options=self._export_options,
             )
-            saved_files.append(str(full_instrumental_path))
+            full_vocal_file = str(full_vocal_path)
+            saved_files.append(full_vocal_file)
+
+        full_instrumental_file: Optional[str] = None
+        if 'full_instrumental' in export_flags:
+            if separation_result.instrumental_track is not None:
+                instrumental_duration = len(separation_result.instrumental_track) / float(self.sample_rate)
+                full_instrumental_base = (
+                    Path(output_dir) / f"{input_name}_{mode}_instrumental_{instrumental_duration:.1f}"
+                )
+                full_instrumental_path = export_audio(
+                    separation_result.instrumental_track,
+                    self.sample_rate,
+                    full_instrumental_base,
+                    self._export_format,
+                    options=self._export_options,
+                )
+                full_instrumental_file = str(full_instrumental_path)
+                saved_files.append(full_instrumental_file)
+            else:
+                logger.warning("[EXPORT] Instrumental track unavailable; skip full_instrumental export.")
 
         total_time = time.time() - overall_start_time
 
@@ -476,7 +560,12 @@ class SeamlessSplitter:
 
         result = {
             'success': True, 'method': f'pure_vocal_split_{mode}', 'num_segments': len(segments),
-            'saved_files': saved_files, 'mix_segment_files': mix_segment_files, 'vocal_segment_files': vocal_segment_files,
+            'saved_files': saved_files,
+            'mix_segment_files': mix_segment_files,
+            'vocal_segment_files': vocal_segment_files,
+            'full_vocal_file': full_vocal_file,
+            'full_instrumental_file': full_instrumental_file,
+            'export_plan': sorted(export_flags),
             'backend_used': separation_result.backend_used,
             'separation_confidence': separation_result.separation_confidence, 'processing_time': total_time,
             'segment_durations': segment_durations,
@@ -517,7 +606,13 @@ class SeamlessSplitter:
             return None
         return ctx
 
-    def _process_vocal_separation_only(self, input_path: str, output_dir: str) -> Dict:
+    def _process_vocal_separation_only(
+        self,
+        input_path: str,
+        output_dir: str,
+        *,
+        export_plan: Optional[Sequence[str]] = None,
+    ) -> Dict:
         """Process vocal separation only mode."""
         logger.info("[VOCAL_SEPARATION] Running vocal-only separation...")
         start_time = time.time()
@@ -528,45 +623,72 @@ class SeamlessSplitter:
         if separation_result.vocal_track is None:
             return {'success': False, 'error': 'vocal_separation_failed', 'input_file': input_path}
 
-        input_name = Path(input_path).stem
-        saved_files = []
-        vocal_duration = len(separation_result.vocal_track) / float(self.sample_rate)
-        vocal_base = Path(output_dir) / f"{input_name}_vocal_{vocal_duration:.1f}"
-        vocal_path = export_audio(
-            separation_result.vocal_track,
-            self.sample_rate,
-            vocal_base,
-            self._export_format,
-            options=self._export_options,
+        export_flags = self._normalize_export_plan(
+            export_plan,
+            default=('full_vocal', 'full_instrumental'),
         )
-        saved_files.append(str(vocal_path))
 
-        if separation_result.instrumental_track is not None:
-            instrumental_duration = len(separation_result.instrumental_track) / float(self.sample_rate)
-            instrumental_base = Path(output_dir) / f"{input_name}_instrumental_{instrumental_duration:.1f}"
-            instrumental_path = export_audio(
-                separation_result.instrumental_track,
+        input_name = Path(input_path).stem
+        saved_files: List[str] = []
+
+        full_vocal_file: Optional[str] = None
+        if 'full_vocal' in export_flags:
+            vocal_duration = len(separation_result.vocal_track) / float(self.sample_rate)
+            vocal_base = Path(output_dir) / f"{input_name}_vocal_{vocal_duration:.1f}"
+            vocal_path = export_audio(
+                separation_result.vocal_track,
                 self.sample_rate,
-                instrumental_base,
+                vocal_base,
                 self._export_format,
                 options=self._export_options,
             )
-            saved_files.append(str(instrumental_path))
+            full_vocal_file = str(vocal_path)
+            saved_files.append(full_vocal_file)
+
+        full_instrumental_file: Optional[str] = None
+        if 'full_instrumental' in export_flags:
+            if separation_result.instrumental_track is not None:
+                instrumental_duration = len(separation_result.instrumental_track) / float(self.sample_rate)
+                instrumental_base = Path(output_dir) / f"{input_name}_instrumental_{instrumental_duration:.1f}"
+                instrumental_path = export_audio(
+                    separation_result.instrumental_track,
+                    self.sample_rate,
+                    instrumental_base,
+                    self._export_format,
+                    options=self._export_options,
+                )
+                full_instrumental_file = str(instrumental_path)
+                saved_files.append(full_instrumental_file)
+            else:
+                logger.warning("[EXPORT] Instrumental track unavailable; skip full_instrumental export.")
 
         processing_time = time.time() - start_time
 
-        return {
-            'success': True, 'method': 'vocal_separation_only', 'num_segments': 0, 'saved_files': saved_files,
-            'backend_used': separation_result.backend_used, 'separation_confidence': separation_result.separation_confidence,
-            'processing_time': processing_time, 'segment_durations': [],
+        base_result = {
+            'success': True,
+            'method': 'vocal_separation_only',
+            'num_segments': 0,
+            'saved_files': saved_files,
+            'mix_segment_files': [],
+            'vocal_segment_files': [],
+            'full_vocal_file': full_vocal_file,
+            'full_instrumental_file': full_instrumental_file,
+            'export_plan': sorted(export_flags),
+            'backend_used': separation_result.backend_used,
+            'separation_confidence': separation_result.separation_confidence,
+            'processing_time': processing_time,
+            'segment_durations': [],
             'guard_shift_stats': self._get_guard_shift_stats(),
             'precision_guard_ok': bool(self._precision_guard_ok),
             'precision_guard_threshold_ms': {
                 'avg': PRECISION_GUARD_AVG_MS,
                 'p95': PRECISION_GUARD_P95_MS,
             },
-            'input_file': input_path, 'output_dir': output_dir
-        } | dict(separation_result.gpu_meta or {})
+            'input_file': input_path,
+            'output_dir': output_dir,
+        }
+        base_result.update(dict(separation_result.gpu_meta or {}))
+        return base_result
 
     def _find_no_vocal_runs(self, vocal_audio: np.ndarray, min_duration: float):
         """
@@ -1193,6 +1315,11 @@ class SeamlessSplitter:
         saved_files = self._save_segments([audio], output_dir, segment_is_vocal=[is_vocal])
         result = {
             'success': True, 'num_segments': 1, 'saved_files': saved_files,
+            'mix_segment_files': saved_files,
+            'vocal_segment_files': [],
+            'full_vocal_file': saved_files[0] if saved_files else None,
+            'full_instrumental_file': None,
+            'export_plan': [],
             'segment_durations': [duration_s],
             'segment_vocal_flags': [is_vocal],
             'segment_labels': ['human' if is_vocal else 'music'],

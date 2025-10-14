@@ -17,6 +17,7 @@
 - `src/vocal_smart_splitter/utils/`：音频 IO、配置优先级、BPM 自适应参数、特征抽取。
 - `src/audio_cut/analysis/`：`TrackFeatureCache` 及构建器，集中缓存 BPM/MDD/RMS 等特征。
 - `src/audio_cut/utils/`：GPU 流水线（chunk 规划、CUDA streams、pinned buffer、inflight 限流）与 ORT Provider 注入。
+- `src/audio_cut/api.py`：对外统一 API，封装 `SeamlessSplitter`，生成 Manifest 并管理导出计划。
 - `src/audio_cut/detectors/`：Silero 分块 VAD 及兼容层。
 - `src/audio_cut/cutting/`：CutPoint/CutContext 与切点精修，提供 NMS、过零、静音守卫、chunk vs full metric。
 - `scripts/`：运行入口与诊断脚本（`quick_start.py`、`run_splitter.py`、bench 工具）。
@@ -24,6 +25,7 @@
 - `config/`：默认配置与 schema；严禁提交个人实验参数。
 
 ## 3. 核心流程
+0. `audio_cut.api.separate_and_segment` 在上层项目中聚合资源配置、调用 `SeamlessSplitter` 并生成 Manifest。
 1. `AudioProcessor.load_audio` 读取音频并默认归一化至 [-1, 1]，必要时重采样至 44.1 kHz。
 2. `EnhancedVocalSeparator.separate_for_detection` 构造 `PipelineContext`，规划 chunk/overlap/halo，GPU 模式记录 `gpu_meta`，失败时回退 CPU。
 3. `SileroChunkVAD.process_chunk` 进行分块 VAD 和 halo 裁剪；`ChunkFeatureBuilder` 在 GPU 缓存 STFT/RMS 供后续复用。
@@ -51,6 +53,7 @@
 
 ## 6. 测试矩阵
 - **Unit**：`test_cpu_baseline_perfect_reconstruction`、`test_cutting_consistency`、`test_segment_labeling`、`test_gpu_pipeline`、`test_chunk_feature_builder_gpu/stft_equivalence` 等覆盖核心算法。
+- `tests/unit/test_api_manifest.py`：校验模块化 API 的 Manifest 输出与导出计划控制。
 - **Integration**：`tests/integration/test_pipeline_v2_valley.py` 验证 MDD 主路径；批处理场景计划新增。
 - **Contracts**：`tests/contracts/test_config_contracts.py` 保证配置兼容；待补输出命名回归。
 - **Performance**：`tests/performance/test_valley_perf.py` 监控检测+守卫耗时。
