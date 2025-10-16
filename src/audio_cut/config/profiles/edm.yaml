@@ -1,0 +1,14 @@
+# File: src/audio_cut/config/profiles/edm.yaml
+# AI-SUMMARY: Schema v3 EDM 预设，针对高速节奏放宽阈值并提高 NMS 容量。
+
+profile: edm
+comment: Electronic dance profile favors aggressive splitting on fast BPM tracks.
+overrides:
+  min_pause_s: 0.4
+  threshold:
+    base_ratio: 0.22
+  adapt:
+    bpm_strength: 0.8
+    mdd_strength: 0.35
+  nms:
+    topk: 6

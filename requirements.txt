@@ -30,3 +30,7 @@ noisereduce>=3.0.0
 pathlib2>=2.3.0
 
 demucs>=4.0.0
+torch>=2.0.0
+# GPU baseline (Milestone 2): CUDA 12.x runtime + cuDNN 9.x + ORT 1.17.1
+onnxruntime-gpu==1.17.1
+pynvml>=11.5.0

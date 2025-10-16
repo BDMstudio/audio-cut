@@ -1,12 +1,12 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 # File: src/audio_cut/cutting/refine.py
 # AI-SUMMARY: 音频切点精炼工具，提供过零吸附、守卫右推与最小间隔 NMS 等共享逻辑。
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Iterable, List, Optional, Sequence
+from dataclasses import dataclass, field
+from typing import Dict, Iterable, List, Optional, Sequence
 
 import numpy as np
 
@@ -50,6 +50,13 @@ class CutRefineResult:
     final_points: List[CutPoint]
     sample_boundaries: List[int]
     adjustments: List[CutAdjustment]
+    suppressed_points: List[CutPoint] = field(default_factory=list)
+
+@dataclass
+class QuietGuardLookup:
+    rms_db: np.ndarray
+    next_quiet: np.ndarray
+    floor_db: float
 
 
 def _ensure_mono(wave: Optional[np.ndarray]) -> Optional[np.ndarray]:
@@ -150,14 +157,89 @@ def apply_quiet_guard(
     return float(center) / float(sr)
 
 
-def nms_min_gap(points: Iterable[CutPoint], min_gap_s: float, topk: Optional[int] = None) -> List[CutPoint]:
-    """基于得分的最小间隔筛选。"""
+
+def _prepare_quiet_lookup(
+    wave: Optional[np.ndarray],
+    sr: int,
+    window_ms: float,
+    floor_db: float,
+) -> Optional[QuietGuardLookup]:
+    wave = _ensure_mono(wave)
+    if wave is None or wave.size == 0 or sr <= 0:
+        return None
+    win_samples = max(1, int(round(window_ms / 1000.0 * sr)))
+    sq = np.square(wave.astype(np.float64))
+    kernel = np.ones(win_samples, dtype=np.float64) / float(win_samples)
+    rms_sq = np.convolve(sq, kernel, mode='same')
+    rms_db = 20.0 * np.log10(np.sqrt(rms_sq + _EPS) + _EPS)
+    next_quiet = np.empty_like(rms_db, dtype=np.int64)
+    next_idx = -1
+    for i in range(len(rms_db) - 1, -1, -1):
+        if rms_db[i] <= floor_db:
+            next_idx = i
+        next_quiet[i] = next_idx
+    return QuietGuardLookup(rms_db=rms_db, next_quiet=next_quiet, floor_db=floor_db)
+
+
+def _apply_quiet_guard_fast(
+    t: float,
+    sr: int,
+    lookup: Optional[QuietGuardLookup],
+    *,
+    max_shift_ms: float,
+    guard_db: float,
+) -> float:
+    if lookup is None or sr <= 0:
+        return t
+    length = lookup.rms_db.size
+    if length == 0:
+        return t
+    idx = int(round(t * sr))
+    idx = int(np.clip(idx, 0, length - 1))
+    max_shift = max(1, int(round(max_shift_ms / 1000.0 * sr)))
+    end = min(length, idx + max_shift)
+    if end <= idx:
+        return t
+    window = lookup.rms_db[idx:end]
+    min_offset = int(np.argmin(window))
+    target_idx = idx + min_offset
+    original_db = lookup.rms_db[idx]
+    target_db = lookup.rms_db[target_idx]
+    if (original_db - target_db) < guard_db:
+        return t
+    if target_db > lookup.floor_db:
+        return t
+    if target_idx == idx:
+        return t
+    return float(target_idx) / float(sr)
+
+
+
+def nms_min_gap(
+    points: Iterable[CutPoint],
+    min_gap_s: float,
+    topk: Optional[int] = None,
+    *,
+    max_per_window: Optional[int] = None,
+    window_s: float = 10.0,
+) -> List[CutPoint]:
+    """基于得分的最小间隔筛选，并支持按窗口限流。"""
 
     ordered = sorted(points, key=lambda p: p.score, reverse=True)
     kept: List[CutPoint] = []
+    window_counts: Dict[int, int] = {}
+    window_span = max(window_s, min_gap_s, 1e-6)
     for point in ordered:
-        if all(abs(point.t - other.t) >= min_gap_s for other in kept):
-            kept.append(point)
+        if any(abs(point.t - other.t) < min_gap_s for other in kept):
+            continue
+        bucket = None
+        if max_per_window is not None:
+            bucket = int(point.t // window_span)
+            if window_counts.get(bucket, 0) >= max_per_window:
+                continue
+        kept.append(point)
+        if max_per_window is not None and bucket is not None:
+            window_counts[bucket] = window_counts.get(bucket, 0) + 1
         if topk is not None and len(kept) >= topk:
             break
     return sorted(kept, key=lambda p: p.t)
@@ -190,6 +272,8 @@ def finalize_cut_points(
     use_vocal_guard_first: bool = True,
     min_gap_s: float = 1.0,
     max_keep: Optional[int] = None,
+    topk_per_10s: Optional[int] = None,
+    nms_window_s: float = 10.0,
     guard_db: float = 2.0,
     search_right_ms: float = 150.0,
     guard_win_ms: float = 10.0,
@@ -199,7 +283,7 @@ def finalize_cut_points(
     zero_cross_win_ms: float = 8.0,
     min_boundary_s: float = 0.5,
 ) -> CutRefineResult:
-    """执行切点精炼并返回结果。"""
+    """执行切点精修并返回结果。"""
 
     sr = ctx.sr
     mix = _ensure_mono(ctx.mix_wave)
@@ -214,9 +298,28 @@ def finalize_cut_points(
     if not base_candidates:
         return CutRefineResult([], [0, len(mix)], [])
 
-    pruned = nms_min_gap(base_candidates, min_gap_s=min_gap_s, topk=max_keep)
+    window_cap = topk_per_10s if (topk_per_10s is not None and topk_per_10s > 0) else None
+    pruned = nms_min_gap(
+        base_candidates,
+        min_gap_s=min_gap_s,
+        topk=max_keep,
+        max_per_window=window_cap,
+        window_s=nms_window_s,
+    )
+
+    kept_ids = {id(p) for p in pruned}
+    suppressed_points = [
+        CutPoint(t=float(point.t), score=float(point.score), kind=point.kind)
+        for point in base_candidates
+        if id(point) not in kept_ids
+    ]
+
+    vocal_lookup = _prepare_quiet_lookup(vocal, sr, guard_win_ms, floor_db) if enable_vocal_guard else None
+    mix_lookup = _prepare_quiet_lookup(mix, sr, guard_win_ms, floor_db) if enable_mix_guard else None
+
     adjustments: List[CutAdjustment] = []
     adjusted_times: List[float] = []
+
     for point in pruned:
         raw_t = point.t
         guard_stage_time = raw_t
@@ -224,27 +327,47 @@ def finalize_cut_points(
         if use_vocal_guard_first and vocal is not None:
             guard_stage_time = align_to_zero_cross(vocal, sr, guard_stage_time, win_ms=zero_cross_win_ms)
             if enable_vocal_guard:
-                guard_stage_time = apply_quiet_guard(
-                    vocal,
-                    sr,
+                fast_guard = _apply_quiet_guard_fast(
                     guard_stage_time,
+                    sr,
+                    vocal_lookup,
+                    max_shift_ms=search_right_ms,
+                    guard_db=guard_db,
+                )
+                if fast_guard != guard_stage_time:
+                    guard_stage_time = fast_guard
+                else:
+                    guard_stage_time = apply_quiet_guard(
+                        vocal,
+                        sr,
+                        guard_stage_time,
+                        max_shift_ms=search_right_ms,
+                        guard_db=guard_db,
+                        window_ms=guard_win_ms,
+                        floor_db=floor_db,
+                    )
+
+        mix_time = align_to_zero_cross(mix, sr, guard_stage_time, win_ms=zero_cross_win_ms)
+        if enable_mix_guard:
+            fast_mix = _apply_quiet_guard_fast(
+                mix_time,
+                sr,
+                mix_lookup,
+                max_shift_ms=search_right_ms,
+                guard_db=guard_db,
+            )
+            if fast_mix != mix_time:
+                mix_time = fast_mix
+            else:
+                mix_time = apply_quiet_guard(
+                    mix,
+                    sr,
+                    mix_time,
                     max_shift_ms=search_right_ms,
                     guard_db=guard_db,
                     window_ms=guard_win_ms,
                     floor_db=floor_db,
                 )
-
-        mix_time = align_to_zero_cross(mix, sr, guard_stage_time, win_ms=zero_cross_win_ms)
-        if enable_mix_guard:
-            mix_time = apply_quiet_guard(
-                mix,
-                sr,
-                mix_time,
-                max_shift_ms=search_right_ms,
-                guard_db=guard_db,
-                window_ms=guard_win_ms,
-                floor_db=floor_db,
-            )
 
         mix_time = float(np.clip(mix_time, 0.0, max(duration_s, 0.0)))
         adjustments.append(
@@ -284,4 +407,7 @@ def finalize_cut_points(
     sample_boundaries.append(len(mix))
     sample_boundaries = sorted(set(sample_boundaries))
 
-    return CutRefineResult(final_points, sample_boundaries, kept_adjustments)
+    return CutRefineResult(final_points, sample_boundaries, kept_adjustments, suppressed_points)
+
+
+

@@ -1,18 +1,47 @@
 # File: src/vocal_smart_splitter/config.yaml
 # AI-SUMMARY: Global config for audio IO, pause detection thresholds, and quality gates
-# Normalized configuration for Vocal Smart Splitter (v2.x)
-# Focus: Pure vocal detection with BPM/MDD/VPP adaptation and weighted NMS
+# 说明：该配置文件囊括音频 IO、GPU 流水线、人声检测与段落质量守卫的关键参数。
 
 audio:
-  sample_rate: 44100
-  channels: 1
+  sample_rate: 44100        # 处理全链路使用的采样率（Hz），需与模型训练及基准测试保持一致。
+  channels: 1               # 输入统一转为单声道，避免声道差异导致的阈值失准。
   format: wav
   quality: 320
+
+analysis:
+  features_cache:
+    device: auto            # auto|cpu|cuda：生成特征缓存时优先使用的设备选择。
+
+gpu_pipeline:
+  enable: true              # 是否启用 GPU chunk 流水线；禁用后整体回退至 CPU 路径。
+  prefer_device: cuda       # 默认绑定的执行设备，可指定具体 GPU（如 cuda:0）或 cpu。
+  chunk_seconds: 10.0       # 单个 chunk 持续时间（秒），越长吞吐越高但显存占用也越大。
+  overlap_seconds: 2.5      # chunk 间重叠（秒），用于缓冲切点抖动与跨界特征。
+  halo_seconds: 0.5         # halo 区域宽度（秒），控制拼接平滑度。
+  align_hop: 4096           # chunk 边界向 STFT hop 对齐时使用的步长，需与模型 hop 匹配。
+  use_cuda_streams: true    # 是否开启多 CUDA stream，提高并行度与吞吐。
+  prefetch_pinned_buffers: 2
+  inflight_chunks_limit: 2
+  strict_gpu: false         # true 表示 GPU 异常时直接报错，不自动回退 CPU。
+  ort:
+    graph_optimization_level: basic
+    cudnn_conv_algo_search: HEURISTIC
+    disable_trt: true
+
+enhanced_separation:
+  backend: mdx23            # 默认声部分离后端（mdx23|demucs_v4|auto）。
+  enable_fallback: true     # 主后端失败时是否允许自动切换到 Demucs。
+  mdx23:
+    model_filename: Kim_Vocal_1.onnx  # 可选 Kim_Vocal_1/2；如需伴奏可切换 Kim_Inst。
+    output_type: auto                # auto|vocal|instrumental：控制导出的 stem 类型。
+  demucs:
+    compile: false
+    warmup_seconds: 0.5
 
 pure_vocal_detection:
   enable: true
   # Base detection
-  min_pause_duration: 0.5
+  min_pause_duration: 0.5          # 判定静区的最短持续时间（秒）。
   breath_duration_range: [0.1, 0.3]
   f0_weight: 0.30
   formant_weight: 0.25
@@ -21,14 +50,12 @@ pure_vocal_detection:
 
   # Relative energy valleys (robust defaults)
   enable_relative_energy_mode: true
-  # 提高相对阈值以产生更充足且更“长”的能量谷候选，避免遗留超长段
-  peak_relative_threshold_ratio: 0.26   # recommended 0.16–0.22
-  rms_relative_threshold_ratio: 0.32    # recommended 0.20–0.26
+  peak_relative_threshold_ratio: 0.26   # 相对峰值阈值（推荐 0.16~0.22），越低越敏感。
+  rms_relative_threshold_ratio: 0.30    # 相对 RMS 阈值（推荐 0.20~0.26），决定能量下限。
 
   # BPM/MDD-driven adaptation of relative thresholds
   relative_threshold_adaptation:
     enable: true
-    # 收窄自适应振幅，避免把阈值压得过低导致候选过少
     clamp_min: 0.85
     clamp_max: 1.15
     bpm:
@@ -39,107 +66,102 @@ pure_vocal_detection:
       base: 1.0
       gain: 0.2
 
-  # VPP (Vocal Pause Profile) adaptation — only within singing blocks; exclude interludes
+  # VPP (Vocal Pause Profile) adaptation
   pause_stats_adaptation:
     enable: true
-    delta_db: 3.0               # voice_active = floor_db + delta_db
-    morph_close_ms: 150         # close then open (run-length morphology)
+    delta_db: 3.0               # 基于噪声地板上移的 dB 偏移量。
+    morph_close_ms: 150         # 形态学闭运算窗口（毫秒），填补细碎停顿。
     morph_open_ms: 50
-    sing_block_min_s: 2.0
-    interlude_min_s: 4.0
+    sing_block_min_s: 2.0       # 连续歌唱块判定的最短时长（秒）。
+    interlude_min_s: 4.0        # 间奏最短时长（秒），便于守卫识别纯伴奏段。
     interlude_coverage_check:
-      enable: false             # optional: only drop long rests if ±pad coverage < threshold
-      pad_seconds: 2.0          # ±padding window for coverage measurement
-      coverage_threshold: 0.10  # voice_active coverage threshold within padded window
+      enable: false             # 是否按 pad 覆盖率过滤伪静区。
+      pad_seconds: 2.0          # 计算覆盖率时附加的 padding 窗口（秒）。
+      coverage_threshold: 0.10  # padding 窗口内 voice_active 覆盖率阈值。
     classify_thresholds:
       slow: { mpd: 0.60, p95: 1.20, rr: 0.35 }
       fast: { mpd: 0.25, pr: 18, rr: 0.15 }
-    # 轻度倍率，配合收窄后的clamp，避免阈值过度起伏
     multipliers: { slow: 1.08, medium: 1.00, fast: 0.92 }
     clamp_min: 0.75
     clamp_max: 1.25
 
   # Candidate scoring and NMS preferences
   valley_scoring:
-    # 强化“长谷优先”，保持安静度为次要因子
     w_len: 0.7
     w_quiet: 0.3
-    w_flat: 0.1
+    w_flat: 0.5
     use_weighted_nms: true
-    merge_close_ms: 300           # 合并更近的碎谷，提升候选质量
-    max_raw_candidates: 1200      # 能量谷原始候选上限，防爆炸
-    max_kept_after_nms: 200       # 适度上调，确保有足够一轮切点供选择
+    merge_close_ms: 450           # NMS 合并窗口（毫秒），小于该间隔视为同一候选。
+    max_raw_candidates: 1200      # NMS 前保留的最大候选数，用于抑制爆炸。
+    max_kept_after_nms: 200       # NMS 后额外保留的候选上限。
 
-spectral_classifier:
-  breath_threshold: 0.3
-  pause_threshold: 0.7
-  uncertain_range: [0.3, 0.7]
-  f0_weight: 0.25
-  formant_weight: 0.20
-  spectral_weight: 0.20
-  duration_weight: 0.20
-  energy_weight: 0.15
+advanced_vad:
+  focus_window_pad_s: 0.2
+  focus_window_min_width_s: 0.0
+  silero_merge_gap_ms: 120.0
+  focus_merge_gap_s: 0.12
+  silero_length_bucket: 4096
 
 musical_dynamic_density:
-  enable: true
   energy_weight: 0.5
   spectral_weight: 0.3
   onset_weight: 0.2
   threshold_multiplier: 0.2
   max_multiplier: 1.4
   min_multiplier: 0.6
-  chorus_detection:
-    enable: true
-    energy_threshold: 0.55
-    density_threshold: 0.75
-    multiplier: 1.1
-  segment_analysis:
-    window_overlap: 0.5
-    smoothing_factor: 0.3
-    min_segment_duration: 8.0
 
 quality_control:
-  validate_split_points: true
-  # adaptive (may be overridden by BPM layer if present)
-  min_pause_at_split: 1.0
-  # 降低最小切点间隔，让一次检测能保留更多“足够分散”的切点
-  min_split_gap: 1.0
-  # static constraints
-  min_vocal_content_ratio: 0.4
-  max_silence_ratio: 0.3
-  enable_zero_crossing_align: true
+  validate_split_points: true       # 启用最小间隔、守卫偏移等基础校验。
+  min_pause_at_split: 1.0           # 切点两侧需要保留的最小停顿长度（秒）。
+  min_split_gap: 1.2                # 切点之间的最小间隔（秒），防止过碎段。
+  min_vocal_content_ratio: 0.4      # 判定人声段时的最低人声占比。
+  max_silence_ratio: 0.3            # 人声段内部允许的最大静音比例。
   fade_in_duration: 0.0
   fade_out_duration: 0.0
   normalize_audio: false
   remove_click_noise: false
   smooth_transitions: false
-  # Length strategy: 终筛阶段仅依赖 min_split_gap 过滤；segment_min_duration 用于 VPP 候选上限，segment_max_duration 目前未启用
-  segment_min_duration: 6.0     # VPP 候选上限参考值 (s)
-  segment_max_duration: 18.0    # 预留参数，暂未启用自动切分
-  # Pure-music splitting: min duration threshold (seconds). 0 = disabled (default).
+  segment_min_duration: 4.0         # 导出片段的最小时长（秒）。
+  segment_max_duration: 18.0        # 导出片段的最大时长（秒），超过则尝试分割。
   pure_music_min_duration: 6.0
   segment_vocal_threshold_db: -50.0
-  # Pure-vocal occupancy ratio used for _human/_music suffix selection
   segment_vocal_activity_ratio: 0.1
-  segment_min_mix_pace: 2.0        # 最小合并参考数值 (s)
-  # Segment classification voting thresholds (see SeamlessSplitter._classify_segments_vocal_presence)
-  high_presence_ratio: 0.6 # 建议 0.6~0.7
-  segment_vocal_overlap_ratio: 0.35
-  segment_music_overlap_ratio: 0.55
-  segment_vocal_energy_ratio: 0.6
-  segment_music_energy_ratio: 0.4
-  segment_noise_margin_db: 6.0
-  segment_vocal_presence_ratio: 0.35
-  segment_music_presence_ratio: 0.15
-
-  # Quiet guard override (optional)
+  segment_min_mix_piece: 2.0
   enforce_quiet_cut:
     enable: false
     win_ms: 80
-    # 略微放宽守卫余量并缩短右推距离，减少被推到边界导致的长段残留
-    guard_db: 2.5
-    search_right_ms: 150
-    floor_percentile: 5
+    guard_db: 1.5                  # 静音守卫的能量阈值（dB），越高越保守。
+    search_right_ms: 450
+    floor_percentile: 0.5
+    floor_db_override: null
+  local_boundary_refine:
+    enable: true
+    search_radius_ms: 500
+    window_ms: 5
+    min_drop_db: 5.0               # 触发局部重定位所需的能量下降 dB。
+
+segment_layout:
+  enable: true                    # 是否启用段落后处理（碎片合并、救援切分等）。
+  micro_merge_s: 2.0              # < 该时长的微碎片会直接与邻段合并。
+  soft_min_s: 4.0                 # 软最小目标时长（秒），低于此值尝试温和合并。
+  soft_max_s: 18.0                # 软最大目标时长（秒），超过则尝试救援切分。
+  min_gap_s: 1.0                  # 合并/拆分后的切点最小间隔（秒）。
+  beat_snap_ms: 0                 # 节拍吸附窗口（毫秒），0 表示关闭节拍对齐。
+
+vocal_pause_splitting:
+  enable_bpm_adaptation: false    # legacy V2.0 兼容开关，默认关闭。
+  local_rms_window_ms: 25
+  silence_floor_percentile: 5
+  silence_floor_allowance: 0.0
+  lookahead_guard_ms: 120
+  head_offset: 0.0
+  tail_offset: 0.0
+  voice_threshold: 0.5
+  bpm_adaptive_settings:
+    pause_duration_multipliers:
+      slow_song_multiplier: 1.0
+      medium_song_multiplier: 1.0
+      fast_song_multiplier: 1.0
 
 vocal_separation:
   hpss_margin: 2.0
@@ -153,36 +175,39 @@ vocal_separation:
   min_vocal_ratio: 0.15
   max_noise_ratio: 0.3
 
-output:
-  directory: './output'
-  naming_pattern: 'segment_{index:03d}'
-  include_metadata: true
-  save_debug_info: true
-  save_separated_vocal: false
-  save_breath_map: false
-  save_analysis_report: true
-
-logging:
-  level: 'INFO'
-  file: 'smart_splitter.log'
-  format: '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-  max_file_size: '10MB'
-  backup_count: 3
-
-# 可选：BPM 自适应核心参数覆盖（若启用自适应层，以下覆盖将被使用）
+# 选用 BPM 自适应流程时，可参考下列参数进行精细化控制。
 bpm_adaptive_core:
   pause_duration_beats:
     slow: 1.5
     medium: 1.0
-    fast: 0.6       # 快歌允许更短的“最小停顿”认定
+    fast: 0.6
     very_fast: 0.5
   split_gap_phrases:
-    slow: 4
-    medium: 3
-    fast: 2         # 快歌降低分割间隙（按乐句/拍计算），避免遗留超长段
-    very_fast: 2
+    slow: 1.6
+    medium: 1.2
+    fast: 0.8
+    very_fast: 0.6
   speech_pad_beats:
     slow: 0.8
     medium: 0.5
     fast: 0.3
     very_fast: 0.2
+  tempo_categories: {}
+  complexity_compensation:
+    base_factor: 1.0
+    complexity_boost: 0.0
+    instrument_boost: 0.0
+    min_instruments: 0
+
+output:
+  directory: "./output"
+  format: wav                # 默认导出格式（wav|mp3 可扩展）
+  wav:
+    subtype: PCM_24
+  mp3:
+    bitrate: 320k
+
+logging:
+  level: "INFO"
+  file: "smart_splitter.log"
+  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"

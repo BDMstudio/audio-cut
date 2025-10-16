@@ -1,67 +1,97 @@
 <!-- File: development.md -->
-<!-- AI-SUMMARY: 记录 Vocal Smart Splitter 的架构、流程、测试矩阵与近期演进。 -->
+<!-- AI-SUMMARY: 记录 Vocal Smart Splitter 的架构、流程、测试矩阵与演进规划。 -->
 
-# development.md — 技术路线与模块总览（更新于 2025-09-26）
+# development.md — 技术路线与模块总览（更新于 2025-10-10）
 
-本文是工程事实来源（SSOT），记录架构、流程与约束。
+本文档是工程事实的单一可信来源（SSOT），持续记录系统架构、实现约束与进度。所有涉及流程、参数或测试的改动，须同步更新此处。
 
 ## 1. 版本演进
-- v1.x：混音 -> BPM/动态范围 -> Silero VAD -> 阈值切分（遗留，仅用于比较）。
-- v2.0：混音 -> MDX23/Demucs 分离 -> 人声静区检索 -> 切分；首次引入长音保护。
-- v2.1：VocalPrime（VMS/EMA）实验版，提供更细粒度 F0/共振峰分析，仍保留旧守卫链路。
-- v2.2（2025-09-12）：Pure Vocal + MDD 合流，统一成“一次检测 + NMS + 守卫”的策略。
-- v2.3（2025-09-26）：SeamlessSplitter 收敛为单入口；守卫统计、片段标注落盘；`audio_cut.*` 拆出通用特征缓存与切点精修。
+- **v1.x**：混音粗分 → BPM/动态范围 → Silero VAD → 阈值切分，仅保留用于对照。
+- **v2.0**：引入 MDX23/Demucs 分离；建立分离→检测的主流程与初代守卫。
+- **v2.1**：VocalPrime（VMS/EMA）实验流，引入 F0/共振峰等细粒度特征。
+- **v2.2（2025-09-12）**：Pure Vocal + MDD 合流，确立“一次检测 + NMS + 守卫”策略。
+- **v2.3（2025-09-26）**：SeamlessSplitter 成为唯一入口；结果调试（`segment_classification_debug`、`guard_shift_stats`）结构化；`audio_cut.*` 拆分通用特征与切点精修；新增 `segment_layout_refiner`。
 
-## 2. 目录与职责
-- src/vocal_smart_splitter/core：主流程（SeamlessSplitter、PureVocalPauseDetector、QualityController、EnhancedVocalSeparator、VocalPauseDetectorV2 等）。
-- src/vocal_smart_splitter/utils：IO、配置优先级、BPM 自适应参数计算、特征抽取。
-- src/audio_cut/analysis：TrackFeatureCache，缓存 BPM/MDD/RMS 等序列，主流程分离后构建一次并向检测/守卫复用。
-- src/audio_cut/cutting：CutPoint/CutContext/切点精修，提供过零、静音守卫、min-gap NMS 的独立实现，现为 `_finalize_and_filter_cuts_v2` 的唯一实现，便于复用与测试。
-- scripts/：快速诊断脚本（quick_start、run_splitter、debug 工具）。
-- tests/：unit / integration / contracts / performance 分层。
-- config/：预置 YAML，避免在主配置中留下实验参数。
+## 2. 目录职责
+- `src/vocal_smart_splitter/core/`：主流程组件（SeamlessSplitter、PureVocalPauseDetector、EnhancedVocalSeparator、VocalPauseDetectorV2）；QualityController 保留为 legacy 兜底。
+- `src/vocal_smart_splitter/utils/`：音频 IO、配置优先级、BPM 自适应参数、特征抽取。
+- `src/audio_cut/analysis/`：`TrackFeatureCache` 及构建器，集中缓存 BPM/MDD/RMS 等特征。
+- `src/audio_cut/utils/`：GPU 流水线（chunk 规划、CUDA streams、pinned buffer、inflight 限流）与 ORT Provider 注入。
+- `src/audio_cut/api.py`：对外统一 API，封装 `SeamlessSplitter`，生成 Manifest 并管理导出计划。
+- `src/audio_cut/detectors/`：Silero 分块 VAD 及兼容层。
+- `src/audio_cut/cutting/`：CutPoint/CutContext 与切点精修，提供 NMS、过零、静音守卫、chunk vs full metric。
+- `scripts/`：运行入口与诊断脚本（`quick_start.py`、`run_splitter.py`、bench 工具）。
+- `tests/`：分层测试（unit / integration / contracts / performance / sanity）。
+- `config/`：默认配置与 schema；严禁提交个人实验参数。
 
 ## 3. 核心流程
-- (1) `AudioProcessor.load_audio` 读取并保持原始振幅，必要时重采样到 44.1 kHz。
-- (2) `EnhancedVocalSeparator.separate_for_detection` 先行分离人声/伴奏，记录后端与置信度。
-- (3) `PureVocalPauseDetector.detect_pure_vocal_pauses` 计算候选静区：先走相对能量模式（默认），再视需要回退到全特征评估；BPM/MDD/VPP 自适应在此执行，并优先从 `TrackFeatureCache` 读取全局特征。
-- (4) `SeamlessSplitter._finalize_and_filter_cuts_v2` 调用 `audio_cut.cutting.finalize_cut_points`，先执行加权 NMS，再在人声/混音轨套用守卫并做最小间隔过滤。
-- (5) `SeamlessSplitter._classify_segments_vocal_presence` 依据 RMS 活跃度、阈值和辅助标记判断 `_human/_music`。
-- (6) `QualityController` 输出守卫位移统计；`_save_segments` 落盘 24-bit WAV 与调试信息。
+0. `audio_cut.api.separate_and_segment` 在上层项目中聚合资源配置、调用 `SeamlessSplitter` 并生成 Manifest。
+1. `AudioProcessor.load_audio` 读取音频并默认归一化至 [-1, 1]，必要时重采样至 44.1 kHz。
+2. `EnhancedVocalSeparator.separate_for_detection` 构造 `PipelineContext`，规划 chunk/overlap/halo，GPU 模式记录 `gpu_meta`，失败时回退 CPU。
+3. `SileroChunkVAD.process_chunk` 进行分块 VAD 和 halo 裁剪；`ChunkFeatureBuilder` 在 GPU 缓存 STFT/RMS 供后续复用。
+4. `PureVocalPauseDetector.detect_pure_vocal_pauses` 使用焦点窗口与特征缓存，在相对能量模式下结合 BPM/MDD/VPP 自适应判定停顿。
+5. `audio_cut.cutting.finalize_cut_points` 对候选执行加权 NMS、静音守卫、最小间隔，输出守卫位移统计。
+6. `SeamlessSplitter._classify_segments_vocal_presence` 根据 RMS 活跃度估计 `_human/_music` 标签并记录调试信息。
+7. `segment_layout_refiner.refine_layout` 执行微碎片合并、软最小合并、软最大救援；如开启 `quality_control.local_boundary_refine`，再次细调边界。
+8. `_save_segments` 统一调用 `audio_export` 模块导出文件，默认追加 `_X.X`（秒，保留一位小数）后缀；落盘目录按 `<日期>_<时间>_<原音频名>` 命名。
 
 ## 4. 核心模块要点
-- SeamlessSplitter：统一入口；缓存 `segment_classification_debug`、`guard_shift_stats`；负责落盘，并在分离后构建 `TrackFeatureCache`。
-- EnhancedVocalSeparator：封装 MDX23/Demucs，支持环境变量强制后端、失败回退、keep-in-memory。
-- PureVocalPauseDetector：在相对能量模式下使用峰值/RMS 比例、BPM/MDD/VPP 自适应补偿；复杂模式含 F0、共振峰、谱质心、谐波比率等特征。
-- QualityController：保留静音守卫/过零吸附的兼容实现，用于 fallback 与质量度量；`AdaptiveParameterCalculator` 仍提供 BPM 级别自适应参数。
-- AdaptiveVADEnhancer/BPMAnalyzer：抽取 BPM、动态密度、节拍信息，为 pause_stats 与 quality_controller 提供上下文。
-- audio_cut.analysis/features_cache：集中计算 RMS、谱平坦度、onset 等序列，避免多次重复运算；已在 SeamlessSplitter → PureVocalPauseDetector → VocalPauseDetector 流程中落地复用。
-- audio_cut.cutting/refine：NMS + 过零 + 静音守卫的割点库，已托管 `_finalize_and_filter_cuts_v2` 的主要实现，便于复用与测试。
+- **SeamlessSplitter**：统一调度入口，缓存 `segment_classification_debug`、`guard_shift_stats`、守卫调整明细，确保 GPU chunk 与整段流程可追踪。
+- **EnhancedVocalSeparator**：封装 MDX23/Demucs 后端，记录 `h2d_ms/dtoh_ms/compute_ms/peak_mem_bytes`，提供 `fallback_reason`。
+- **GPU Pipeline**：`PipelineConfig`/`PipelineContext` 管理 chunk 规划、CUDA stream、pinned buffer 与背压。
+- **SileroChunkVAD**：分块推理 + halo 裁剪 + 焦点窗口构造，仅在关键区间运行昂贵特征。
+- **ChunkFeatureBuilder/TrackFeatureCache**：集中管理 STFT/RMS/MDD 等特征，支持 GPU 批量计算与跨块拼接。
+- **segment_layout_refiner**：微碎片合并、软最小合并、软最大救援，复用 NMS 被抑制的 cut point；配合 `_last_suppressed_cut_points` 提升布局质量。
+- **输出目录策略**：`quick_start.py` 与 `run_splitter.py` 均使用 `<日期>_<时间>_<原音频名>` 创建输出目录，便于批量回归与部署一致。
 
 ## 5. 配置与参数策略
-- `config_manager.get_config` 直接读取 YAML；如需覆盖需调用 `set_runtime_config` 或注入自定义 ConfigManager。
-- 相对能量阈值默认 0.26/0.32，并通过 BPM/MDD/VPP clamp 在 0.85–1.15 范围。
-- 守卫默认关闭；当项目需要零爆音保障时，应同步开启 `quality_control.enforce_quiet_cut.enable` 与 `save_analysis_report` 便于验收。
-- `segment_vocal_activity_ratio` 设 0.10，若测试集中出现误判，应通过单元测试验证新的阈值后再调整。
+- `config_manager.get_config` 默认加载 `src/vocal_smart_splitter/config.yaml`，支持 `VSS__...` 环境变量重写。
+- `pure_vocal_detection` 默认 `peak_relative_threshold_ratio=0.26`、`rms_relative_threshold_ratio=0.30`，BPM/MDD/VPP 自适应缩放范围 0.85–1.15。
+- `quality_control` 提供 `min_split_gap`、`segment_vocal_activity_ratio` 等守护阈值；`enforce_quiet_cut` 注重静音守卫参数（`guard_db`, `search_right_ms`）。
+- `segment_layout` 默认启用，`micro_merge_s` / `soft_min_s` / `soft_max_s` / `min_gap_s` 控制碎片合并策略；若更改需同步 doc/CLI。
+- `output.format` 默认 `wav`，可通过 `output.mp3.bitrate` 调整 MP3 输出；`audio_export` 模块负责统一写入。
 
 ## 6. 测试矩阵
-- unit：`test_cut_alignment`, `test_segment_labeling`, `test_pre_vocal_split`, `test_cpu_baseline_perfect_reconstruction` 等，保证算法细节。
-- integration：`test_pipeline_v2_valley.py` 跑通 v2.2 全流程。
-- contracts：配置文件契约 (`test_config_contracts.py`)、valley 基准 (`valley_no_silence.yaml`)。
-- performance：`test_valley_perf.py` 监控 MDD+VPP 的耗时。
-- 慢测试与 GPU 相关 case 以 `@pytest.mark.slow`、`@pytest.mark.gpu` 标记，CI 默认跳过。
+- **Unit**：`test_cpu_baseline_perfect_reconstruction`、`test_cutting_consistency`、`test_segment_labeling`、`test_gpu_pipeline`、`test_chunk_feature_builder_gpu/stft_equivalence` 等覆盖核心算法。
+- `tests/unit/test_api_manifest.py`：校验模块化 API 的 Manifest 输出与导出计划控制。
+- **Integration**：`tests/integration/test_pipeline_v2_valley.py` 验证 MDD 主路径；批处理场景计划新增。
+- **Contracts**：`tests/contracts/test_config_contracts.py` 保证配置兼容；待补输出命名回归。
+- **Performance**：`tests/performance/test_valley_perf.py` 监控检测+守卫耗时。
+- **Benchmarks**：`tests/benchmarks/test_chunk_vs_full_equivalence.py` 分析 chunk vs full 误差。
+- **Sanity**：`tests/sanity/ort_mdx23_cuda_sanity.py` 自检 GPU Provider。
+- 标准要求：新增能力必须补齐相应测试层；`quick_start` 批处理逻辑需结合集成测试验证。
 
 ## 7. 性能与复杂度基线
-- 分离阶段：MDX23 在 RTX 4090 上 ~0.6x 实时，CPU 回退 ~3.5x。
-- 检测 + 守卫：10 分钟素材在单核下约 12s；开启静音守卫会额外增加 ~8%。
-- 拼接误差：`test_cpu_baseline_perfect_reconstruction` 要求最大绝对误差 < 1e-8。
+- 分离阶段：MDX23 GPU 目标 ≥0.7x 实时，记录 `h2d_ms/dtoh_ms/compute_ms/peak_mem_bytes`；CPU 回退约 3.5x 实时。
+- 检测 + 守卫：处理 10 分钟素材约 12s；启用静音守卫额外增加 ~8%。
+- Chunk vs Full：dummy 模型误差 <1e-6，真实模型断言 `L∞<5e-3`、`SNR>60dB`。
+- 拼接误差：`test_cpu_baseline_perfect_reconstruction` 要求最大绝对误差 ≤1e-12。
+- 性能脚本：`python scripts/bench/run_gpu_cpu_baseline.py`、`python scripts/bench/run_multi_gpu_probe.py` 输出性能报告。
 
 ## 8. 当前进展与下一步
-- 已完成：v2.2 单次判决合流、守卫统计、片段调试输出、文档重写；TrackFeatureCache 接入主线；`audio_cut.cutting.finalize_cut_points` 接管 `_finalize_and_filter_cuts_v2`。
-- 进行中：合并重复过滤与 legacy 守卫残留，确保候选仅通过 `audio_cut.cutting.refine` 管线。
-- 待规划：VPP/BPM 指标化、全链路性能采样脚本、配置迁移工具（v2→v3）。
+- **已完成**：
+  - GPU 多流流水线（streams / pinned buffer / inflight limiter）。
+  - Silero 分块 VAD、ChunkFeatureBuilder GPU 缓存。
+  - `segment_layout_refiner` 接入主流程，并统一 `_X.X` 时长后缀。
+  - 输出目录统一为 `<日期>_<时间>_<原音频名>`。
+- **进行中**：
+  - 同类型母带回放基线收集与验证。
+  - `--strict-gpu` 策略、质量守则对照表（Milestone 2-G1/G2）。
+  - quick_start 批量模式 + CLI 端的回归与文档核对。
+- **待规划**：
+  - IO Binding / TensorRT / FP16 支持，评估对特征精度影响。
+  - `tests/test_seamless_reconstruction.py` 适配 v2.3 结果结构。
+  - 自动化 regression tracker，记录输出文件命名、守卫统计等关键指标。
 
 ## 9. 环境与工具
-- Python 3.10+，PyTorch + librosa + numpy/scipy/soundfile。
-- `pip install -e .[dev]` 提供开发依赖（pytest/black/flake8）。
-- Windows + PowerShell/WSL 均可运行；外部模型位于 `MVSEP-MDX23-music-separation-model/`。
+- Python 3.10+；核心依赖：PyTorch、librosa、numpy/scipy/soundfile、pydub（MP3 导出需 FFmpeg）。
+- `pip install -e .[dev]` 安装开发依赖（pytest/black/flake8 等）。
+- Windows + PowerShell 为默认环境，WSL / Linux 同样支持。
+- 外部模型：`MVSEP-MDX23-music-separation-model/`，需确认路径。
+- CLI 示例：
+  ```bash
+  python quick_start.py                   # 交互式单/批处理
+  python run_splitter.py input/song.mp3   # CLI 模式
+  ```
+
+> 若修改输出结构、文件命名或调试字段，务必同步更新 README 与本文件，保持文档与实现一致。

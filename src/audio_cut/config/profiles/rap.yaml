@@ -1,0 +1,16 @@
+# File: src/audio_cut/config/profiles/rap.yaml
+# AI-SUMMARY: Schema v3 Rap 预设，缩短最小停顿并提升 MDD 加权以适应密集语速。
+
+profile: rap
+comment: Rap profile prioritises shorter pauses and stronger energy gating.
+overrides:
+  min_pause_s: 0.38
+  threshold:
+    base_ratio: 0.25
+  adapt:
+    bpm_strength: 0.7
+    mdd_strength: 0.45
+  guard:
+    floor_db: -62.0
+  nms:
+    topk: 5

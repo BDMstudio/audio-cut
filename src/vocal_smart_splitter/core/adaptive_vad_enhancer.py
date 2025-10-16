@@ -148,7 +148,7 @@ class BPMAnalyzer:
             )
             
             # 计算动态tempo变化
-            tempo_curve = librosa.beat.tempo(
+            tempo_curve = librosa.feature.rhythm.tempo(
                 onset_envelope=onset_envelope,
                 sr=self.sample_rate,
                 hop_length=hop_length,
@@ -1362,3 +1362,4 @@ class AdaptiveVADEnhancer:
             'min_speech_duration_ms': min_speech_ms,
             'complexity_score': complexity
         }
+

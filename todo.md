@@ -1,7 +1,7 @@
 <!-- File: todo.md -->
 <!-- AI-SUMMARY: 项目任务状态看板，展示已完成事项、进行中任务、待办与 Codex 行动。 -->
 
-# todo.md — 项目开发进度与任务清单（更新于 2025-09-26）
+# todo.md —— 项目开发进度与任务清单（更新于 2025-10-09）
 
 ## 0. 说明
 - 状态标记：`[x] 已完成` / `[/] 进行中` / `[ ] 未开始`
@@ -12,18 +12,36 @@
 - [x] 守卫参数可配置化：`quality_control.enforce_quiet_cut.{win_ms, guard_db, search_right_ms, floor_percentile}` 支持覆盖默认值。
 - [x] README 补充 “调参指南（VPP + BPM）”，清理二次检测文案与多余日志路径说明。
 - [x] 输出结构统一：`segments_vocal/` 产出 24-bit 人声片段，与伴奏对齐；主目录保留完整人声/伴奏。
-
+- [x] 文档对齐：重写 README / development.md / PRD 交叉验证细节与插图，并同步 chunk vs full 基线说明（更新至 2025-10-04）。
+- [x] Chunk vs full 真实模型基准：`tests/benchmarks/test_chunk_vs_full_equivalence.py` 已补真实模型路径并生成 `chunk_vs_full_real.{json,md}`。
+- [x] Silero/VAD/特征跨块测试矩阵：`tests/unit/test_silero_chunk_vad.py`、`test_chunk_feature_builder_gpu.py`、`test_chunk_feature_builder_stft_equivalence.py` 覆盖短隙合并与帧一致性。
+- [x] GPU 性能报表与文档：`scripts/bench/run_gpu_cpu_baseline.py` + `scripts/bench/README_gpu_pipeline.md` 输出字段解释与 PR 基线模板。
+- [x] 段落布局精炼：segment_layout_refiner 已在主流程启用，完成碎片合并/软最小/救援切分，并输出 segment_layout_applied/suppressed_cut_points_sec 调试字段。
 ## 2. 进行中（Doing）
-- [x] 文档对齐：重写 README / development.md / PRD 交叉验证细节与插图。
+
 - [/] 同类型母带回放：收集长句、说唱、电音、现场、对白等基线素材，验证守卫与判定稳健性。
 
+- [/] segment_layout 回归验收：收集碎片率、救援切分命中率与守卫偏移基线，补充自动化报表。
 ## 3. 待办（Backlog）
+
 - [ ] 汇总 `segment_classification_debug` 样本，检验 presence/energy 阈值在不同风格的适配情况。
+- [ ] segment_layout 调参指南：梳理 micro_merge_s/soft_min_s/soft_max_s/min_gap_s/beat_snap_ms 等参数的常见设置与回归范围。
+
+- [ ] 多 GPU 与 `--strict-gpu` 模式：验证一机多卡分配、失败策略与监控字段。
+
 - [ ] 建立 VPP 统计与对标数据集，覆盖自动调参 (slow/medium/fast) 的真实样本分布。
+
 - [ ] 准备一套端到端测试集（快歌/抒情/电子/直播/对白），记录片段数量与跨度基线。
+
 - [ ] BPM 自适应的 clamp/multipliers 回归：验证在极端节拍下的鲁棒性并产出图表。
+
 - [ ] 质量日志强化：记录守卫右移、边界缩进、被最小间隔过滤的候选数量等指标。
+
 - [ ] README 扩充 “常见素材调参示例”，覆盖 BPM 驱动而非 profile 预设的调优路径。
+
+- [ ] 修复 `run_splitter --validate-reconstruction` KeyError：对齐 `split_audio_seamlessly` 返回结构并更新 `tests/test_seamless_reconstruction.py`。
+
+- [ ] 重写 `tests/test_pure_vocal_detection_v2.py`，替换 legacy Tester，接入 SeamlessSplitter v2.3 并纳入 pytest。
 
 ## 4. 验收标准
 - 默认配置：无 >10s 片段被遗漏；单次检测产出稳定；`test_cpu_baseline_perfect_reconstruction` 通过。

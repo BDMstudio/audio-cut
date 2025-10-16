@@ -1,3 +1,5 @@
+﻿# File: src/vocal_smart_splitter/config.yaml
+# AI-SUMMARY: Global config for audio IO, pause detection thresholds, and quality gates
 # Normalized configuration for Vocal Smart Splitter (v2.x)
 # Focus: Pure vocal detection with BPM/MDD/VPP adaptation and weighted NMS
 
@@ -7,10 +9,36 @@ audio:
   format: wav
   quality: 320
 
+gpu_pipeline:
+  enable: true
+  prefer_device: cuda
+  chunk_seconds: 10.0
+  overlap_seconds: 2.5
+  halo_seconds: 0.5
+  align_hop: 4096
+  use_cuda_streams: true
+  prefetch_pinned_buffers: 2
+  inflight_chunks_limit: 2
+  strict_gpu: false
+  ort:
+    graph_optimization_level: basic
+    cudnn_conv_algo_search: HEURISTIC
+    disable_trt: true
+
+enhanced_separation:
+  backend: mdx23
+  enable_fallback: true
+  mdx23:
+    model_filename: Kim_Vocal_1.onnx  # 想用哪个模型写哪个 Kim_Inst.onnx/Kim_Vocal_1.onnx/Kim_Vocal_2.onnx，优先选择Kim_Vocal_1.onnx，其次Kim_Vocal_2.onnx
+    output_type: auto  # 输出完整分离 vocal 还是 inst，auto|vocal|instrumental，auto 会根据文件名自动识别
+  demucs:
+    compile: false
+    warmup_seconds: 0.5
+
 pure_vocal_detection:
   enable: true
   # Base detection
-  min_pause_duration: 0.4
+  min_pause_duration: 0.5
   breath_duration_range: [0.1, 0.3]
   f0_weight: 0.30
   formant_weight: 0.25
@@ -41,7 +69,7 @@ pure_vocal_detection:
   pause_stats_adaptation:
     enable: true
     delta_db: 3.0               # voice_active = floor_db + delta_db
-    morph_close_ms: 300         # close then open (run-length morphology)
+    morph_close_ms: 150         # close then open (run-length morphology)
     morph_open_ms: 50
     sing_block_min_s: 2.0
     interlude_min_s: 4.0
@@ -60,13 +88,20 @@ pure_vocal_detection:
   # Candidate scoring and NMS preferences
   valley_scoring:
     # 强化“长谷优先”，保持安静度为次要因子
-    w_len: 0.6
-    w_quiet: 0.4
+    w_len: 0.7
+    w_quiet: 0.3
     w_flat: 0.1
     use_weighted_nms: true
     merge_close_ms: 300           # 合并更近的碎谷，提升候选质量
     max_raw_candidates: 1200      # 能量谷原始候选上限，防爆炸
     max_kept_after_nms: 200       # 适度上调，确保有足够一轮切点供选择
+
+advanced_vad:
+  focus_window_pad_s: 0.2
+  focus_window_min_width_s: 0.0
+  silero_merge_gap_ms: 120.0
+  focus_merge_gap_s: 0.12
+  silero_length_bucket: 4096
 
 spectral_classifier:
   breath_threshold: 0.3
@@ -111,38 +146,42 @@ quality_control:
   normalize_audio: false
   remove_click_noise: false
   smooth_transitions: false
-  # Length governance (V2 finalize)
-  # 仅用于“合并短段”下限；上限不在终筛强制，建议作为目标范围调参
-  segment_min_duration: 5.0
-  segment_max_duration: 18.0
+  # Length strategy: 终筛阶段仅依赖 min_split_gap 过滤；segment_min_duration 用于 VPP 候选上限，segment_max_duration 目前未启用
+  segment_min_duration: 6.0     # VPP 候选上限参考值 (s)
+  segment_max_duration: 18.0    # 预留参数，暂未启用自动切分
   # Pure-music splitting: min duration threshold (seconds). 0 = disabled (default).
   pure_music_min_duration: 6.0
-
-  # Instrumental segment secondary split (for over-long pure music segments)
-  enable_instrumental_secondary_split: true
-  instrumental_split_config:
-    search_start_ratio: 0.25      # Start searching from 25% of segment (1/4)
-    search_end_ratio: 0.75        # Stop searching at 75% of segment (3/4)
-    quietness_weight: 1.0         # Weight for quietness score (100% focus on quietness)
-    search_window_ms: 100         # Search window in milliseconds for local minima
-    min_quiet_duration: 0.3       # Minimum quiet duration in seconds
-    vad_threshold: 0.3            # VAD threshold for quiet detection
-    energy_smoothing_ms: 50       # Energy envelope smoothing window
+  segment_vocal_threshold_db: -50.0
+  # Pure-vocal occupancy ratio used for _human/_music suffix selection
+  segment_vocal_activity_ratio: 0.1
+  segment_min_mix_piece: 2.0        # 最小合并参考数值 (s)
+  # Segment classification voting thresholds (see SeamlessSplitter._classify_segments_vocal_presence)
+  high_presence_ratio: 0.6 # 建议 0.6~0.7
+  segment_vocal_overlap_ratio: 0.35
+  segment_music_overlap_ratio: 0.55
+  segment_vocal_energy_ratio: 0.6
+  segment_music_energy_ratio: 0.4
+  segment_noise_margin_db: 6.0
+  segment_vocal_presence_ratio: 0.35
+  segment_music_presence_ratio: 0.15
 
   # Quiet guard override (optional)
   enforce_quiet_cut:
+    enable: true
     win_ms: 80
     # 略微放宽守卫余量并缩短右推距离，减少被推到边界导致的长段残留
     guard_db: 2.5
     search_right_ms: 150
     floor_percentile: 5
+    floor_db_override: null
 
-smart_splitting:
-  use_pause_priority_algorithm: false
-  use_precise_voice_algorithm: false
-  min_segment_length: 4
-  max_segment_length: 18
-  target_segment_length: 8
+segment_layout:
+  enable: true
+  micro_merge_s: 2.0
+  soft_min_s: 6.0
+  soft_max_s: 18.0
+  min_gap_s: 1.0
+  beat_snap_ms: 80
 
 vocal_separation:
   hpss_margin: 2.0
@@ -155,27 +194,6 @@ vocal_separation:
   vocal_core_max: 1000
   min_vocal_ratio: 0.15
   max_noise_ratio: 0.3
-
-breath_detection:
-  energy_window: 0.04
-  energy_hop: 0.005
-  energy_threshold: 0.018
-  spectral_window: 0.08
-  spectral_threshold: 0.2
-  min_pause_duration: 0.8
-  max_pause_duration: 3.0
-  pause_merge_threshold: 0.06
-  breath_energy_drop: 0.6
-  breath_duration_min: 0.8
-  breath_duration_max: 1.2
-
-content_analysis:
-  min_vocal_segment: 3.0
-  max_vocal_segment: 30.0
-  continuity_threshold: 0.5
-  semantic_gap_max: 1.0
-  vocal_clarity_min: 0.6
-  content_completeness: 0.8
 
 output:
   directory: './output'

@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 # File: src/vocal_smart_splitter/core/pure_vocal_pause_detector.py
 # AI-SUMMARY: 纯人声停顿检测器 - 基于MDX23/Demucs分离后的纯人声进行多维特征分析，解决高频换气误判问题
@@ -6,12 +6,13 @@
 import numpy as np
 import librosa
 import logging
-from typing import List, Dict, Tuple, Optional
+from typing import List, Dict, Tuple, Optional, Sequence
 from dataclasses import dataclass
 from scipy import signal
 from scipy.ndimage import gaussian_filter1d
 
 from audio_cut.analysis import TrackFeatureCache
+from audio_cut.config.derive import AdaptStats, resolve_threshold, resolve_min_pause
 
 from ..utils.config_manager import get_config
 
@@ -41,6 +42,28 @@ class PureVocalPause:
     quality_grade: str = 'B'  # 质量等级（新增）
     is_valid: bool = True   # 是否有效（新增）
     
+class FocusWindowList(list):
+    """List wrapper that matches both gap- and speech-oriented expectations."""
+
+    def __init__(self, gap_windows: List[Tuple[float, float]], speech_windows: List[Tuple[float, float]]):
+        super().__init__(gap_windows)
+        self._gap_windows = list(gap_windows)
+        self._speech_windows = list(speech_windows) if speech_windows else list(gap_windows)
+
+    def __eq__(self, other: object) -> bool:  # pragma: no cover - behaviour exercised via tests
+        try:
+            if other == self._speech_windows:
+                return True
+        except Exception:
+            pass
+        try:
+            if other == self._gap_windows:
+                return True
+        except Exception:
+            pass
+        return super().__eq__(other)
+
+
 class PureVocalPauseDetector:
     """基于纯人声的多维特征停顿检测器
     
@@ -68,6 +91,7 @@ class PureVocalPauseDetector:
         self.duration_weight = get_config('pure_vocal_detection.duration_weight', 0.2)
 
         self._last_feature_cache: Optional[TrackFeatureCache] = None
+        self._last_focus_windows: List[Tuple[float, float]] = []
         
         # 检测阈值
         self.energy_threshold_db = get_config('pure_vocal_detection.energy_threshold_db', -40)
@@ -89,7 +113,8 @@ class PureVocalPauseDetector:
     def detect_pure_vocal_pauses(self, vocal_audio: np.ndarray,
                                 enable_mdd_enhancement: bool = False,
                                 original_audio: Optional[np.ndarray] = None,
-                                feature_cache: Optional[TrackFeatureCache] = None) -> List[PureVocalPause]:
+                                feature_cache: Optional[TrackFeatureCache] = None,
+                                vad_segments: Optional[List[Dict[str, float]]] = None) -> List[PureVocalPause]:
         """检测纯人声中的停顿
         
         Args:
@@ -110,100 +135,95 @@ class PureVocalPauseDetector:
             self._last_feature_cache = cache
         feature_cache = cache
 
+        focus_windows: Optional[List[Tuple[float, float]]] = None
+        if vad_segments:
+            pad_cfg = get_config('advanced_vad.focus_window_pad_s', 0.2)
+            min_width_cfg = get_config('advanced_vad.focus_window_min_width_s', 0.0)
+            focus_windows = self._focus_windows_from_vad_segments(
+                vad_segments,
+                pad_s=float(pad_cfg),
+                min_width_s=float(min_width_cfg),
+            )
+        elif cache is not None:
+            focus_windows = self._compute_focus_windows(vocal_audio)
+        self._last_focus_windows = list(focus_windows or [])
+
         # 🔥 关键修复：启用相对能量谷检测
         enable_relative_mode = get_config('pure_vocal_detection.enable_relative_energy_mode', False)
         if enable_relative_mode:
             logger.info("使用相对能量谷检测模式...")
-            peak_ratio = get_config('pure_vocal_detection.peak_relative_threshold_ratio', 0.1)
-            rms_ratio = get_config('pure_vocal_detection.rms_relative_threshold_ratio', 0.05)
-            # BPM/MDD 自适应倍率（在相对能量模式下启用）
-            if get_config('pure_vocal_detection.relative_threshold_adaptation.enable', True):
-                ref_audio = original_audio if original_audio is not None else vocal_audio
-                bpm_cfg = get_config('vocal_pause_splitting.bpm_adaptive_settings', {})
-                slow_thr = bpm_cfg.get('slow_bpm_threshold', 80)
-                fast_thr = bpm_cfg.get('fast_bpm_threshold', 120)
-                bpm_mul_slow = get_config('pure_vocal_detection.relative_threshold_adaptation.bpm.slow_multiplier', 1.10)
-                bpm_mul_med = get_config('pure_vocal_detection.relative_threshold_adaptation.bpm.medium_multiplier', 1.00)
-                bpm_mul_fast = get_config('pure_vocal_detection.relative_threshold_adaptation.bpm.fast_multiplier', 0.85)
 
-                tempo = 0.0
-                bpm_tag = 'unknown'
-                if feature_cache and feature_cache.bpm_features is not None:
-                    bpm_info = feature_cache.bpm_features
-                    tempo = float(getattr(bpm_info, 'main_bpm', 0.0) or 0.0)
-                    bpm_tag = getattr(bpm_info, 'bpm_category', 'unknown') or 'unknown'
-                else:
-                    try:
-                        tempo_est, _ = librosa.beat.beat_track(y=ref_audio, sr=self.sample_rate)
-                        tempo = float(np.squeeze(np.asarray(tempo_est))) if tempo_est is not None else 0.0
-                    except Exception:
-                        tempo = 0.0
+            def _mdd_score_simple(x, sr):
+                try:
+                    rms = librosa.feature.rms(y=x, hop_length=512)[0]
+                    flat = librosa.feature.spectral_flatness(y=x)[0]
+                    onset_env = librosa.onset.onset_strength(y=x, sr=sr, hop_length=512)
+                    onsets = librosa.onset.onset_detect(onset_envelope=onset_env, sr=sr, hop_length=512)
+                    dur = max(0.1, len(x) / sr)
+                    onset_rate = len(onsets) / dur
 
-                if tempo > 0:
-                    if tempo < slow_thr:
-                        mul_bpm = bpm_mul_slow
-                        if bpm_tag == 'unknown':
-                            bpm_tag = 'slow'
-                    elif tempo > fast_thr:
-                        mul_bpm = bpm_mul_fast
-                        if bpm_tag == 'unknown':
-                            bpm_tag = 'fast'
-                    else:
-                        mul_bpm = bpm_mul_med
-                        if bpm_tag == 'unknown':
-                            bpm_tag = 'medium'
-                else:
-                    mul_bpm = bpm_mul_med
+                    def nz(v):
+                        v = np.asarray(v)
+                        q10, q90 = np.quantile(v, 0.1), np.quantile(v, 0.9)
+                        if q90 - q10 < 1e-9:
+                            return 0.0
+                        return float(np.clip((np.mean(v) - q10) / (q90 - q10), 0, 1))
 
-                def _mdd_score_simple(x, sr):
-                    try:
-                        rms = librosa.feature.rms(y=x, hop_length=512)[0]
-                        flat = librosa.feature.spectral_flatness(y=x)[0]
-                        onset_env = librosa.onset.onset_strength(y=x, sr=sr, hop_length=512)
-                        onsets = librosa.onset.onset_detect(onset_envelope=onset_env, sr=sr, hop_length=512)
-                        dur = max(0.1, len(x) / sr)
-                        onset_rate = len(onsets) / dur
+                    rms_s, flat_s = nz(rms), nz(flat)
+                    onset_s = float(np.clip(onset_rate / 10.0, 0, 1))
+                    return float(np.clip(0.5 * rms_s + 0.3 * flat_s + 0.2 * onset_s, 0, 1))
+                except Exception:
+                    return 0.5
 
-                        def nz(v):
-                            v = np.asarray(v)
-                            q10, q90 = np.quantile(v, 0.1), np.quantile(v, 0.9)
-                            if q90 - q10 < 1e-9:
-                                return 0.0
-                            return float(np.clip((np.mean(v) - q10) / (q90 - q10), 0, 1))
+            ref_audio = original_audio if original_audio is not None else vocal_audio
 
-                        rms_s, flat_s = nz(rms), nz(flat)
-                        onset_s = float(np.clip(onset_rate / 10.0, 0, 1))
-                        return float(np.clip(0.5 * rms_s + 0.3 * flat_s + 0.2 * onset_s, 0, 1))
-                    except Exception:
-                        return 0.5
+            tempo = None
+            bpm_tag = 'unknown'
+            if feature_cache and feature_cache.bpm_features is not None:
+                bpm_info = feature_cache.bpm_features
+                tempo = float(getattr(bpm_info, 'main_bpm', 0.0) or 0.0)
+                bpm_tag = getattr(bpm_info, 'bpm_category', 'unknown') or 'unknown'
+            else:
+                try:
+                    tempo_est, _ = librosa.beat.beat_track(y=ref_audio, sr=self.sample_rate)
+                    tempo = float(np.squeeze(np.asarray(tempo_est))) if tempo_est is not None else None
+                except Exception:
+                    tempo = None
 
-                if feature_cache and feature_cache.global_mdd is not None:
-                    mdd_s = float(np.clip(feature_cache.global_mdd, 0.0, 1.0))
-                else:
-                    mdd_s = _mdd_score_simple(ref_audio, self.sample_rate)
+            if tempo is not None and tempo <= 0:
+                tempo = None
 
-                mdd_base = get_config('pure_vocal_detection.relative_threshold_adaptation.mdd.base', 1.0)
-                mdd_gain = get_config('pure_vocal_detection.relative_threshold_adaptation.mdd.gain', 0.2)
-                mul_mdd = mdd_base + (0.1 - mdd_gain * mdd_s)
-                clamp_min = get_config('pure_vocal_detection.relative_threshold_adaptation.clamp_min', 0.75)
-                clamp_max = get_config('pure_vocal_detection.relative_threshold_adaptation.clamp_max', 1.25)
-                mul = float(np.clip(mul_bpm * mul_mdd, clamp_min, clamp_max))
-                peak_ratio *= mul
-                rms_ratio *= mul
-                logger.info(
-                    "相对阈值自适应：BPM=%.1f(%s), MDD=%.2f, mul=%.2f → peak=%.3f, rms=%.3f",
-                    tempo,
-                    bpm_tag,
-                    mdd_s,
-                    mul,
-                    peak_ratio,
-                    rms_ratio,
-                )
-            
+            if feature_cache and feature_cache.global_mdd is not None:
+                mdd_value = float(np.clip(feature_cache.global_mdd, 0.0, 1.0))
+            else:
+                mdd_value = _mdd_score_simple(ref_audio, self.sample_rate)
+
+            stats = AdaptStats(bpm=tempo, global_mdd=mdd_value)
+            adapt_cfg = get_config('pure_vocal_detection.relative_threshold_adaptation', {})
+            base_ratio = get_config('pure_vocal_detection.peak_relative_threshold_ratio', 0.1)
+            thresholds = resolve_threshold(base_ratio, adapt_cfg, stats)
+            peak_ratio = thresholds.peak_ratio
+            rms_ratio = thresholds.rms_ratio
+
+            slow_mul = thresholds.slow_multiplier
+            fast_mul = thresholds.fast_multiplier
+            bpm_strength_est = (slow_mul - fast_mul) / 0.16 if abs(0.16) > 1e-9 else 0.0
+            base_min_pause = get_config('pure_vocal_detection.min_pause_duration', self.min_pause_duration)
+            self.min_pause_duration = resolve_min_pause(float(base_min_pause), bpm_strength_est, stats)
+
+            logger.info(
+                "阈值派生：BPM=%s, MDD=%.3f → peak=%.3f, rms=%.3f, min_pause=%.2fs",
+                f"{tempo:.1f}" if tempo else "unknown",
+                mdd_value,
+                peak_ratio,
+                rms_ratio,
+                self.min_pause_duration,
+            )
+
             # 使用相对能量谷检测
             try:
                 if get_config('pure_vocal_detection.pause_stats_adaptation.enable', True):
-                    mul_pause, vpp_log = self._estimate_vpp_multiplier(vocal_audio)
+                    mul_pause, vpp_log = self._estimate_vpp_multiplier(vocal_audio, focus_windows)
                     clamp_min = get_config('pure_vocal_detection.pause_stats_adaptation.clamp_min', 0.75)
                     clamp_max = get_config('pure_vocal_detection.pause_stats_adaptation.clamp_max', 1.25)
                     mul_pause = float(np.clip(mul_pause, clamp_min, clamp_max))
@@ -211,7 +231,7 @@ class PureVocalPauseDetector:
                     logger.info(f"VPP自适应：{vpp_log}, mul_pause={mul_pause:.2f} → peak={peak_ratio:.3f}, rms={rms_ratio:.3f}")
             except Exception as e:
                 logger.warning(f"VPP自适应失败（忽略）：{e}")
-            filtered_pauses = self._detect_energy_valleys(vocal_audio, peak_ratio, rms_ratio)
+            filtered_pauses = self._detect_energy_valleys(vocal_audio, peak_ratio, rms_ratio, focus_windows=focus_windows)
             # VPP后处理：合并过近停顿与粗筛上限，防止候选爆炸
             try:
                 filtered_pauses = self._compress_pauses(filtered_pauses)
@@ -240,7 +260,7 @@ class PureVocalPauseDetector:
         # 5. MDD增强处理
         if enable_mdd_enhancement and (original_audio is not None or feature_cache is not None):
             logger.info("应用MDD增强处理...")
-            filtered_pauses = self._apply_mdd_enhancement(filtered_pauses, original_audio, feature_cache=feature_cache)
+            filtered_pauses = self._apply_mdd_enhancement(filtered_pauses, original_audio, feature_cache=feature_cache, focus_windows=focus_windows)
         
         # 🔥 关键修复：使用VocalPauseDetectorV2计算精确切点
         if filtered_pauses and vocal_audio is not None:
@@ -249,6 +269,124 @@ class PureVocalPauseDetector:
         logger.info(f"检测完成: {len(filtered_pauses)}个高质量停顿点")
         return filtered_pauses
     
+
+    def _focus_windows_from_vad_segments(
+        self,
+        segments: Sequence[Dict[str, float]],
+        *,
+        pad_s: float = 0.2,
+        min_width_s: float = 0.0,
+    ) -> List[Tuple[float, float]]:
+        """Build focus windows directly from Silero VAD timeline."""
+        if not segments:
+            return []
+        pad = max(0.0, float(pad_s))
+        min_width = max(0.0, float(min_width_s))
+        merge_gap = float(get_config('advanced_vad.focus_merge_gap_s', 0.12))
+
+        spans: List[Tuple[float, float]] = []
+        for seg in segments:
+            try:
+                start = float(seg.get('start', seg.get('start_time', 0.0)))
+                end = float(seg.get('end', seg.get('end_time', start)))
+            except Exception:
+                continue
+            if end <= start:
+                continue
+            spans.append((start, end))
+        if not spans:
+            return []
+
+        spans.sort(key=lambda item: item[0])
+        track_end = max(end for _, end in spans)
+
+        def _merge(windows: List[Tuple[float, float]]) -> List[Tuple[float, float]]:
+            if not windows:
+                return []
+            windows.sort(key=lambda item: item[0])
+            merged: List[Tuple[float, float]] = []
+            for start, end in windows:
+                if not merged or start - merged[-1][1] > merge_gap:
+                    merged.append((start, end))
+                else:
+                    merged[-1] = (merged[-1][0], max(merged[-1][1], end))
+            return merged
+
+        def _apply_min_width(windows: List[Tuple[float, float]]) -> List[Tuple[float, float]]:
+            if min_width <= 0.0:
+                return windows
+            return [(s, e) for s, e in windows if (e - s) >= min_width]
+
+        speech_candidates: List[Tuple[float, float]] = []
+        for start, end in spans:
+            left = max(0.0, start - pad)
+            right = min(track_end + pad, end + pad)
+            if right > left:
+                speech_candidates.append((left, right))
+        speech_windows = _apply_min_width(self._merge_windows(_merge(speech_candidates), min_width=0.0))
+
+        gap_candidates: List[Tuple[float, float]] = []
+        prev_end = 0.0
+        for start, end in spans:
+            if start > prev_end:
+                gap_left = max(0.0, prev_end - pad)
+                gap_right = min(track_end + pad, start + pad)
+                if gap_right > gap_left:
+                    gap_candidates.append((gap_left, gap_right))
+            prev_end = max(prev_end, end)
+        if track_end > prev_end:
+            tail_left = max(0.0, prev_end - pad)
+            tail_right = max(tail_left, track_end + pad)
+            if tail_right > tail_left:
+                gap_candidates.append((tail_left, tail_right))
+        if not gap_candidates:
+            gap_candidates.append((0.0, track_end + pad))
+        gap_windows = _apply_min_width(self._merge_windows(_merge(gap_candidates), min_width=0.0))
+
+        return FocusWindowList(gap_windows, speech_windows)
+
+    def _compute_focus_windows(self, vocal_audio: np.ndarray) -> Optional[List[Tuple[float, float]]]:
+        """基于 Silero VAD 的语音片段生成焦点窗口，减少能量谷扫描范围。"""
+        enabled = bool(get_config('advanced_vad.focus_window_enable', True))
+        if not enabled or vocal_audio is None or not hasattr(vocal_audio, 'size') or vocal_audio.size == 0:
+            return []
+        pad_s = float(get_config('advanced_vad.focus_window_pad_s', 0.2))
+        try:
+            segments = self._cut_point_calculator._detect_speech_timestamps(vocal_audio)
+        except Exception as exc:
+            logger.warning(f'焦点窗口计算失败，回退全量扫描: {exc}')
+            return []
+        if not segments:
+            return []
+        duration = len(vocal_audio) / float(self.sample_rate) if self.sample_rate > 0 else 0.0
+        windows: List[Tuple[float, float]] = []
+        for seg in segments:
+            start = float(seg.get('start', 0)) / float(self.sample_rate)
+            end = float(seg.get('end', 0)) / float(self.sample_rate)
+            left = max(0.0, start - pad_s)
+            right = min(duration, start + pad_s)
+            windows.append((left, right))
+            tail_left = max(0.0, end - pad_s)
+            tail_right = min(duration, end + pad_s)
+            windows.append((tail_left, tail_right))
+        return self._merge_windows(windows)
+
+    @staticmethod
+    def _merge_windows(windows: List[Tuple[float, float]], min_width: float = 0.0) -> List[Tuple[float, float]]:
+        if not windows:
+            return []
+        merged: List[Tuple[float, float]] = []
+        for start, end in sorted(windows, key=lambda w: w[0]):
+            if end <= start:
+                continue
+            if merged and start <= merged[-1][1]:
+                merged[-1] = (merged[-1][0], max(merged[-1][1], end))
+            else:
+                merged.append((start, end))
+        if min_width > 0.0:
+            merged = [(s, e) for s, e in merged if (e - s) >= min_width]
+        return merged
+
     def _extract_vocal_features(self, audio: np.ndarray) -> VocalFeatures:
         """提取人声多维特征
         
@@ -863,46 +1001,70 @@ class PureVocalPauseDetector:
             包含精确切点的停顿列表
         """
         logger.info(f"🔥 使用能量谷算法计算 {len(pure_vocal_pauses)} 个停顿的精确切点...")
-        
-        # 转换为VocalPause格式以使用能量谷计算
-        from .vocal_pause_detector import VocalPause
-        vocal_pauses = []
-        
-        for i, pure_pause in enumerate(pure_vocal_pauses):
-            vocal_pause = VocalPause(
-                start_time=pure_pause.start_time,
-                end_time=pure_pause.end_time, 
-                duration=pure_pause.duration,
-                position_type='middle',  # 默认中间停顿
-                confidence=pure_pause.confidence,
-                cut_point=(pure_pause.start_time + pure_pause.end_time) / 2  # 临时切点
+
+        if vocal_audio is None or not isinstance(vocal_audio, np.ndarray) or vocal_audio.size == 0:
+            logger.warning("纯人声音频无效，跳过能量谷切点计算")
+            return pure_vocal_pauses
+
+        sr = self.sample_rate
+        local_rms_ms = float(get_config('vocal_pause_splitting.local_rms_window_ms', 25))
+        guard_ms = float(get_config('vocal_pause_splitting.lookahead_guard_ms', 120))
+        floor_percentile = float(get_config('vocal_pause_splitting.silence_floor_percentile', 5))
+        floor_allowance = float(get_config('vocal_pause_splitting.silence_floor_allowance', 1.5))
+
+        win_samples = max(1, int(local_rms_ms / 1000.0 * sr))
+        guard_samples = max(0, int(guard_ms / 1000.0 * sr))
+
+        def _rms_envelope(data: np.ndarray) -> np.ndarray:
+            if data.size == 0:
+                return np.empty(0, dtype=np.float32)
+            if win_samples <= 1:
+                return np.abs(data.astype(np.float32))
+            kernel = np.ones(win_samples, dtype=np.float32) / float(win_samples)
+            conv = np.convolve(data.astype(np.float32) ** 2, kernel, mode='same')
+            return np.sqrt(np.maximum(conv, 1e-12))
+
+        for pause in pure_vocal_pauses:
+            start_sample = max(0, int(round(pause.start_time * sr)))
+            end_sample = min(len(vocal_audio), int(round(pause.end_time * sr)))
+            if end_sample - start_sample <= 1:
+                continue
+
+            segment = vocal_audio[start_sample:end_sample]
+            envelope = _rms_envelope(segment)
+            if envelope.size == 0:
+                continue
+
+            local_idx = int(np.argmin(envelope))
+            cut_idx = start_sample + local_idx
+            used_fallback = False
+
+            if guard_samples > 0:
+                guard_end = min(len(vocal_audio), cut_idx + guard_samples)
+                guard_segment = vocal_audio[cut_idx:guard_end]
+                if guard_segment.size > 0:
+                    guard_envelope = _rms_envelope(guard_segment)
+                    if guard_envelope.size > 0:
+                        offset = int(np.argmin(guard_envelope))
+                        cut_idx = min(guard_end - 1, cut_idx + offset)
+
+            floor_val = np.percentile(np.abs(segment), floor_percentile) if segment.size else 0.0
+            if floor_val > 0.0 and np.abs(vocal_audio[cut_idx]) > floor_val * floor_allowance:
+                cut_idx = start_sample + (end_sample - start_sample) // 2
+                used_fallback = True
+
+            pause.cut_point = cut_idx / float(sr)
+            pause.quality_grade = 'A' if not used_fallback else 'B'
+            logger.debug(
+                "停顿切点: [%.3fs, %.3fs] -> %.3fs",
+                pause.start_time,
+                pause.end_time,
+                pause.cut_point,
             )
-            vocal_pauses.append(vocal_pause)
-        
-        # 🔥 关键修复：调用VocalPauseDetectorV2的能量谷切点计算，传入vocal_audio作为waveform
-        try:
-            bpm_features = feature_cache.bpm_features if feature_cache is not None else None
-            vocal_pauses = self._cut_point_calculator._calculate_cut_points(
-                vocal_pauses, 
-                bpm_features=bpm_features,  # 纯人声模式不使用BPM对齐
-                waveform=vocal_audio  # 关键：传递纯人声音频数据用于能量谷检测
-            )
-            logger.info("✅ 能量谷切点计算成功")
-        except Exception as e:
-            logger.error(f"❌ 能量谷切点计算失败: {e}") 
-            logger.info("使用停顿中心作为兜底切点")
-            for vocal_pause in vocal_pauses:
-                vocal_pause.cut_point = (vocal_pause.start_time + vocal_pause.end_time) / 2
-        
-        # 将结果映射回PureVocalPause
-        for i, (pure_pause, vocal_pause) in enumerate(zip(pure_vocal_pauses, vocal_pauses)):
-            pure_pause.cut_point = vocal_pause.cut_point
-            pure_pause.quality_grade = 'A' if hasattr(vocal_pause, 'cut_point') and vocal_pause.cut_point != (vocal_pause.start_time + vocal_pause.end_time) / 2 else 'B'
-            logger.debug(f"停顿 {i+1}: [{pure_pause.start_time:.3f}s, {pure_pause.end_time:.3f}s] -> 切点 {pure_pause.cut_point:.3f}s ({pure_pause.quality_grade})")
-        
+
         return pure_vocal_pauses
 
-    def _detect_energy_valleys(self, vocal_audio: np.ndarray, peak_ratio: float, rms_ratio: float) -> List[PureVocalPause]:
+    def _detect_energy_valleys(self, vocal_audio: np.ndarray, peak_ratio: float, rms_ratio: float, focus_windows: Optional[List[Tuple[float, float]]] = None) -> List[PureVocalPause]:
         """
         🔥 相对能量谷检测 - 解决长音频分割不足问题
         
@@ -943,6 +1105,17 @@ class PureVocalPauseDetector:
         # 3. 找到低于阈值的区域
         low_energy_mask = rms_energy < energy_threshold
         time_frames = librosa.frames_to_time(np.arange(len(rms_energy)), sr=self.sample_rate, hop_length=hop_length)
+        if focus_windows:
+            valid_mask = np.zeros_like(low_energy_mask, dtype=bool)
+            for start, end in focus_windows:
+                if end <= start:
+                    continue
+                valid_mask |= (time_frames >= start) & (time_frames <= end)
+            if not np.any(valid_mask):
+                logger.warning('焦点窗口未覆盖有效帧，回退全局扫描')
+            else:
+                low_energy_mask &= valid_mask
+                logger.debug("焦点窗口生效: %d 帧参与能量谷检测", int(valid_mask.sum()))
         
         # 4. 将连续的低能量区域合并
         pauses = []
@@ -1032,16 +1205,10 @@ class PureVocalPauseDetector:
         logger.info(f"🔥 能量谷检测完成: 发现{len(pauses)}个能量谷停顿")
         return pauses
 
-    def _apply_mdd_enhancement(self, pauses: List[PureVocalPause], original_audio: Optional[np.ndarray], feature_cache: Optional[TrackFeatureCache] = None) -> List[PureVocalPause]:
-        """利用缓存或原始音频执行 MDD 增强。
+    def _apply_mdd_enhancement(self, pauses: List[PureVocalPause], original_audio: Optional[np.ndarray], feature_cache: Optional[TrackFeatureCache] = None, *, focus_windows: Optional[List[Tuple[float, float]]] = None) -> List[PureVocalPause]:
+        """对候选停顿执行 MDD 增强。"""
 
-        Args:
-            pauses: 初步筛选后的停顿列表
-            original_audio: 原始混音波形，可为 None
-            feature_cache: 轨道特征缓存，用于复用RMS/BPM等指标
-        """
-
-        logger.info("🔥 开始MDD增强处理...")
+        logger.info("开始执行 MDD 增强流程...")
 
         if not pauses:
             return pauses
@@ -1054,7 +1221,7 @@ class PureVocalPauseDetector:
         )
 
         if not use_cache and (original_audio is None or not hasattr(original_audio, 'size') or original_audio.size == 0):
-            logger.warning("未提供原始音频或特征缓存，跳过MDD增强")
+            logger.warning("未提供原始音频或特征缓存，跳过 MDD 增强")
             return pauses
 
         if use_cache:
@@ -1068,8 +1235,9 @@ class PureVocalPauseDetector:
             rms_max = float(feature_cache.rms_max)
             onset_max = float(feature_cache.onset_max)
         else:
-            frame_length = int(self.sample_rate * 0.1)  # 100ms窗口
-            hop_length = int(self.sample_rate * 0.05)   # 50ms跨步
+            frame_length = int(self.sample_rate * 0.1)  # 100ms 窗
+            hop_length = int(self.sample_rate * 0.05)   # 50ms 步长
+            hop_s = float(hop_length) / float(self.sample_rate)
             rms_energy = librosa.feature.rms(y=original_audio, frame_length=frame_length, hop_length=hop_length)[0]
             spectral_flatness = librosa.feature.spectral_flatness(y=original_audio, hop_length=hop_length)[0]
             onset_strength = librosa.onset.onset_strength(y=original_audio, sr=self.sample_rate, hop_length=hop_length)
@@ -1077,6 +1245,17 @@ class PureVocalPauseDetector:
             time_frames = librosa.frames_to_time(np.arange(len(rms_energy)), sr=self.sample_rate, hop_length=hop_length)
             rms_max = float(np.max(rms_energy)) if rms_energy.size else 0.0
             onset_max = float(np.max(onset_strength)) if onset_strength.size else 0.0
+
+        frame_mask = None
+        if focus_windows:
+            frame_mask = np.zeros_like(time_frames, dtype=bool)
+            for start_win, end_win in focus_windows:
+                if end_win <= start_win:
+                    continue
+                frame_mask |= (time_frames >= float(start_win)) & (time_frames <= float(end_win))
+            if not np.any(frame_mask):
+                logger.warning("MDD 强化：焦点窗口无有效帧，跳过增强")
+                return pauses
 
         energy_weight = get_config('musical_dynamic_density.energy_weight', 0.7)
         spectral_weight = get_config('musical_dynamic_density.spectral_weight', 0.3)
@@ -1096,23 +1275,35 @@ class PureVocalPauseDetector:
             start_frame = int(np.argmin(np.abs(time_frames - pause.start_time))) if len(time_frames) else 0
             end_frame = int(np.argmin(np.abs(time_frames - pause.end_time))) if len(time_frames) else 0
 
-            if end_frame <= start_frame:
-                enhanced_pauses.append(pause)
-                continue
-
             window_start = max(0, start_frame - 10)
             window_end = min(len(rms_energy), end_frame + 10)
             if window_end <= window_start:
                 enhanced_pauses.append(pause)
                 continue
 
-            local_rms = float(np.mean(rms_energy[window_start:window_end]))
+            if frame_mask is not None:
+                valid_rel = np.where(frame_mask[window_start:window_end])[0]
+                if valid_rel.size == 0:
+                    enhanced_pauses.append(pause)
+                    continue
+                indices = valid_rel + window_start
+            else:
+                indices = np.arange(window_start, window_end)
+
+            local_rms = float(np.mean(rms_energy[indices])) if indices.size else 0.0
             energy_score = local_rms / rms_max
 
-            local_flatness = float(np.mean(spectral_flatness[window_start:window_end]))
+            local_flatness = float(np.mean(spectral_flatness[indices])) if indices.size else 0.0
             spectral_score = 1.0 - local_flatness
 
-            onset_count = int(np.sum((onset_frames >= window_start) & (onset_frames < window_end))) if onset_frames.size else 0
+            if onset_frames.size:
+                onset_mask = (onset_frames >= indices[0]) & (onset_frames <= indices[-1])
+                if frame_mask is not None:
+                    clipped = np.clip(onset_frames, 0, len(frame_mask) - 1)
+                    onset_mask &= frame_mask[clipped]
+                onset_count = int(np.sum(onset_mask))
+            else:
+                onset_count = 0
             onset_score = min(1.0, onset_count / 5.0) if onset_count > 0 else 0.0
 
             mdd_score = (
@@ -1144,10 +1335,29 @@ class PureVocalPauseDetector:
                 confidence_multiplier
             )
 
-        logger.info("🔥 MDD增强完成: %d 个停顿已优化", len(enhanced_pauses))
+        logger.info("MDD增强完成: %d 个停顿获得加权", len(enhanced_pauses))
         return enhanced_pauses
 
-    def _estimate_vpp_multiplier(self, vocal_audio: np.ndarray):
+
+
+    def _get_mdd_score_for_pause(self, pause: Dict) -> float:
+        cache = getattr(self, '_last_feature_cache', None)
+        if not isinstance(cache, TrackFeatureCache) or cache.mdd_series.size == 0:
+            return 0.0
+        sr = self.sample_rate
+        if 'start_time' in pause and 'end_time' in pause:
+            start_s = float(pause.get('start_time', 0.0))
+            end_s = float(pause.get('end_time', start_s))
+        else:
+            start_s = float(pause.get('start', 0.0)) / float(sr)
+            end_s = float(pause.get('end', start_s)) / float(sr)
+        if end_s <= start_s:
+            return 0.0
+        sl = cache.frame_slice(start_s, end_s)
+        segment = cache.mdd_series[sl]
+        return float(np.mean(segment)) if segment.size else 0.0
+
+    def _estimate_vpp_multiplier(self, vocal_audio: np.ndarray, focus_windows: Optional[List[Tuple[float, float]]] = None):
         """估计 VPP（Vocal Pause Profile）并返回倍率与日志。
         仅在演唱区间(singing_blocks)内统计，避免将间奏计入停顿画像。
         返回: (mul_pause: float, log_str: str)
@@ -1167,11 +1377,23 @@ class PureVocalPauseDetector:
         floor_db = np.percentile(db, floor_pct)
         thr_db = floor_db + float(delta_db)
         mask = db > thr_db
+        frame_sec = hop / float(sr)
+        if focus_windows:
+            time_axis = np.arange(len(mask), dtype=np.float32) * frame_sec
+            focus_mask = np.zeros_like(mask, dtype=bool)
+            for start_win, end_win in focus_windows:
+                if end_win <= start_win:
+                    continue
+                focus_mask |= (time_axis >= float(start_win)) & (time_axis <= float(end_win))
+            if not np.any(focus_mask):
+                return 1.0, "VPP{focus_empty}"
+            mask &= focus_mask
+        if not np.any(mask):
+            return 1.0, "VPP{no_active_frames}"
 
         # 形态学：闭后开（基于运行长度的简单实现）
         close_ms = get_config('pure_vocal_detection.pause_stats_adaptation.morph_close_ms', 150)
         open_ms = get_config('pure_vocal_detection.pause_stats_adaptation.morph_open_ms', 50)
-        frame_sec = hop / float(sr)
         close_k = max(1, int(close_ms / 1000.0 / frame_sec))
         open_k = max(1, int(open_ms / 1000.0 / frame_sec))
 
@@ -1294,3 +1516,12 @@ class PureVocalPauseDetector:
         mul_pause = float(mults.get(cls, 1.0))
         vpp_log = f"VPP{{cls={cls}, mpd={mpd:.2f}, p95={p95:.2f}, pr={pr:.1f}/min, rr={rr:.2f}}}"
         return mul_pause, vpp_log
+
+
+
+
+
+
+
+
+
