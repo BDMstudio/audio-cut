@@ -9,6 +9,7 @@
 - **v1.x**：混音粗分 → BPM/动态范围 → Silero VAD → 阈值切分，仅保留用于对照。
 - **v2.0**：引入 MDX23/Demucs 分离；建立分离→检测的主流程与初代守卫。
 - **v2.1**：VocalPrime（VMS/EMA）实验流，引入 F0/共振峰等细粒度特征。
+- **v2.4.1（2026-01-17）**: 删除未生效算法 (`enable_bpm_adaptation`, `interlude_coverage_check`)，清理冗余配置。
 - **v2.4（2026-01-17）: 统一配置入口 `config/unified.yaml`，新增 `librosa_onset` 模式。
 - **v2.2（2025-09-12）**：Pure Vocal + MDD 合流，确立“一次检测 + NMS + 守卫”策略。
 - **v2.3（2025-09-26）**：SeamlessSplitter 成为唯一入口；结果调试（`segment_classification_debug`、`guard_shift_stats`）结构化；`audio_cut.*` 拆分通用特征与切点精修；新增 `segment_layout_refiner`。

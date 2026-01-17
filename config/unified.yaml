@@ -4,8 +4,6 @@
 # =============================================================================
 #
 # 本文件是所有分割模式的统一配置入口，完整覆盖以下配置：
-#   - src/vocal_smart_splitter/config.yaml (v2.2_mdd 模式)
-#   - config/default.yaml (旧版兼容)
 #   - 环境变量 AUDIOCUT_* (librosa_onset 模式)
 #
 # 使用方法：
@@ -14,7 +12,7 @@
 #   3. 环境变量仍可覆盖此文件中的设置
 #
 # 配置优先级（从高到低）：
-#   环境变量 > unified.yaml > src/.../config.yaml > config/default.yaml
+#   环境变量 > unified.yaml
 #
 # =============================================================================
 
@@ -104,7 +102,7 @@ v2_mdd:
     enable: true
 
     # === 基础检测参数 ===
-    min_pause_duration: 0.3           # 最小停顿时长 (秒)
+    min_pause_duration: 0.5           # 最小停顿时长 (秒)
     breath_duration_range: [0.1, 0.3] # 换气时长范围 (秒)
 
     # 特征权重 (总和应为 1.0)
@@ -144,10 +142,7 @@ v2_mdd:
       morph_open_ms: 50               # 形态学开运算窗口 (ms)
       sing_block_min_s: 2.0           # 连续歌唱块最短时长 (秒)
       interlude_min_s: 4.0            # 间奏最短时长 (秒)
-      interlude_coverage_check:
-        enable: false
-        pad_seconds: 2.0
-        coverage_threshold: 0.10
+      # interlude_coverage_check 已删除 - 经测试未生效 (2026-01-16)
       classify_thresholds:
         slow: { mpd: 0.60, p95: 1.20, rr: 0.35 }
         fast: { mpd: 0.25, pr: 18, rr: 0.15 }
@@ -218,7 +213,7 @@ v2_mdd:
     # === 静音守卫 (Quiet Cut Guard) ===
     # 确保切点落在安静区域
     enforce_quiet_cut:
-      enable: false                   # 启用静音守卫
+      enable: true                   # 启用静音守卫
       win_ms: 80                      # 检测窗口 (ms)
       guard_db: 1.5                   # 能量阈值 (dB)，越高越保守
       search_right_ms: 450            # 向右搜索范围 (ms)
@@ -245,7 +240,7 @@ v2_mdd:
     soft_max_s: 8.0                  # 软最大时长 (秒)
                                       # 超过此值尝试救援切分
     min_gap_s: 1.0                    # 切点最小间隔 (秒)
-    beat_snap_ms: 0                   # 节拍吸附窗口 (ms)，0=关闭
+    beat_snap_ms: 20                  # 节拍吸附窗口 (ms)，0=关闭
 
 
 # =============================================================================
@@ -357,7 +352,6 @@ analysis:
 # =============================================================================
 
 vocal_pause_splitting:
-  enable_bpm_adaptation: false        # 旧版 BPM 自适应开关
   local_rms_window_ms: 25
   silence_floor_percentile: 5
   silence_floor_allowance: 0.0

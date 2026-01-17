@@ -62,13 +62,9 @@ class VocalPauseDetectorV2:
         self.head_offset = get_config('vocal_pause_splitting.head_offset', -0.5)
         self.tail_offset = get_config('vocal_pause_splitting.tail_offset', 0.5)
         
-        self.enable_bpm_adaptation = get_config('vocal_pause_splitting.enable_bpm_adaptation', True) and ADAPTIVE_VAD_AVAILABLE
-        if self.enable_bpm_adaptation:
-            self.adaptive_enhancer = AdaptiveVADEnhancer(sample_rate)
-            logger.info("BPM自适应增强器已启用")
-        else:
-            self.adaptive_enhancer = None
-            logger.info("BPM自适应已禁用或不可用，将使用固定阈值模式")
+        # enable_bpm_adaptation 功能已删除 - 经测试证实未生效 (2026-01-16)
+        self.enable_bpm_adaptation = False
+        self.adaptive_enhancer = None
 
         self._silero_backend: str = 'torch'
         self._get_speech_timestamps_fn = None

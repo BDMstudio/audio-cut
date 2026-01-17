@@ -1455,11 +1455,7 @@ class PureVocalPauseDetector:
         # 统计块内停顿（mask==False）
         interlude_min_s = get_config('pure_vocal_detection.pause_stats_adaptation.interlude_min_s', 4.0)
         interlude_min_frames = int(interlude_min_s / frame_sec)
-        # 可选：对长静默做 ±pad 的 voice_active 覆盖率检测，以更稳健地识别间奏
-        icc_enable = get_config('pure_vocal_detection.pause_stats_adaptation.interlude_coverage_check.enable', False)
-        icc_pad_s = float(get_config('pure_vocal_detection.pause_stats_adaptation.interlude_coverage_check.pad_seconds', 2.0))
-        icc_thr = float(get_config('pure_vocal_detection.pause_stats_adaptation.interlude_coverage_check.coverage_threshold', 0.10))
-        icc_pad_frames = int(icc_pad_s / frame_sec) if icc_pad_s > 0 else 0
+        # interlude_coverage_check 功能已删除 - 经测试证实未生效 (2026-01-16)
         rest_durations = []
         total_block_frames = 0
         for a, b in blocks:
@@ -1472,19 +1468,9 @@ class PureVocalPauseDetector:
                         j += 1
                     span = j - i
                     if span >= interlude_min_frames:
-                        # 如果开启覆盖率检测，仅当覆盖率很低时才判为间奏
-                        if icc_enable:
-                            a0 = max(0, i - icc_pad_frames)
-                            b0 = min(n, j + icc_pad_frames)
-                            # 语音活动覆盖率（演唱）
-                            coverage = float(np.mean(mask[a0:b0])) if (b0 > a0) else 0.0
-                            if coverage < icc_thr:
-                                i = j
-                                continue
-                        # 默认行为：保守剔除长静默
-                        else:
-                            i = j
-                            continue
+                        # 保守剔除长静默（间奏）
+                        i = j
+                        continue
                     rest_durations.append(span * frame_sec)
                     i = j
                 else:

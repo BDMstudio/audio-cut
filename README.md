@@ -109,6 +109,10 @@ Vocal Smart Splitter 支持高保真声部拆分、纯人声检测，以及带 M
   ```
 
 ## 更新记录
+- **2026-01-17 (v2.4.1)**
+  - 代码清理：删除未生效的 `enable_bpm_adaptation` 和 `interlude_coverage_check` 算法
+  - 删除 `unified.yaml` 中对应的冗余配置项
+  - 验证并确认 22 个切点辅助算法中 13 个生效，9 个因配置禁用
 - **2025-10-12**
   - 新增 `audio_cut.api.separate_and_segment` 统一 API，可生成标准 Manifest 并在外部工程内复用。
   - `SeamlessSplitter` 增强导出计划控制，补充 `full_vocal_file`/`full_instrumental_file` 等元数据。
