@@ -1,7 +1,7 @@
 <!-- File: development.md -->
 <!-- AI-SUMMARY: 记录 Vocal Smart Splitter 的架构、流程、测试矩阵与演进规划。 -->
 
-# development.md — 技术路线与模块总览（更新于 2025-10-10）
+# development.md — 技术路线与模块总览（更新于 2026-01-17）
 
 本文档是工程事实的单一可信来源（SSOT），持续记录系统架构、实现约束与进度。所有涉及流程、参数或测试的改动，须同步更新此处。
 
@@ -9,6 +9,7 @@
 - **v1.x**：混音粗分 → BPM/动态范围 → Silero VAD → 阈值切分，仅保留用于对照。
 - **v2.0**：引入 MDX23/Demucs 分离；建立分离→检测的主流程与初代守卫。
 - **v2.1**：VocalPrime（VMS/EMA）实验流，引入 F0/共振峰等细粒度特征。
+- **v2.4（2026-01-17）: 统一配置入口 `config/unified.yaml`，新增 `librosa_onset` 模式。
 - **v2.2（2025-09-12）**：Pure Vocal + MDD 合流，确立“一次检测 + NMS + 守卫”策略。
 - **v2.3（2025-09-26）**：SeamlessSplitter 成为唯一入口；结果调试（`segment_classification_debug`、`guard_shift_stats`）结构化；`audio_cut.*` 拆分通用特征与切点精修；新增 `segment_layout_refiner`。
 
@@ -45,7 +46,7 @@
 - **输出目录策略**：`quick_start.py` 与 `run_splitter.py` 均使用 `<日期>_<时间>_<原音频名>` 创建输出目录，便于批量回归与部署一致。
 
 ## 5. 配置与参数策略
-- `config_manager.get_config` 默认加载 `src/vocal_smart_splitter/config.yaml`，支持 `VSS__...` 环境变量重写。
+- `config_manager.get_config 默认加载 `config/unified.yaml`（唯一配置入口），支持 `VSS__...` 环境变量重写。
 - `pure_vocal_detection` 默认 `peak_relative_threshold_ratio=0.26`、`rms_relative_threshold_ratio=0.30`，BPM/MDD/VPP 自适应缩放范围 0.85–1.15。
 - `quality_control` 提供 `min_split_gap`、`segment_vocal_activity_ratio` 等守护阈值；`enforce_quiet_cut` 注重静音守卫参数（`guard_db`, `search_right_ms`）。
 - `segment_layout` 默认启用，`micro_merge_s` / `soft_min_s` / `soft_max_s` / `min_gap_s` 控制碎片合并策略；若更改需同步 doc/CLI。

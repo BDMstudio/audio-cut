@@ -3,7 +3,7 @@
 
 # 智能人声分割器（Vocal Smart Splitter）
 
-Vocal Smart Splitter 支持高保真声部拆分、纯人声检测，以及带 MDD（Musical Dynamic Density）守卫的一站式处理能力。自 v2.3 起统一使用 SeamlessSplitter 流水线，保持“一次检测、一次切分”的用户空间兼容性。
+Vocal Smart Splitter 支持高保真声部拆分、纯人声检测，以及带 MDD（Musical Dynamic Density）守卫的一站式处理能力。自 v2.4 起统一使用 `config/unified.yaml` 作为唯一配置入口，支持 `v2.2_mdd` 和 `librosa_onset` 两种切分模式。
 
 ## 核心能力
 - **双通道分离**：默认使用 MDX23 ONNX 输出人声/伴奏，失败时自动回退 Demucs v4（可配置关闭）。
@@ -61,7 +61,7 @@ Vocal Smart Splitter 支持高保真声部拆分、纯人声检测，以及带 M
 - 其他字段：`cut_points_samples/sec`、`guard_adjustments`、`suppressed_cut_points_sec` 等，用于验证切点一致性。
 
 ## 配置总览
-主配置位于 `src/vocal_smart_splitter/config.yaml`，可通过 `VSS__...` 环境变量覆盖。常用条目：
+主配置位于 `config/unified.yaml`（唯一配置入口），可通过 `VSS__...` 或 `AUDIOCUT_*` 环境变量覆盖。常用条目：
 - `audio.*`：采样率（默认 44.1 kHz）、声道等。
 - `gpu_pipeline.*`：Chunk 长度、overlap、halo、CUDA streams、inflight 限流、`strict_gpu` 等。
 - `pure_vocal_detection.*`：

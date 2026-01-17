@@ -124,24 +124,18 @@ class ConfigManager:
         """加载配置文件
 
         加载优先级（从低到高）：
-        1. src/vocal_smart_splitter/config.yaml (基础配置)
-        2. config/unified.yaml (统一配置，如果存在)
-        3. VSS_EXTERNAL_CONFIG_PATH 环境变量指定的配置
-        4. 显式指定的 config_path
-        5. VSS__* 环境变量覆盖
+        1. config/unified.yaml (统一配置入口，必须存在)
+        2. VSS_EXTERNAL_CONFIG_PATH 环境变量指定的配置
+        3. 显式指定的 config_path
+        4. VSS__* 环境变量覆盖
         """
         try:
-            # 1. 加载基础配置
-            base_path = Path(__file__).parent.parent / 'config.yaml'
-            config = _load_yaml_file(base_path)
-            logger.debug(f"[ConfigManager] 加载基础配置: {base_path}")
-
-            # 2. 加载统一配置文件 (config/unified.yaml)
+            # 1. 加载统一配置文件 (config/unified.yaml) 作为基础配置
             unified_path = _PROJECT_ROOT / 'config' / 'unified.yaml'
-            if unified_path.exists():
-                unified_raw = _load_yaml_file(unified_path)
-                config = self._merge_unified_config(config, unified_raw)
-                logger.info(f"[ConfigManager] 加载统一配置: {unified_path}")
+            if not unified_path.exists():
+                raise FileNotFoundError(f"统一配置文件不存在: {unified_path}")
+            config = self._load_unified_config(unified_path)
+            logger.info(f"[ConfigManager] 加载统一配置: {unified_path}")
 
             # 3. 加载外部配置 (VSS_EXTERNAL_CONFIG_PATH)
             external_path = os.environ.get('VSS_EXTERNAL_CONFIG_PATH')
@@ -156,9 +150,9 @@ class ConfigManager:
                     config = _deep_merge_dict(config, external_raw)
                 logger.info(f"[ConfigManager] 加载外部配置: {external_path}")
 
-            # 4. 加载显式指定的配置文件
+            # 3. 加载显式指定的配置文件
             explicit_path = Path(self.config_path)
-            if explicit_path.resolve() != base_path.resolve() and explicit_path.resolve() != unified_path.resolve():
+            if explicit_path.resolve() != unified_path.resolve():
                 if explicit_path.exists():
                     explicit_raw = _load_yaml_file(explicit_path)
                     if is_v3_schema(explicit_raw) or (
@@ -170,7 +164,7 @@ class ConfigManager:
                         config = _deep_merge_dict(config, explicit_raw)
                     logger.info(f"[ConfigManager] 加载显式配置: {explicit_path}")
 
-            # 5. 应用环境变量覆盖
+            # 4. 应用环境变量覆盖
             config = _apply_env_overrides(config)
 
             logger.info("配置文件加载成功")
@@ -178,6 +172,18 @@ class ConfigManager:
         except Exception as e:
             logger.error(f"配置文件加载失败: {e}")
             raise
+
+    def _load_unified_config(self, path: Path) -> Dict[str, Any]:
+        """加载统一配置文件并扁平化 v2_mdd 嵌套结构
+
+        Args:
+            path: unified.yaml 文件路径
+
+        Returns:
+            扁平化后的配置字典
+        """
+        unified_raw = _load_yaml_file(path)
+        return self._merge_unified_config({}, unified_raw)
 
     def _merge_unified_config(self, base: Dict[str, Any], unified: Dict[str, Any]) -> Dict[str, Any]:
         """合并统一配置文件，处理特殊的嵌套结构
