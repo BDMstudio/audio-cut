@@ -5,9 +5,9 @@
 
 """Top-level package for the vocal smart splitter toolkit."""
 
-__version__ = "2.3.0"
-__author__ = "AI Assistant"
-__description__ = "智能人声分割器 - 纯人声分离与 v2.2 MDD 无缝分割"
+__version__ = "2.4.0"
+__author__ = "BDM Team"
+__description__ = "智能人声分割器 - 纯人声分离与 Librosa onset 分割模式"
 
 __all__ = [
     'SeamlessSplitter',

@@ -160,6 +160,12 @@ class SeamlessSplitter:
                         output_dir,
                         export_plan=export_plan,
                     )
+                if mode == 'librosa_onset':
+                    return self._process_librosa_onset_split(
+                        input_path,
+                        output_dir,
+                        export_plan=export_plan,
+                    )
                 if mode != 'v2.2_mdd':
                     logger.warning(f"Unknown mode {mode}, default to v2.2_mdd")
                 return self._process_pure_vocal_split(
@@ -689,6 +695,138 @@ class SeamlessSplitter:
         }
         base_result.update(dict(separation_result.gpu_meta or {}))
         return base_result
+
+    def _process_librosa_onset_split(
+        self,
+        input_path: str,
+        output_dir: str,
+        *,
+        export_plan: Optional[Sequence[str]] = None,
+    ) -> Dict:
+        """基于 Librosa onset detection 的分割流程（可选 MDX23 人声预处理）"""
+        logger.info("[LIBROSA_ONSET] Running onset-based segmentation...")
+        start_time = time.time()
+        self._precision_guard_ok = True
+        
+        # 1. Load audio
+        audio = self._load_and_resample_if_needed(input_path)
+        
+        # 2. Optional: MDX23 vocal separation preprocessing
+        use_vocal = os.getenv('AUDIOCUT_LIBROSA_USE_VOCAL', 'true').lower() == 'true'
+        target_audio = audio
+        vocal_track = None
+        instrumental_track = None
+        separation_result = None
+        
+        if use_vocal:
+            logger.info("[LIBROSA_ONSET] MDX23 vocal separation enabled")
+            separation_result = self.separator.separate_for_detection(audio)
+            if separation_result.vocal_track is not None:
+                target_audio = separation_result.vocal_track
+                vocal_track = separation_result.vocal_track
+                instrumental_track = separation_result.instrumental_track
+            else:
+                logger.warning("[LIBROSA_ONSET] Vocal separation failed, using original audio")
+        
+        # 3. Librosa onset detection (default parameters)
+        onset_frames = librosa.onset.onset_detect(
+            y=target_audio,
+            sr=self.sample_rate,
+            hop_length=512,
+            backtrack=True,
+            units='frames'
+        )
+        onset_times = librosa.frames_to_time(onset_frames, sr=self.sample_rate, hop_length=512)
+        logger.info("[LIBROSA_ONSET] Detected %d raw onset points", len(onset_times))
+        
+        # 4. Filter onsets that are too close (min gap from config)
+        min_gap = float(get_config('segment_layout.soft_min_s', 2.0))
+        filtered_times: List[float] = []
+        if len(onset_times) > 0:
+            filtered_times.append(float(onset_times[0]))
+            for t in onset_times[1:]:
+                if t - filtered_times[-1] >= min_gap:
+                    filtered_times.append(float(t))
+        logger.info("[LIBROSA_ONSET] After filtering (min_gap=%.1fs): %d cut points", min_gap, len(filtered_times))
+        
+        # 5. Convert to sample points
+        audio_len = len(audio)
+        cut_points = [0]
+        for t in filtered_times:
+            sample_idx = int(t * self.sample_rate)
+            if 0 < sample_idx < audio_len:
+                cut_points.append(sample_idx)
+        cut_points.append(audio_len)
+        cut_points = sorted(set(cut_points))
+        
+        # 6. Split at sample level
+        segments, segment_vocal_flags, _ = self._split_at_sample_level(audio, cut_points)
+        segment_durations = [len(seg) / float(self.sample_rate) for seg in segments]
+        segment_durations_map = {i: duration for i, duration in enumerate(segment_durations)}
+        
+        # 7. Normalize export plan
+        export_flags = self._normalize_export_plan(
+            export_plan,
+            default=('mix_segments',),
+        )
+        
+        # 8. Save segments
+        Path(output_dir).mkdir(parents=True, exist_ok=True)
+        saved_files: List[str] = []
+        mix_segment_files: List[str] = []
+        
+        if 'mix_segments' in export_flags:
+            mix_segment_files = self._save_segments(
+                segments,
+                output_dir,
+                segment_is_vocal=segment_vocal_flags,
+                duration_map=segment_durations_map,
+            )
+            saved_files.extend(mix_segment_files)
+        
+        # Save vocal segments if requested and available
+        vocal_segment_files: List[str] = []
+        if 'vocal_segments' in export_flags and vocal_track is not None:
+            vocal_segments, _, _ = self._split_at_sample_level(vocal_track, cut_points)
+            vocal_segment_files = self._save_segments(
+                vocal_segments,
+                output_dir,
+                segment_is_vocal=segment_vocal_flags,
+                subdir='segments_vocal',
+                file_suffix='_vocal',
+                duration_map=segment_durations_map,
+            )
+            saved_files.extend(vocal_segment_files)
+        
+        processing_time = time.time() - start_time
+        cuts_seconds = [sample / float(self.sample_rate) for sample in cut_points]
+        
+        result = {
+            'success': True,
+            'method': 'librosa_onset_split',
+            'num_segments': len(segments),
+            'saved_files': saved_files,
+            'mix_segment_files': mix_segment_files,
+            'vocal_segment_files': vocal_segment_files,
+            'export_plan': sorted(export_flags),
+            'use_vocal_preprocessing': use_vocal,
+            'processing_time': processing_time,
+            'segment_durations': segment_durations,
+            'segment_vocal_flags': segment_vocal_flags,
+            'segment_labels': ['human' if flag else 'music' for flag in segment_vocal_flags],
+            'cut_points_samples': list(cut_points),
+            'cut_points_sec': cuts_seconds,
+            'onset_count_raw': len(onset_times),
+            'onset_count_filtered': len(filtered_times),
+            'precision_guard_ok': True,
+            'input_file': input_path,
+            'output_dir': output_dir,
+        }
+        if separation_result is not None:
+            result['backend_used'] = separation_result.backend_used
+            result['separation_confidence'] = separation_result.separation_confidence
+            result.update(dict(separation_result.gpu_meta or {}))
+        return result
 
     def _find_no_vocal_runs(self, vocal_audio: np.ndarray, min_duration: float):
         """
