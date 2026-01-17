@@ -703,74 +703,230 @@ class SeamlessSplitter:
         *,
         export_plan: Optional[Sequence[str]] = None,
     ) -> Dict:
-        """基于 Librosa onset detection 的分割流程（可选 MDX23 人声预处理）"""
-        logger.info("[LIBROSA_ONSET] Running onset-based segmentation...")
+        """
+        Smart music segmentation v2: 情感感知的智能分割
+        
+        Features:
+        - BPM 检测 + 小节边界对齐
+        - 能量曲线分析 → 主歌/副歌自动识别
+        - 静音段落强制分割
+        - 密度控制 (low/medium/high)
+        - 保持 human/music 标签
+        """
+        logger.info("[SMART_SEGMENT] Running emotion-aware segmentation v2...")
         start_time = time.time()
         self._precision_guard_ok = True
         
-        # 1. Load audio
+        # ========== 1. Load audio ==========
         audio = self._load_and_resample_if_needed(input_path)
+        audio_duration = len(audio) / float(self.sample_rate)
+        logger.info("[SMART_SEGMENT] Audio duration: %.1fs", audio_duration)
         
-        # 2. Optional: MDX23 vocal separation preprocessing
+        # ========== 2. MDX23 vocal separation ==========
         use_vocal = os.getenv('AUDIOCUT_LIBROSA_USE_VOCAL', 'true').lower() == 'true'
-        target_audio = audio
         vocal_track = None
         instrumental_track = None
         separation_result = None
         
         if use_vocal:
-            logger.info("[LIBROSA_ONSET] MDX23 vocal separation enabled")
+            logger.info("[SMART_SEGMENT] MDX23 vocal separation enabled")
             separation_result = self.separator.separate_for_detection(audio)
             if separation_result.vocal_track is not None:
-                target_audio = separation_result.vocal_track
                 vocal_track = separation_result.vocal_track
                 instrumental_track = separation_result.instrumental_track
             else:
-                logger.warning("[LIBROSA_ONSET] Vocal separation failed, using original audio")
+                logger.warning("[SMART_SEGMENT] Vocal separation failed")
         
-        # 3. Librosa onset detection (default parameters)
-        onset_frames = librosa.onset.onset_detect(
-            y=target_audio,
-            sr=self.sample_rate,
-            hop_length=512,
-            backtrack=True,
-            units='frames'
-        )
-        onset_times = librosa.frames_to_time(onset_frames, sr=self.sample_rate, hop_length=512)
-        logger.info("[LIBROSA_ONSET] Detected %d raw onset points", len(onset_times))
+        # ========== 3. Feature extraction ==========
+        hop_length = 512
         
-        # 4. Filter onsets that are too close (min gap from config)
-        min_gap = float(get_config('segment_layout.soft_min_s', 2.0))
-        filtered_times: List[float] = []
-        if len(onset_times) > 0:
-            filtered_times.append(float(onset_times[0]))
-            for t in onset_times[1:]:
-                if t - filtered_times[-1] >= min_gap:
-                    filtered_times.append(float(t))
-        logger.info("[LIBROSA_ONSET] After filtering (min_gap=%.1fs): %d cut points", min_gap, len(filtered_times))
+        # 3.1 BPM detection
+        tempo, beat_frames = librosa.beat.beat_track(y=audio, sr=self.sample_rate, hop_length=hop_length)
+        tempo = float(tempo) if not hasattr(tempo, '__len__') else float(tempo[0])
+        beat_times = librosa.frames_to_time(beat_frames, sr=self.sample_rate, hop_length=hop_length)
+        bar_duration = 60.0 / tempo * 4  # Assume 4/4 time signature
+        logger.info("[SMART_SEGMENT] BPM: %.1f, bar duration: %.2fs, %d beats detected", tempo, bar_duration, len(beat_times))
         
-        # 5. Convert to sample points
+        # 3.2 RMS energy curve (for chorus/verse detection)
+        rms = librosa.feature.rms(y=audio, hop_length=hop_length)[0]
+        rms_times = librosa.frames_to_time(np.arange(len(rms)), sr=self.sample_rate, hop_length=hop_length)
+        
+        # Calculate bar boundaries for energy analysis
+        bar_times_all = np.arange(0, audio_duration + bar_duration, bar_duration)
+        
+        # Compute average RMS energy for each bar
+        bar_energies: List[float] = []
+        for i in range(len(bar_times_all) - 1):
+            bar_start = bar_times_all[i]
+            bar_end = bar_times_all[i + 1]
+            # Find RMS frames within this bar
+            mask = (rms_times >= bar_start) & (rms_times < bar_end)
+            if np.any(mask):
+                bar_energies.append(float(np.mean(rms[mask])))
+            else:
+                bar_energies.append(0.0)
+        
+        # Use 60th percentile as threshold (top 40% = chorus)
+        if bar_energies:
+            rms_percentile_60 = float(np.percentile(bar_energies, 60))
+            rms_percentile_80 = float(np.percentile(bar_energies, 80))
+        else:
+            rms_percentile_60 = 0.0
+            rms_percentile_80 = 0.0
+        
+        # Classify each bar as chorus (high energy) or verse (low energy)
+        bar_types: List[str] = []
+        for energy in bar_energies:
+            if energy >= rms_percentile_80:
+                bar_types.append('chorus_peak')  # Very high energy
+            elif energy >= rms_percentile_60:
+                bar_types.append('chorus')  # High energy
+            else:
+                bar_types.append('verse')  # Low energy
+        
+        chorus_count = sum(1 for t in bar_types if 'chorus' in t)
+        logger.info("[SMART_SEGMENT] Bar classification: %d chorus, %d verse (threshold P60=%.4f, P80=%.4f)", 
+                    chorus_count, len(bar_types) - chorus_count, rms_percentile_60, rms_percentile_80)
+        
+        # 3.3 Silence detection (mandatory cut points)
+        silence_threshold_db = float(os.getenv('AUDIOCUT_SILENCE_THRESHOLD_DB', '-40'))
+        silence_min_duration = float(os.getenv('AUDIOCUT_SILENCE_MIN_DURATION', '0.3'))
+        rms_db = 20.0 * np.log10(rms + 1e-10)
+        silence_mask = rms_db < silence_threshold_db
+        
+        # Find silence boundaries
+        silence_boundaries: List[float] = []
+        in_silence = False
+        silence_start = 0.0
+        for i, is_silent in enumerate(silence_mask):
+            t = float(rms_times[i]) if i < len(rms_times) else audio_duration
+            if is_silent and not in_silence:
+                in_silence = True
+                silence_start = t
+            elif not is_silent and in_silence:
+                in_silence = False
+                silence_duration = t - silence_start
+                if silence_duration >= silence_min_duration:
+                    silence_boundaries.append(silence_start + silence_duration / 2)  # Cut at midpoint
+        logger.info("[SMART_SEGMENT] Found %d silence boundaries", len(silence_boundaries))
+        
+        # ========== 4. Density control ==========
+        density = os.getenv('AUDIOCUT_DENSITY', 'medium').lower()
+        density_map = {
+            'low': {'verse_bars': 8, 'chorus_bars': 4},
+            'medium': {'verse_bars': 4, 'chorus_bars': 2},
+            'high': {'verse_bars': 2, 'chorus_bars': 1},
+        }
+        density_cfg = density_map.get(density, density_map['medium'])
+        logger.info("[SMART_SEGMENT] Density: %s, verse=%d bars, chorus=%d bars", 
+                    density, density_cfg['verse_bars'], density_cfg['chorus_bars'])
+        
+        # ========== 5. Generate smart cut points ==========
+        cut_times: List[float] = [0.0]  # Start
+        
+        # Use pre-computed bar_times_all from energy analysis
+        bar_times = bar_times_all
+        
+        # Generate cuts based on bar boundaries and segment type
+        last_cut_time = 0.0
+        bars_since_last_cut = 0
+        
+        for bar_idx, bar_time in enumerate(bar_times[1:]):  # Skip first (0.0)
+            bars_since_last_cut += 1
+            
+            # Get bar type from pre-computed classification
+            bar_type = bar_types[bar_idx] if bar_idx < len(bar_types) else 'verse'
+            is_chorus = 'chorus' in bar_type
+            required_bars = density_cfg['chorus_bars'] if is_chorus else density_cfg['verse_bars']
+            
+            # Check if we should cut here
+            should_cut = bars_since_last_cut >= required_bars
+            
+            # Force cut at silence boundaries
+            for silence_t in silence_boundaries:
+                if last_cut_time < silence_t <= bar_time:
+                    should_cut = True
+                    break
+            
+            if should_cut:
+                cut_times.append(float(bar_time))
+                last_cut_time = bar_time
+                bars_since_last_cut = 0
+        
+        # Add all silence boundaries that weren't added
+        for silence_t in silence_boundaries:
+            if silence_t not in cut_times and 0 < silence_t < audio_duration:
+                cut_times.append(silence_t)
+        
+        cut_times.append(audio_duration)  # End
+        cut_times = sorted(set(cut_times))
+        
+        # Merge segments that are too short (< 2 seconds)
+        min_segment_duration = float(get_config('segment_layout.soft_min_s', 2.0))
+        merged_cuts: List[float] = [cut_times[0]]
+        for t in cut_times[1:]:
+            if t - merged_cuts[-1] >= min_segment_duration:
+                merged_cuts.append(t)
+            elif t == cut_times[-1]:  # Always keep the last point
+                merged_cuts[-1] = t
+        cut_times = merged_cuts
+        
+        logger.info("[SMART_SEGMENT] Final cut points: %d", len(cut_times))
+        
+        # ========== 6. Convert to sample points ==========
         audio_len = len(audio)
         cut_points = [0]
-        for t in filtered_times:
+        for t in cut_times[1:-1]:
             sample_idx = int(t * self.sample_rate)
             if 0 < sample_idx < audio_len:
                 cut_points.append(sample_idx)
         cut_points.append(audio_len)
         cut_points = sorted(set(cut_points))
         
-        # 6. Split at sample level
-        segments, segment_vocal_flags, _ = self._split_at_sample_level(audio, cut_points)
+        # ========== 7. Classify segments as human/music ==========
+        segment_vocal_flags: List[bool] = []
+        for i in range(len(cut_points) - 1):
+            start_sample = cut_points[i]
+            end_sample = cut_points[i + 1]
+            
+            if vocal_track is not None:
+                # Check vocal energy in this segment
+                vocal_segment = vocal_track[start_sample:end_sample]
+                vocal_rms = float(np.sqrt(np.mean(vocal_segment ** 2)))
+                # Compare with instrumental
+                if instrumental_track is not None:
+                    inst_segment = instrumental_track[start_sample:end_sample]
+                    inst_rms = float(np.sqrt(np.mean(inst_segment ** 2)))
+                    is_vocal = vocal_rms > inst_rms * 0.3  # Vocal is significant if > 30% of instrumental
+                else:
+                    is_vocal = vocal_rms > 0.01  # Simple threshold
+            else:
+                # No separation available, assume all human
+                is_vocal = True
+            
+            segment_vocal_flags.append(is_vocal)
+        
+        logger.info("[SMART_SEGMENT] Segment classification: %d human, %d music", 
+                    sum(segment_vocal_flags), len(segment_vocal_flags) - sum(segment_vocal_flags))
+        
+        # ========== 8. Split and export ==========
+        num_segments = len(cut_points) - 1
+        default_flags = segment_vocal_flags if segment_vocal_flags else [True] * num_segments
+        
+        segments, returned_flags, _ = self._split_at_sample_level(
+            audio, cut_points, segment_flags=default_flags
+        )
+        if returned_flags is None:
+            returned_flags = segment_vocal_flags if segment_vocal_flags else [True] * len(segments)
+        
         segment_durations = [len(seg) / float(self.sample_rate) for seg in segments]
         segment_durations_map = {i: duration for i, duration in enumerate(segment_durations)}
         
-        # 7. Normalize export plan
         export_flags = self._normalize_export_plan(
             export_plan,
             default=('mix_segments',),
         )
         
-        # 8. Save segments
         Path(output_dir).mkdir(parents=True, exist_ok=True)
         saved_files: List[str] = []
         mix_segment_files: List[str] = []
@@ -779,19 +935,18 @@ class SeamlessSplitter:
             mix_segment_files = self._save_segments(
                 segments,
                 output_dir,
-                segment_is_vocal=segment_vocal_flags,
+                segment_is_vocal=returned_flags,
                 duration_map=segment_durations_map,
             )
             saved_files.extend(mix_segment_files)
         
-        # Save vocal segments if requested and available
         vocal_segment_files: List[str] = []
         if 'vocal_segments' in export_flags and vocal_track is not None:
             vocal_segments, _, _ = self._split_at_sample_level(vocal_track, cut_points)
             vocal_segment_files = self._save_segments(
                 vocal_segments,
                 output_dir,
-                segment_is_vocal=segment_vocal_flags,
+                segment_is_vocal=returned_flags,
                 subdir='segments_vocal',
                 file_suffix='_vocal',
                 duration_map=segment_durations_map,
@@ -801,9 +956,10 @@ class SeamlessSplitter:
         processing_time = time.time() - start_time
         cuts_seconds = [sample / float(self.sample_rate) for sample in cut_points]
         
+        # ========== 9. Build result ==========
         result = {
             'success': True,
-            'method': 'librosa_onset_split',
+            'method': 'smart_segment_v2',
             'num_segments': len(segments),
             'saved_files': saved_files,
             'mix_segment_files': mix_segment_files,
@@ -812,12 +968,15 @@ class SeamlessSplitter:
             'use_vocal_preprocessing': use_vocal,
             'processing_time': processing_time,
             'segment_durations': segment_durations,
-            'segment_vocal_flags': segment_vocal_flags,
-            'segment_labels': ['human' if flag else 'music' for flag in segment_vocal_flags],
+            'segment_vocal_flags': returned_flags,
+            'segment_labels': ['human' if flag else 'music' for flag in returned_flags],
             'cut_points_samples': list(cut_points),
             'cut_points_sec': cuts_seconds,
-            'onset_count_raw': len(onset_times),
-            'onset_count_filtered': len(filtered_times),
+            # Smart segmentation metadata
+            'bpm': tempo,
+            'bar_duration_s': bar_duration,
+            'density': density,
+            'silence_boundaries': silence_boundaries,
             'precision_guard_ok': True,
             'input_file': input_path,
             'output_dir': output_dir,

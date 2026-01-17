@@ -200,6 +200,16 @@ def _build_manifest(
     if gpu_meta:
         manifest['gpu'] = gpu_meta
 
+    # Smart segmentation v2 metadata (librosa_onset mode)
+    if result.get('bpm') is not None or result.get('method') == 'smart_segment_v2':
+        manifest['smart_segmentation'] = {
+            'method': result.get('method'),
+            'bpm': result.get('bpm'),
+            'bar_duration_s': result.get('bar_duration_s'),
+            'density': result.get('density'),
+            'silence_boundaries': result.get('silence_boundaries', []),
+        }
+
     return manifest
 
 
