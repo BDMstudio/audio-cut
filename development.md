@@ -6,9 +6,7 @@
 本文档是工程事实的单一可信来源（SSOT），持续记录系统架构、实现约束与进度。所有涉及流程、参数或测试的改动，须同步更新此处。
 
 ## 1. 版本演进
-- **v1.x**：混音粗分 → BPM/动态范围 → Silero VAD → 阈值切分，仅保留用于对照。
-- **v2.0**：引入 MDX23/Demucs 分离；建立分离→检测的主流程与初代守卫。
-- **v2.1**：VocalPrime（VMS/EMA）实验流，引入 F0/共振峰等细粒度特征。
+
 - **v2.4.1（2026-01-17）**: 删除未生效算法 (`enable_bpm_adaptation`, `interlude_coverage_check`)，清理冗余配置。
 - **v2.4（2026-01-17）: 统一配置入口 `config/unified.yaml`，新增 `librosa_onset` 模式。
 - **v2.2（2025-09-12）**：Pure Vocal + MDD 合流，确立“一次检测 + NMS + 守卫”策略。
