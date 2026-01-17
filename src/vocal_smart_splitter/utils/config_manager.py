@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 # vocal_smart_splitter/utils/config_manager.py
-# AI-SUMMARY: 配置管理器，负责加载和管理所有配置参数
+# AI-SUMMARY: 配置管理器，负责加载和管理所有配置参数（支持 unified.yaml 统一配置）
 
 import os
 import yaml
@@ -18,6 +18,9 @@ from audio_cut.config.derive import (
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
+
+# 项目根目录
+_PROJECT_ROOT = Path(__file__).parent.parent.parent.parent
 
 _UNSET = object()
 
@@ -118,11 +121,29 @@ class ConfigManager:
         logger.info(f"配置管理器初始化完成，配置文件: {self.config_path}")
     
     def _load_config(self) -> Dict[str, Any]:
-        """加载配置文件"""
+        """加载配置文件
+
+        加载优先级（从低到高）：
+        1. src/vocal_smart_splitter/config.yaml (基础配置)
+        2. config/unified.yaml (统一配置，如果存在)
+        3. VSS_EXTERNAL_CONFIG_PATH 环境变量指定的配置
+        4. 显式指定的 config_path
+        5. VSS__* 环境变量覆盖
+        """
         try:
+            # 1. 加载基础配置
             base_path = Path(__file__).parent.parent / 'config.yaml'
             config = _load_yaml_file(base_path)
+            logger.debug(f"[ConfigManager] 加载基础配置: {base_path}")
 
+            # 2. 加载统一配置文件 (config/unified.yaml)
+            unified_path = _PROJECT_ROOT / 'config' / 'unified.yaml'
+            if unified_path.exists():
+                unified_raw = _load_yaml_file(unified_path)
+                config = self._merge_unified_config(config, unified_raw)
+                logger.info(f"[ConfigManager] 加载统一配置: {unified_path}")
+
+            # 3. 加载外部配置 (VSS_EXTERNAL_CONFIG_PATH)
             external_path = os.environ.get('VSS_EXTERNAL_CONFIG_PATH')
             if external_path:
                 external_raw = _load_yaml_file(Path(external_path))
@@ -133,18 +154,23 @@ class ConfigManager:
                     config = _merge_schema_v3(config, external_raw)
                 else:
                     config = _deep_merge_dict(config, external_raw)
+                logger.info(f"[ConfigManager] 加载外部配置: {external_path}")
 
+            # 4. 加载显式指定的配置文件
             explicit_path = Path(self.config_path)
-            if explicit_path.resolve() != base_path.resolve():
-                explicit_raw = _load_yaml_file(explicit_path)
-                if is_v3_schema(explicit_raw) or (
-                    isinstance(explicit_raw, dict)
-                    and is_v3_schema(explicit_raw.get('overrides', {}))
-                ):
-                    config = _merge_schema_v3(config, explicit_raw)
-                else:
-                    config = _deep_merge_dict(config, explicit_raw)
+            if explicit_path.resolve() != base_path.resolve() and explicit_path.resolve() != unified_path.resolve():
+                if explicit_path.exists():
+                    explicit_raw = _load_yaml_file(explicit_path)
+                    if is_v3_schema(explicit_raw) or (
+                        isinstance(explicit_raw, dict)
+                        and is_v3_schema(explicit_raw.get('overrides', {}))
+                    ):
+                        config = _merge_schema_v3(config, explicit_raw)
+                    else:
+                        config = _deep_merge_dict(config, explicit_raw)
+                    logger.info(f"[ConfigManager] 加载显式配置: {explicit_path}")
 
+            # 5. 应用环境变量覆盖
             config = _apply_env_overrides(config)
 
             logger.info("配置文件加载成功")
@@ -152,6 +178,86 @@ class ConfigManager:
         except Exception as e:
             logger.error(f"配置文件加载失败: {e}")
             raise
+
+    def _merge_unified_config(self, base: Dict[str, Any], unified: Dict[str, Any]) -> Dict[str, Any]:
+        """合并统一配置文件，处理特殊的嵌套结构
+
+        unified.yaml 结构：
+        - global: 全局设置
+        - audio/gpu_pipeline/output/logging: 直接合并
+        - v2_mdd: 映射到 pure_vocal_detection, quality_control 等
+        - librosa_onset: 存储为独立节
+        """
+        result = dict(base)
+
+        # 直接合并的顶级键
+        direct_merge_keys = [
+            'global', 'audio', 'gpu_pipeline', 'enhanced_separation',
+            'output', 'logging', 'analysis', 'vocal_separation',
+            'vocal_pause_splitting', 'bpm_adaptive_core'
+        ]
+
+        for key in direct_merge_keys:
+            if key in unified:
+                if key in result and isinstance(result[key], dict) and isinstance(unified[key], dict):
+                    result[key] = _deep_merge_dict(result[key], unified[key])
+                else:
+                    result[key] = unified[key]
+
+        # v2_mdd 节的特殊处理：映射到对应的顶级键
+        if 'v2_mdd' in unified:
+            v2_mdd = unified['v2_mdd']
+
+            # 映射 v2_mdd.pure_vocal_detection -> pure_vocal_detection
+            if 'pure_vocal_detection' in v2_mdd:
+                if 'pure_vocal_detection' in result:
+                    result['pure_vocal_detection'] = _deep_merge_dict(
+                        result['pure_vocal_detection'], v2_mdd['pure_vocal_detection']
+                    )
+                else:
+                    result['pure_vocal_detection'] = v2_mdd['pure_vocal_detection']
+
+            # 映射 v2_mdd.musical_dynamic_density -> musical_dynamic_density
+            if 'musical_dynamic_density' in v2_mdd:
+                if 'musical_dynamic_density' in result:
+                    result['musical_dynamic_density'] = _deep_merge_dict(
+                        result['musical_dynamic_density'], v2_mdd['musical_dynamic_density']
+                    )
+                else:
+                    result['musical_dynamic_density'] = v2_mdd['musical_dynamic_density']
+
+            # 映射 v2_mdd.advanced_vad -> advanced_vad
+            if 'advanced_vad' in v2_mdd:
+                if 'advanced_vad' in result:
+                    result['advanced_vad'] = _deep_merge_dict(
+                        result['advanced_vad'], v2_mdd['advanced_vad']
+                    )
+                else:
+                    result['advanced_vad'] = v2_mdd['advanced_vad']
+
+            # 映射 v2_mdd.quality_control -> quality_control
+            if 'quality_control' in v2_mdd:
+                if 'quality_control' in result:
+                    result['quality_control'] = _deep_merge_dict(
+                        result['quality_control'], v2_mdd['quality_control']
+                    )
+                else:
+                    result['quality_control'] = v2_mdd['quality_control']
+
+            # 映射 v2_mdd.segment_layout -> segment_layout
+            if 'segment_layout' in v2_mdd:
+                if 'segment_layout' in result:
+                    result['segment_layout'] = _deep_merge_dict(
+                        result['segment_layout'], v2_mdd['segment_layout']
+                    )
+                else:
+                    result['segment_layout'] = v2_mdd['segment_layout']
+
+        # librosa_onset 节保持独立存储
+        if 'librosa_onset' in unified:
+            result['librosa_onset'] = unified['librosa_onset']
+
+        return result
 
     
     def _validate_config(self):
@@ -341,6 +447,84 @@ def reset_runtime_config():
         original_path = _config_manager.config_path
         _config_manager = ConfigManager(str(original_path))
         logger.info("运行时配置已重置")
+
+
+def get_librosa_onset_config() -> Dict[str, Any]:
+    """获取 librosa_onset 模式的配置
+
+    优先级：环境变量 > unified.yaml > 默认值
+
+    Returns:
+        librosa_onset 配置字典
+    """
+    config_manager = get_config_manager()
+
+    # 从配置文件获取基础配置
+    base_config = config_manager.get('librosa_onset', {})
+
+    # 构建最终配置，应用环境变量覆盖
+    result = {
+        'use_vocal_separation': _get_with_env_override(
+            base_config.get('use_vocal_separation', True),
+            'AUDIOCUT_LIBROSA_USE_VOCAL',
+            lambda x: x.lower() == 'true'
+        ),
+        'silence': {
+            'threshold_db': _get_with_env_override(
+                base_config.get('silence', {}).get('threshold_db', -40),
+                'AUDIOCUT_SILENCE_THRESHOLD_DB',
+                float
+            ),
+            'min_duration': _get_with_env_override(
+                base_config.get('silence', {}).get('min_duration', 0.3),
+                'AUDIOCUT_SILENCE_MIN_DURATION',
+                float
+            ),
+        },
+        'density': _get_with_env_override(
+            base_config.get('density', 'medium'),
+            'AUDIOCUT_DENSITY',
+            str
+        ),
+        'density_custom': base_config.get('density_custom', {
+            'enable': False,
+            'verse_bars': 4,
+            'chorus_bars': 2,
+        }),
+        'energy_analysis': base_config.get('energy_analysis', {
+            'hop_length': 512,
+            'chorus_percentile': 60,
+            'chorus_peak_percentile': 80,
+        }),
+        'beat': base_config.get('beat', {
+            'time_signature': 4,
+        }),
+    }
+
+    return result
+
+
+def _get_with_env_override(default_value: Any, env_key: str, converter=None) -> Any:
+    """获取配置值，优先使用环境变量覆盖
+
+    Args:
+        default_value: 默认值
+        env_key: 环境变量名
+        converter: 类型转换函数
+
+    Returns:
+        最终配置值
+    """
+    env_value = os.environ.get(env_key)
+    if env_value is not None:
+        if converter:
+            try:
+                return converter(env_value)
+            except (ValueError, TypeError):
+                logger.warning(f"环境变量 {env_key}={env_value} 转换失败，使用默认值")
+                return default_value
+        return env_value
+    return default_value
 
 
 

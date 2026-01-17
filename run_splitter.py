@@ -1,14 +1,15 @@
 ﻿#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 # run_splitter.py
-# AI-SUMMARY: 简化的运行脚本，仅支持纯人声分离与 v2.2 MDD 无缝分割
+# AI-SUMMARY: 运行脚本，支持纯人声分离、v2.2 MDD 和 librosa_onset 智能分割
 
 """
-智能人声分割器运行脚本（精简版）
+智能人声分割器运行脚本
 
-- 支持两种模式：
+- 支持三种模式：
   1. `vocal_separation` —— 仅输出人声/伴奏轨
   2. `v2.2_mdd` —— 启用纯人声检测 + MDD 增强的无缝分割
+  3. `librosa_onset` —— 智能分割 v2（BPM 节拍对齐 + 能量曲线分析）
 """
 
 import sys
@@ -61,13 +62,14 @@ def main() -> None:
 示例:
   python run_splitter.py input/song.mp3 --mode vocal_separation
   python run_splitter.py input/song.mp3 --mode v2.2_mdd --validate-reconstruction
+  python run_splitter.py input/song.mp3 --mode librosa_onset --gpu-device cuda:0
         """,
     )
 
     parser.add_argument('input_file', help='输入音频文件路径')
     parser.add_argument(
         '--mode',
-        choices=['vocal_separation', 'v2.2_mdd'],
+        choices=['vocal_separation', 'v2.2_mdd', 'librosa_onset'],
         default='v2.2_mdd',
         help='运行模式 (默认: v2.2_mdd)',
     )

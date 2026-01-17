@@ -31,6 +31,6 @@ pathlib2>=2.3.0
 
 demucs>=4.0.0
 torch>=2.0.0
-# GPU baseline (Milestone 2): CUDA 12.x runtime + cuDNN 9.x + ORT 1.17.1
-onnxruntime-gpu==1.17.1
+# GPU baseline: CUDA 12.x (1.19.0+), CUDA 11.x use 1.17.1
+onnxruntime-gpu>=1.19.0
 nvidia-ml-py>=12.0.0

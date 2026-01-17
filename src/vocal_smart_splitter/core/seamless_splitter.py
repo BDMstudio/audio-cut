@@ -28,7 +28,7 @@ from audio_cut.cutting.segment_layout_refiner import (
     refine_layout,
 )
 
-from ..utils.config_manager import get_config
+from ..utils.config_manager import get_config, get_librosa_onset_config
 from ..utils.audio_export import (
     build_export_options,
     ensure_supported_format,
@@ -705,25 +705,35 @@ class SeamlessSplitter:
     ) -> Dict:
         """
         Smart music segmentation v2: 情感感知的智能分割
-        
+
         Features:
         - BPM 检测 + 小节边界对齐
         - 能量曲线分析 → 主歌/副歌自动识别
         - 静音段落强制分割
         - 密度控制 (low/medium/high)
         - 保持 human/music 标签
+
+        配置来源 (优先级从高到低):
+        - 环境变量 AUDIOCUT_*
+        - config/unified.yaml 中的 librosa_onset 节
+        - 内置默认值
         """
         logger.info("[SMART_SEGMENT] Running emotion-aware segmentation v2...")
         start_time = time.time()
         self._precision_guard_ok = True
-        
+
+        # ========== 0. Load configuration ==========
+        lo_config = get_librosa_onset_config()
+        logger.info("[SMART_SEGMENT] Config loaded: density=%s, silence_db=%.1f, use_vocal=%s",
+                    lo_config['density'], lo_config['silence']['threshold_db'], lo_config['use_vocal_separation'])
+
         # ========== 1. Load audio ==========
         audio = self._load_and_resample_if_needed(input_path)
         audio_duration = len(audio) / float(self.sample_rate)
         logger.info("[SMART_SEGMENT] Audio duration: %.1fs", audio_duration)
-        
+
         # ========== 2. MDX23 vocal separation ==========
-        use_vocal = os.getenv('AUDIOCUT_LIBROSA_USE_VOCAL', 'true').lower() == 'true'
+        use_vocal = lo_config['use_vocal_separation']
         vocal_track = None
         instrumental_track = None
         separation_result = None
@@ -738,13 +748,14 @@ class SeamlessSplitter:
                 logger.warning("[SMART_SEGMENT] Vocal separation failed")
         
         # ========== 3. Feature extraction ==========
-        hop_length = 512
-        
+        hop_length = lo_config['energy_analysis'].get('hop_length', 512)
+        time_signature = lo_config['beat'].get('time_signature', 4)
+
         # 3.1 BPM detection
         tempo, beat_frames = librosa.beat.beat_track(y=audio, sr=self.sample_rate, hop_length=hop_length)
         tempo = float(tempo) if not hasattr(tempo, '__len__') else float(tempo[0])
         beat_times = librosa.frames_to_time(beat_frames, sr=self.sample_rate, hop_length=hop_length)
-        bar_duration = 60.0 / tempo * 4  # Assume 4/4 time signature
+        bar_duration = 60.0 / tempo * time_signature  # Use configured time signature
         logger.info("[SMART_SEGMENT] BPM: %.1f, bar duration: %.2fs, %d beats detected", tempo, bar_duration, len(beat_times))
         
         # 3.2 RMS energy curve (for chorus/verse detection)
@@ -766,31 +777,35 @@ class SeamlessSplitter:
             else:
                 bar_energies.append(0.0)
         
-        # Use 60th percentile as threshold (top 40% = chorus)
+        # Use configured percentiles for chorus/verse detection
+        chorus_percentile = lo_config['energy_analysis'].get('chorus_percentile', 60)
+        chorus_peak_percentile = lo_config['energy_analysis'].get('chorus_peak_percentile', 80)
+
         if bar_energies:
-            rms_percentile_60 = float(np.percentile(bar_energies, 60))
-            rms_percentile_80 = float(np.percentile(bar_energies, 80))
+            rms_threshold_chorus = float(np.percentile(bar_energies, chorus_percentile))
+            rms_threshold_peak = float(np.percentile(bar_energies, chorus_peak_percentile))
         else:
-            rms_percentile_60 = 0.0
-            rms_percentile_80 = 0.0
-        
+            rms_threshold_chorus = 0.0
+            rms_threshold_peak = 0.0
+
         # Classify each bar as chorus (high energy) or verse (low energy)
         bar_types: List[str] = []
         for energy in bar_energies:
-            if energy >= rms_percentile_80:
+            if energy >= rms_threshold_peak:
                 bar_types.append('chorus_peak')  # Very high energy
-            elif energy >= rms_percentile_60:
+            elif energy >= rms_threshold_chorus:
                 bar_types.append('chorus')  # High energy
             else:
                 bar_types.append('verse')  # Low energy
-        
+
         chorus_count = sum(1 for t in bar_types if 'chorus' in t)
-        logger.info("[SMART_SEGMENT] Bar classification: %d chorus, %d verse (threshold P60=%.4f, P80=%.4f)", 
-                    chorus_count, len(bar_types) - chorus_count, rms_percentile_60, rms_percentile_80)
+        logger.info("[SMART_SEGMENT] Bar classification: %d chorus, %d verse (threshold P%d=%.4f, P%d=%.4f)",
+                    chorus_count, len(bar_types) - chorus_count,
+                    chorus_percentile, rms_threshold_chorus, chorus_peak_percentile, rms_threshold_peak)
         
         # 3.3 Silence detection (mandatory cut points)
-        silence_threshold_db = float(os.getenv('AUDIOCUT_SILENCE_THRESHOLD_DB', '-40'))
-        silence_min_duration = float(os.getenv('AUDIOCUT_SILENCE_MIN_DURATION', '0.3'))
+        silence_threshold_db = lo_config['silence']['threshold_db']
+        silence_min_duration = lo_config['silence']['min_duration']
         rms_db = 20.0 * np.log10(rms + 1e-10)
         silence_mask = rms_db < silence_threshold_db
         
@@ -811,15 +826,27 @@ class SeamlessSplitter:
         logger.info("[SMART_SEGMENT] Found %d silence boundaries", len(silence_boundaries))
         
         # ========== 4. Density control ==========
-        density = os.getenv('AUDIOCUT_DENSITY', 'medium').lower()
-        density_map = {
-            'low': {'verse_bars': 8, 'chorus_bars': 4},
-            'medium': {'verse_bars': 4, 'chorus_bars': 2},
-            'high': {'verse_bars': 2, 'chorus_bars': 1},
-        }
-        density_cfg = density_map.get(density, density_map['medium'])
-        logger.info("[SMART_SEGMENT] Density: %s, verse=%d bars, chorus=%d bars", 
-                    density, density_cfg['verse_bars'], density_cfg['chorus_bars'])
+        density = lo_config['density']
+        density_custom = lo_config.get('density_custom', {})
+
+        # Check if custom density is enabled
+        if density_custom.get('enable', False):
+            density_cfg = {
+                'verse_bars': density_custom.get('verse_bars', 4),
+                'chorus_bars': density_custom.get('chorus_bars', 2),
+            }
+            logger.info("[SMART_SEGMENT] Using custom density: verse=%d bars, chorus=%d bars",
+                        density_cfg['verse_bars'], density_cfg['chorus_bars'])
+        else:
+            # Use preset density
+            density_map = {
+                'low': {'verse_bars': 8, 'chorus_bars': 4},
+                'medium': {'verse_bars': 4, 'chorus_bars': 2},
+                'high': {'verse_bars': 2, 'chorus_bars': 1},
+            }
+            density_cfg = density_map.get(density, density_map['medium'])
+            logger.info("[SMART_SEGMENT] Density: %s, verse=%d bars, chorus=%d bars",
+                        density, density_cfg['verse_bars'], density_cfg['chorus_bars'])
         
         # ========== 5. Generate smart cut points ==========
         cut_times: List[float] = [0.0]  # Start

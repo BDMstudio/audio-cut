@@ -1,0 +1,407 @@
+# =============================================================================
+# File: config/unified.yaml
+# AI-SUMMARY: 智能人声分割器 v2.4.0 统一配置文件
+# =============================================================================
+#
+# 本文件是所有分割模式的统一配置入口，完整覆盖以下配置：
+#   - src/vocal_smart_splitter/config.yaml (v2.2_mdd 模式)
+#   - config/default.yaml (旧版兼容)
+#   - 环境变量 AUDIOCUT_* (librosa_onset 模式)
+#
+# 使用方法：
+#   1. 修改此文件中的参数
+#   2. 运行时会自动加载（优先级高于其他配置文件）
+#   3. 环境变量仍可覆盖此文件中的设置
+#
+# 配置优先级（从高到低）：
+#   环境变量 > unified.yaml > src/.../config.yaml > config/default.yaml
+#
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# 全局设置 (Global Settings)
+# 适用于所有分割模式
+# -----------------------------------------------------------------------------
+
+global:
+  # 默认运行模式
+  # - vocal_separation: 仅分离人声/伴奏，不切割
+  # - v2.2_mdd: 纯人声检测 + MDD 增强分割 (推荐)
+  # - librosa_onset: 智能分割 v2，BPM 节拍对齐 + 能量曲线分析
+  default_mode: v2.2_mdd
+
+  # 版本信息
+  version: "2.4.0"
+
+
+# -----------------------------------------------------------------------------
+# 音频基础设置 (Audio Settings)
+# -----------------------------------------------------------------------------
+
+audio:
+  sample_rate: 44100          # 采样率 (Hz)，推荐 44100 (CD 质量)
+  channels: 1                 # 声道数，1=单声道（内部处理统一转换）
+  format: wav                 # 默认输入格式
+  quality: 320                # MP3 输出质量 (kbps)
+
+
+# -----------------------------------------------------------------------------
+# GPU 流水线设置 (GPU Pipeline)
+# 控制 MDX23 ONNX 模型的 GPU 加速
+# -----------------------------------------------------------------------------
+
+gpu_pipeline:
+  enable: true                # 是否启用 GPU 加速
+  prefer_device: cuda         # 默认设备: cuda / cuda:0 / cuda:1 / cpu
+  strict_gpu: false           # true = GPU 失败直接报错，false = 自动回退 CPU
+
+  # Chunk 分块处理参数
+  chunk_seconds: 10.0         # 每个 chunk 时长 (秒)，越大吞吐越高但显存占用越大
+  overlap_seconds: 2.5        # chunk 重叠区域 (秒)，用于平滑拼接
+  halo_seconds: 0.5           # halo 边界 (秒)，控制边缘衰减
+
+  # CUDA 优化
+  align_hop: 4096             # STFT hop 对齐步长
+  use_cuda_streams: true      # 启用多 CUDA stream 并行
+  prefetch_pinned_buffers: 2  # 预分配的 pinned buffer 数量
+  inflight_chunks_limit: 2    # 同时在 GPU 上处理的 chunk 数量
+
+  # ONNX Runtime 设置
+  ort:
+    graph_optimization_level: basic     # basic / extended / all
+    cudnn_conv_algo_search: HEURISTIC   # HEURISTIC / EXHAUSTIVE
+    disable_trt: true                   # 禁用 TensorRT (稳定性考虑)
+
+
+# -----------------------------------------------------------------------------
+# 声部分离后端设置 (Separation Backend)
+# -----------------------------------------------------------------------------
+
+enhanced_separation:
+  backend: mdx23              # 主后端: mdx23 / demucs_v4 / auto
+  enable_fallback: true       # 主后端失败时自动切换到 Demucs
+
+  mdx23:
+    model_filename: Kim_Vocal_1.onnx    # 模型文件: Kim_Vocal_1/2.onnx
+    output_type: auto                   # auto / vocal / instrumental
+
+  demucs:
+    compile: false            # 是否编译模型 (PyTorch 2.0+)
+    warmup_seconds: 0.5       # 预热时长
+
+
+# =============================================================================
+# v2.2_mdd 模式配置 (Pure Vocal Detection + MDD)
+# 基于纯人声停顿检测 + 音乐动态密度识别
+# =============================================================================
+
+v2_mdd:
+
+  # ---------------------------------------------------------------------------
+  # 纯人声停顿检测 (Pure Vocal Pause Detection)
+  # ---------------------------------------------------------------------------
+  pure_vocal_detection:
+    enable: true
+
+    # === 基础检测参数 ===
+    min_pause_duration: 0.3           # 最小停顿时长 (秒)
+    breath_duration_range: [0.1, 0.3] # 换气时长范围 (秒)
+
+    # 特征权重 (总和应为 1.0)
+    f0_weight: 0.30                   # 基频 (F0) 权重
+    formant_weight: 0.25              # 共振峰权重
+    spectral_weight: 0.25             # 频谱权重
+    duration_weight: 0.20             # 时长权重
+
+    # === 相对能量谷检测 ===
+    # 核心参数：控制切点敏感度
+    enable_relative_energy_mode: true
+    peak_relative_threshold_ratio: 0.26   # 相对峰值阈值 (0.16~0.30)
+                                          # 越低 → 越敏感，切点越多
+                                          # 越高 → 越保守，切点越少
+    rms_relative_threshold_ratio: 0.30    # 相对 RMS 阈值 (0.20~0.35)
+                                          # 决定能量下限判定
+
+    # === BPM/MDD 自适应阈值 ===
+    # 根据歌曲节奏自动调整检测阈值
+    relative_threshold_adaptation:
+      enable: true
+      clamp_min: 0.85                 # 乘数下限
+      clamp_max: 1.15                 # 乘数上限
+      bpm:
+        slow_multiplier: 1.08         # 慢歌 (<90 BPM) 阈值放大
+        medium_multiplier: 1.00       # 中速歌 (90-130 BPM) 保持不变
+        fast_multiplier: 0.92         # 快歌 (>130 BPM) 阈值缩小
+      mdd:
+        base: 1.0                     # MDD 基础乘数
+        gain: 0.2                     # MDD 增益系数
+
+    # === VPP 停顿统计自适应 ===
+    pause_stats_adaptation:
+      enable: true
+      delta_db: 3.0                   # 噪声地板上移 dB
+      morph_close_ms: 150             # 形态学闭运算窗口 (ms)
+      morph_open_ms: 50               # 形态学开运算窗口 (ms)
+      sing_block_min_s: 2.0           # 连续歌唱块最短时长 (秒)
+      interlude_min_s: 4.0            # 间奏最短时长 (秒)
+      interlude_coverage_check:
+        enable: false
+        pad_seconds: 2.0
+        coverage_threshold: 0.10
+      classify_thresholds:
+        slow: { mpd: 0.60, p95: 1.20, rr: 0.35 }
+        fast: { mpd: 0.25, pr: 18, rr: 0.15 }
+      multipliers: { slow: 1.08, medium: 1.00, fast: 0.92 }
+      clamp_min: 0.75
+      clamp_max: 1.25
+
+    # === 候选评分与 NMS ===
+    valley_scoring:
+      w_len: 0.7                      # 长度权重
+      w_quiet: 0.3                    # 安静度权重
+      w_flat: 0.5                     # 平坦度权重
+      use_weighted_nms: true          # 使用加权 NMS
+      merge_close_ms: 450             # NMS 合并窗口 (ms)
+      max_raw_candidates: 1200        # NMS 前最大候选数
+      max_kept_after_nms: 200         # NMS 后保留上限
+
+  # ---------------------------------------------------------------------------
+  # 音乐动态密度 (Musical Dynamic Density)
+  # 用于识别主歌/副歌段落
+  # ---------------------------------------------------------------------------
+  musical_dynamic_density:
+    energy_weight: 0.5                # 能量权重
+    spectral_weight: 0.3              # 频谱权重
+    onset_weight: 0.2                 # onset 权重
+    threshold_multiplier: 0.2         # 阈值乘数
+    max_multiplier: 1.4               # 最大乘数
+    min_multiplier: 0.6               # 最小乘数
+
+  # ---------------------------------------------------------------------------
+  # 高级 VAD 设置 (Advanced VAD)
+  # ---------------------------------------------------------------------------
+  advanced_vad:
+    focus_window_pad_s: 0.2           # 焦点窗口 padding (秒)
+    focus_window_min_width_s: 0.0     # 焦点窗口最小宽度 (秒)
+    silero_merge_gap_ms: 120.0        # Silero VAD 合并间隔 (ms)
+    focus_merge_gap_s: 0.12           # 焦点合并间隔 (秒)
+    silero_length_bucket: 4096        # Silero 分桶长度
+
+  # ---------------------------------------------------------------------------
+  # 质量控制 (Quality Control)
+  # 切点守卫与片段质量校验
+  # ---------------------------------------------------------------------------
+  quality_control:
+    validate_split_points: true       # 启用切点验证
+    min_pause_at_split: 1.0           # 切点两侧最小停顿 (秒)
+    min_split_gap: 1.2                # 切点最小间隔 (秒)，防止过碎
+    min_vocal_content_ratio: 0.4      # 人声段最低人声占比
+    max_silence_ratio: 0.3            # 人声段最大静音比例
+
+    # 片段时长控制
+    segment_min_duration: 2.0         # 最小片段时长 (秒)
+    segment_max_duration: 8.0        # 最大片段时长 (秒)
+    pure_music_min_duration: 6.0      # 纯音乐段最小时长 (秒)
+
+    # 人声活跃度判定
+    segment_vocal_threshold_db: -50.0 # 人声判定阈值 (dB)
+    segment_vocal_activity_ratio: 0.1 # 人声活跃占比阈值
+    segment_min_mix_piece: 2.0        # 混合片段最小时长 (秒)
+
+    # 渐入渐出
+    fade_in_duration: 0.0             # 渐入时长 (秒)，0=禁用
+    fade_out_duration: 0.0            # 渐出时长 (秒)，0=禁用
+    normalize_audio: false            # 是否标准化音量
+    remove_click_noise: false         # 是否移除咔嗒声
+    smooth_transitions: false         # 是否平滑过渡
+
+    # === 静音守卫 (Quiet Cut Guard) ===
+    # 确保切点落在安静区域
+    enforce_quiet_cut:
+      enable: false                   # 启用静音守卫
+      win_ms: 80                      # 检测窗口 (ms)
+      guard_db: 1.5                   # 能量阈值 (dB)，越高越保守
+      search_right_ms: 450            # 向右搜索范围 (ms)
+      floor_percentile: 0.5           # 地板分位数
+      floor_db_override: null         # 固定地板值 (dB)，null=自动
+
+    # === 局部边界优化 ===
+    local_boundary_refine:
+      enable: true                    # 启用局部优化
+      search_radius_ms: 500           # 搜索半径 (ms)
+      window_ms: 5                    # 检测窗口 (ms)
+      min_drop_db: 5.0                # 触发重定位的能量下降 (dB)
+
+  # ---------------------------------------------------------------------------
+  # 段落布局精炼 (Segment Layout Refiner)
+  # 处理微碎片合并、救援切分
+  # ---------------------------------------------------------------------------
+  segment_layout:
+    enable: true                      # 启用布局精炼
+    micro_merge_s: 2.0                # 微碎片合并阈值 (秒)
+                                      # < 该时长的片段会与邻段合并
+    soft_min_s: 2.0                   # 软最小时长 (秒)
+                                      # 低于此值尝试温和合并
+    soft_max_s: 8.0                  # 软最大时长 (秒)
+                                      # 超过此值尝试救援切分
+    min_gap_s: 1.0                    # 切点最小间隔 (秒)
+    beat_snap_ms: 0                   # 节拍吸附窗口 (ms)，0=关闭
+
+
+# =============================================================================
+# librosa_onset 模式配置 (Smart Segmentation v2)
+# 基于 BPM 节拍对齐 + 能量曲线分析
+# =============================================================================
+
+librosa_onset:
+
+  # ---------------------------------------------------------------------------
+  # 基础开关
+  # ---------------------------------------------------------------------------
+  use_vocal_separation: true          # 是否启用 MDX23 人声分离
+                                      # true = 先分离人声再分析
+                                      # false = 直接分析混音
+
+  # ---------------------------------------------------------------------------
+  # 静音检测 (Silence Detection)
+  # 强制在静音处切分
+  # ---------------------------------------------------------------------------
+  silence:
+    threshold_db: -40                 # 静音判定阈值 (dB)
+                                      # 推荐: -35 (敏感) ~ -45 (保守)
+    min_duration: 0.3                 # 最小静音持续时间 (秒)
+
+  # ---------------------------------------------------------------------------
+  # 密度控制 (Density Control)
+  # 控制每段的小节数，影响切分密度
+  # ---------------------------------------------------------------------------
+  density: medium                     # 密度预设: low / medium / high
+
+  # 密度预设详情:
+  # - low:    主歌8小节，副歌4小节 → 稀疏切分，长片段
+  # - medium: 主歌4小节，副歌2小节 → 平衡切分 (默认)
+  # - high:   主歌2小节，副歌1小节 → 密集切分，短片段
+
+  # 自定义密度 (覆盖预设)
+  density_custom:
+    enable: false                     # 启用自定义密度
+    verse_bars: 4                     # 主歌每段小节数
+    chorus_bars: 2                    # 副歌每段小节数
+
+  # ---------------------------------------------------------------------------
+  # 能量曲线分析 (Energy Curve Analysis)
+  # 用于自动识别主歌/副歌
+  # ---------------------------------------------------------------------------
+  energy_analysis:
+    hop_length: 512                   # 分析步长 (samples)
+    chorus_percentile: 60             # 副歌判定分位数 (能量 top N%)
+                                      # 60 = 能量 top 40% 判定为副歌
+    chorus_peak_percentile: 80        # 副歌高潮判定分位数
+                                      # 80 = 能量 top 20% 判定为高潮
+
+  # ---------------------------------------------------------------------------
+  # 节拍检测 (Beat Detection)
+  # ---------------------------------------------------------------------------
+  beat:
+    time_signature: 4                 # 拍号 (4 = 4/4 拍)
+    # BPM 会自动检测，无需手动设置
+
+
+# =============================================================================
+# 输出设置 (Output Settings)
+# =============================================================================
+
+output:
+  directory: "./output"               # 输出目录
+  format: wav                         # 默认输出格式: wav / mp3
+
+  wav:
+    subtype: PCM_24                   # WAV 位深: PCM_16 / PCM_24 / PCM_32
+
+  mp3:
+    bitrate: 320k                     # MP3 比特率: 128k / 192k / 256k / 320k
+
+  # 命名规则
+  naming:
+    pattern: "segment_{index:03d}_{label}_{duration}"
+    include_timestamp: true           # 文件名包含时间戳
+    include_duration: true            # 文件名包含时长
+
+  # 元数据导出
+  export_manifest: true               # 导出 SegmentManifest.json
+  manifest_filename: "SegmentManifest.json"
+
+
+# =============================================================================
+# 日志设置 (Logging)
+# =============================================================================
+
+logging:
+  level: INFO                         # DEBUG / INFO / WARNING / ERROR
+  file: "smart_splitter.log"          # 日志文件名
+  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+
+
+# =============================================================================
+# 分析缓存 (Analysis Cache)
+# =============================================================================
+
+analysis:
+  features_cache:
+    device: auto                      # 缓存计算设备: auto / cpu / cuda
+
+
+# =============================================================================
+# 旧版兼容设置 (Legacy Compatibility)
+# 以下设置用于兼容旧版配置，通常无需修改
+# =============================================================================
+
+vocal_pause_splitting:
+  enable_bpm_adaptation: false        # 旧版 BPM 自适应开关
+  local_rms_window_ms: 25
+  silence_floor_percentile: 5
+  silence_floor_allowance: 0.0
+  lookahead_guard_ms: 120
+  head_offset: 0.0
+  tail_offset: 0.0
+  voice_threshold: 0.5
+  bpm_adaptive_settings:
+    pause_duration_multipliers:
+      slow_song_multiplier: 1.0
+      medium_song_multiplier: 1.0
+      fast_song_multiplier: 1.0
+
+vocal_separation:
+  hpss_margin: 2.0
+  hpss_power: 1.5
+  mask_threshold: 0.2
+  mask_smoothing: 1
+  vocal_freq_min: 100
+  vocal_freq_max: 4000
+  vocal_core_min: 200
+  vocal_core_max: 1000
+  min_vocal_ratio: 0.15
+  max_noise_ratio: 0.3
+
+bpm_adaptive_core:
+  pause_duration_beats:
+    slow: 1.5
+    medium: 1.0
+    fast: 0.6
+    very_fast: 0.5
+  split_gap_phrases:
+    slow: 1.6
+    medium: 1.2
+    fast: 0.8
+    very_fast: 0.6
+  speech_pad_beats:
+    slow: 0.8
+    medium: 0.5
+    fast: 0.3
+    very_fast: 0.2
+  tempo_categories: {}
+  complexity_compensation:
+    base_factor: 1.0
+    complexity_boost: 0.0
+    instrument_boost: 0.0
+    min_instruments: 0

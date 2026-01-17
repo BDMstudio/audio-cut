@@ -22,7 +22,7 @@ def read_requirements():
 
 setup(
     name="vocal-smart-splitter",
-    version="2.3.0",
+    version="2.4.0",
     description="智能人声分割器 - 基于人声内容和换气停顿的智能音频分割工具",
     long_description=read_readme(),
     long_description_content_type="text/markdown",

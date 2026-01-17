@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-# quick_start.py - 快速启动脚本 (v2.3 统一指挥中心版)
+# quick_start.py - 快速启动脚本 (v2.4.0 支持智能分割 v2)
 # AI-SUMMARY: 精简的传令兵模式快速启动脚本，统一调用SeamlessSplitter
 
 import sys
@@ -67,13 +67,16 @@ def select_processing_mode():
     print("=" * 60)
     print("  1. 纯人声分离 (Vocal Separation Only)")
     print("     - 仅分离人声和伴奏，不执行切割")
-    print("  2. [最新] MDD增强纯人声检测v2.2 (Pure Vocal v2.2 MDD)")
+    print("  2. [推荐] MDD增强纯人声检测v2.2 (Pure Vocal v2.2 MDD)")
     print("     - 先分离再检测，集成音乐动态密度识别主副歌")
+    print("  3. [最新] 智能分割v2 (Smart Segmentation - librosa_onset)")
+    print("     - BPM节拍对齐 + 能量曲线副歌识别 + 密度控制")
+    print("     - 适用场景：流行音乐、电子舞曲、节奏明确的歌曲")
     print()
 
     try:
-        choice = int(input("请选择 (1-2): ").strip())
-        modes = {1: 'vocal_separation', 2: 'v2.2_mdd'}
+        choice = int(input("请选择 (1-3): ").strip())
+        modes = {1: 'vocal_separation', 2: 'v2.2_mdd', 3: 'librosa_onset'}
         mode = modes.get(choice, 'v2.2_mdd')
         print(f"[SELECT] 已选择模式: {mode}")
         return mode
@@ -193,7 +196,7 @@ def main():
         format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
     )
     print("=" * 60)
-    print("智能人声分割器 - 快速启动 (v2.3 统一指挥中心版)")
+    print("智能人声分割器 - 快速启动 (v2.4.0)")
     print("=" * 60)
 
     if not check_system_status():
