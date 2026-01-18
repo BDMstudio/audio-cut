@@ -6,10 +6,11 @@
 """
 智能人声分割器运行脚本
 
-- 支持三种模式：
+- 支持四种模式：
   1. `vocal_separation` —— 仅输出人声/伴奏轨
   2. `v2.2_mdd` —— 启用纯人声检测 + MDD 增强的无缝分割
   3. `librosa_onset` —— 智能分割 v2（BPM 节拍对齐 + 能量曲线分析）
+  4. `hybrid_mdd` —— 混合模式（MDD 基础 + 节拍卡点增强，卡点感强）
 """
 
 import sys
@@ -69,9 +70,9 @@ def main() -> None:
     parser.add_argument('input_file', help='输入音频文件路径')
     parser.add_argument(
         '--mode',
-        choices=['vocal_separation', 'v2.2_mdd', 'librosa_onset'],
+        choices=['vocal_separation', 'v2.2_mdd', 'librosa_onset', 'hybrid_mdd'],
         default='v2.2_mdd',
-        help='运行模式 (默认: v2.2_mdd)',
+        help='运行模式 (默认: v2.2_mdd)。hybrid_mdd = MDD + 节拍卡点',
     )
     parser.add_argument(
         '--validate-reconstruction',

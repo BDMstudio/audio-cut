@@ -23,7 +23,7 @@ sys.path.insert(0, str(project_root))
 sys.path.insert(0, str(project_root / 'src'))
 
 from src.vocal_smart_splitter.core.seamless_splitter import SeamlessSplitter
-from src.vocal_smart_splitter.utils.config_manager import get_config
+from src.vocal_smart_splitter.utils.config_manager import get_config, set_runtime_config
 from src.vocal_smart_splitter.utils.audio_export import (
     get_supported_formats,
     ensure_supported_format,
@@ -69,20 +69,43 @@ def select_processing_mode():
     print("     - 仅分离人声和伴奏，不执行切割")
     print("  2. [推荐] MDD增强纯人声检测v2.2 (Pure Vocal v2.2 MDD)")
     print("     - 先分离再检测，集成音乐动态密度识别主副歌")
-    print("  3. [最新] 智能分割v2 (Smart Segmentation - librosa_onset)")
+    print("  3. 智能分割v2 (Smart Segmentation - librosa_onset)")
     print("     - BPM节拍对齐 + 能量曲线副歌识别 + 密度控制")
-    print("     - 适用场景：流行音乐、电子舞曲、节奏明确的歌曲")
+    print("  4. [新] 混合模式 (Hybrid MDD + 节拍卡点)")
+    print("     - MDD人声分割为基础 + 副歌添加节拍卡点")
+    print("     - 卡点片段带 _lib 后缀，适合剪辑")
     print()
 
     try:
-        choice = int(input("请选择 (1-3): ").strip())
-        modes = {1: 'vocal_separation', 2: 'v2.2_mdd', 3: 'librosa_onset'}
+        choice = int(input("请选择 (1-4): ").strip())
+        modes = {1: 'vocal_separation', 2: 'v2.2_mdd', 3: 'librosa_onset', 4: 'hybrid_mdd'}
         mode = modes.get(choice, 'v2.2_mdd')
         print(f"[SELECT] 已选择模式: {mode}")
         return mode
     except ValueError:
         print("[ERROR] 输入无效，使用默认MDD v2.2模式")
         return 'v2.2_mdd'
+
+
+def select_hybrid_density():
+    """让用户选择 hybrid_mdd 模式的卡点密度"""
+    print("\n" + "=" * 60)
+    print("选择卡点密度")
+    print("=" * 60)
+    print("  1. 少 - 较少或没有节拍卡点")
+    print("  2. 中 - 默认卡点数量 (推荐)")
+    print("  3. 多 - 更多卡点，更有灵动感 (可能碎片化)")
+    print()
+
+    try:
+        choice = int(input("请选择 (1-3，默认2): ").strip() or "2")
+        densities = {1: 'low', 2: 'medium', 3: 'high'}
+        density = densities.get(choice, 'medium')
+        print(f"[SELECT] 已选择卡点密度: {density}")
+        return density
+    except ValueError:
+        print("[INFO] 使用默认密度 medium")
+        return 'medium'
 
 
 def select_output_format(default_format: str) -> str:
@@ -240,6 +263,14 @@ def main():
             target_files = [selected_file]
 
     processing_mode = select_processing_mode()
+
+    # 如果选择了 hybrid_mdd 模式，询问卡点密度
+    hybrid_density = None
+    if processing_mode == 'hybrid_mdd':
+        hybrid_density = select_hybrid_density()
+        # 通过运行时配置覆盖密度设置
+        set_runtime_config({'hybrid_mdd.beat_cut_density': hybrid_density})
+
     try:
         default_format = ensure_supported_format(get_config('output.format', 'wav'))
     except ValueError:

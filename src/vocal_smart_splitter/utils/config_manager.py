@@ -200,7 +200,7 @@ class ConfigManager:
         direct_merge_keys = [
             'global', 'audio', 'gpu_pipeline', 'enhanced_separation',
             'output', 'logging', 'analysis', 'vocal_separation',
-            'vocal_pause_splitting', 'bpm_adaptive_core'
+            'vocal_pause_splitting', 'bpm_adaptive_core', 'hybrid_mdd'
         ]
 
         for key in direct_merge_keys:
@@ -533,5 +533,47 @@ def _get_with_env_override(default_value: Any, env_key: str, converter=None) -> 
     return default_value
 
 
+def get_hybrid_mdd_config(density_override: Optional[str] = None) -> Dict[str, Any]:
+    """获取 hybrid_mdd 模式的配置
 
+    优先级：density_override > 环境变量 > unified.yaml > 默认值
 
+    Args:
+        density_override: 用户交互时选择的密度 (low/medium/high)
+
+    Returns:
+        hybrid_mdd 配置字典
+    """
+    config_manager = get_config_manager()
+
+    # 从配置文件获取基础配置
+    base_config = config_manager.get('hybrid_mdd', {})
+
+    # 获取密度设置
+    density = density_override or _get_with_env_override(
+        base_config.get('beat_cut_density', 'medium'),
+        'AUDIOCUT_HYBRID_DENSITY',
+        str
+    )
+
+    # 获取密度预设
+    density_presets = base_config.get('density_presets', {})
+    preset = density_presets.get(density, density_presets.get('medium', {}))
+
+    # 构建最终配置
+    result = {
+        'density': density,
+        'enable_beat_cuts': preset.get('enable_beat_cuts', True),
+        'energy_percentile': preset.get('energy_percentile', 70),
+        'bars_per_cut': preset.get('bars_per_cut', 2),
+        'beat_detection': {
+            'hop_length': base_config.get('beat_detection', {}).get('hop_length', 512),
+            'time_signature': base_config.get('beat_detection', {}).get('time_signature', 4),
+            'snap_to_pause_ms': base_config.get('beat_detection', {}).get('snap_to_pause_ms', 300),
+        },
+        'labeling': {
+            'lib_suffix': base_config.get('labeling', {}).get('lib_suffix', '_lib'),
+        },
+    }
+
+    return result
