@@ -566,6 +566,22 @@ def get_hybrid_mdd_config(density_override: Optional[str] = None) -> Dict[str, A
         'enable_beat_cuts': preset.get('enable_beat_cuts', True),
         'energy_percentile': preset.get('energy_percentile', 70),
         'bars_per_cut': preset.get('bars_per_cut', 2),
+        'lib_alignment': _get_with_env_override(
+            base_config.get('lib_alignment', 'mdd_start'),
+            'AUDIOCUT_HYBRID_LIB_ALIGNMENT',
+            str
+        ),
+        # Plan C (snap_to_beat) specific options
+        'snap_tolerance_ms': _get_with_env_override(
+            base_config.get('snap_tolerance_ms', 300),
+            'AUDIOCUT_SNAP_TOLERANCE_MS',
+            int
+        ),
+        'vad_protection': _get_with_env_override(
+            base_config.get('vad_protection', True),
+            'AUDIOCUT_VAD_PROTECTION',
+            lambda x: str(x).lower() in ('true', '1', 'yes')
+        ),
         'beat_detection': {
             'hop_length': base_config.get('beat_detection', {}).get('hop_length', 512),
             'time_signature': base_config.get('beat_detection', {}).get('time_signature', 4),

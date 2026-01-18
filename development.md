@@ -78,12 +78,14 @@
   - **`hybrid_mdd` 模式实现**：MDD + librosa 节拍卡点，`_lib` 后缀标记，密度控制 (low/medium/high)。
   - **预过滤算法**：节拍切点添加前检查是否会产生短片段，避免合并后丢失 `_lib` 标记。
   - **quick_start.py 更新**：支持 hybrid_mdd 模式选择与密度配置。
+  - **Strategy 模式重构**：新增 `strategies/` 目录，实现 `SegmentationStrategy` 基类。
+  - **方案 B (beat_only)**：高能量段纯节拍分割，低能量段用 MDD。
+  - **方案 C (snap_to_beat)**：MDD 切点吸附到节拍 + VAD 保护。
 - **设计文档**：
   - `docs/hybrid_mdd_design.md` - 三种切点策略方案 (A/B/C) 对比。
-  - `docs/hybrid_mdd_refactor_evaluation.md` - 重构评估报告，建议 Strategy 模式拆分。
+  - `docs/hybrid_mdd_refactor_evaluation.md` - 重构评估报告。
 - **待规划**：
-  - 实现方案 B/C（纯节拍分割 / MDD 吸附到节拍）。
-  - `seamless_splitter.py` 模块拆分（strategies/analyzers）。
+  - `seamless_splitter.py` 进一步模块拆分（analyzers）。
   - IO Binding / TensorRT / FP16 支持。
   - `tests/test_seamless_reconstruction.py` 适配 v2.5 结果结构。
 

@@ -271,7 +271,7 @@ librosa_onset:
   # 密度控制 (Density Control)
   # 控制每段的小节数，影响切分密度
   # ---------------------------------------------------------------------------
-  density: medium                     # 密度预设: low / medium / high
+  density: low                     # 密度预设: low / medium / high
 
   # 密度预设详情:
   # - low:    主歌8小节，副歌4小节 → 稀疏切分，长片段
@@ -319,10 +319,25 @@ hybrid_mdd:
                                       # - medium: 默认卡点数量
                                       # - high: 较多卡点 (可能碎片化)
 
+  # ---------------------------------------------------------------------------
+  # 节拍对齐策略 (Beat Alignment Strategy)
+  # 控制 _lib 片段的切点生成算法
+  # ---------------------------------------------------------------------------
+  lib_alignment: snap_to_beat            # 策略选择:
+                                      # - mdd_start: MDD 起点 + 节拍终点 (方案 A, 默认)
+                                      # - beat_only: 精彩部分节拍分割 (方案 B)
+                                      # - snap_to_beat: MDD 吸附到节拍 (方案 C)
+
+  # ---------------------------------------------------------------------------
+  # 方案 C 专用参数 (snap_to_beat)
+  # ---------------------------------------------------------------------------
+  snap_tolerance_ms: 200              # MDD 切点吸附到节拍的最大容差 (ms)
+  vad_protection: true                # 启用 VAD 保护，避免在人声中间切断
+
   # 密度预设详情
   density_presets:
     low:
-      enable_beat_cuts: false         # 不启用节拍卡点
+      enable_beat_cuts: true         # 节拍卡点
       energy_percentile: 90           # 仅 top 10% 能量段添加
       bars_per_cut: 4                 # 每4小节一个卡点
     medium:
@@ -331,7 +346,7 @@ hybrid_mdd:
       bars_per_cut: 2                 # 每2小节一个卡点
     high:
       enable_beat_cuts: true
-      energy_percentile: 50           # top 50% 能量段添加卡点
+      energy_percentile: 40           # top 40% 能量段添加卡点
       bars_per_cut: 1                 # 每1小节一个卡点
 
   # ---------------------------------------------------------------------------
