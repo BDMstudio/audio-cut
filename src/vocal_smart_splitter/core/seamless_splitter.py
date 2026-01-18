@@ -1255,6 +1255,8 @@ class SeamlessSplitter:
             # Merge segments shorter than micro_merge_s
             merged_cut_points: List[int] = [final_cut_points[0]]
             merged_lib_flags: List[bool] = []
+            # Track if we're in a merge chain (any previous segment was merged into current)
+            current_segment_was_merged = False
 
             for i in range(len(final_cut_points) - 1):
                 start_sample = final_cut_points[i]
@@ -1263,18 +1265,21 @@ class SeamlessSplitter:
 
                 if duration_s < micro_merge_s and i < len(final_cut_points) - 2:
                     # Merge with next segment: skip this cut point
-                    # Preserve lib flag if either segment was lib
-                    if i < len(lib_cut_flags) and lib_cut_flags[i]:
-                        # Carry lib flag forward to the next segment
-                        if i + 1 < len(lib_cut_flags):
-                            lib_cut_flags[i + 1] = True
-                    logger.debug("[HYBRID_MDD] Merging short segment %d (%.1fs) with next", i, duration_s)
+                    # IMPORTANT: When we merge, the _lib status is LOST because
+                    # the merged segment no longer ends at a beat boundary
+                    current_segment_was_merged = True
+                    logger.debug("[HYBRID_MDD] Merging short segment %d (%.1fs) - _lib flag discarded", i, duration_s)
                 else:
                     merged_cut_points.append(end_sample)
-                    if i < len(lib_cut_flags):
+                    # If this segment absorbed a merged segment, it loses _lib status
+                    # because it no longer ends at the original beat boundary
+                    if current_segment_was_merged:
+                        merged_lib_flags.append(False)  # Discard _lib status
+                    elif i < len(lib_cut_flags):
                         merged_lib_flags.append(lib_cut_flags[i])
                     else:
                         merged_lib_flags.append(False)
+                    current_segment_was_merged = False  # Reset for next segment
 
             # Update the data
             if len(merged_cut_points) != len(final_cut_points):
