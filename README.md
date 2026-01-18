@@ -3,7 +3,7 @@
 
 # 智能人声分割器（Vocal Smart Splitter）
 
-Vocal Smart Splitter 支持高保真声部拆分、纯人声检测，以及带 MDD（Musical Dynamic Density）守卫的一站式处理能力。自 v2.4 起统一使用 `config/unified.yaml` 作为唯一配置入口，支持 `v2.2_mdd` 和 `librosa_onset` 两种切分模式。
+Vocal Smart Splitter 支持高保真声部拆分、纯人声检测，以及带 MDD（Musical Dynamic Density）守卫的一站式处理能力。自 v2.5 起新增 `hybrid_mdd` 模式，支持 MDD 人声分割 + librosa 节拍卡点增强，片段带 `_lib` 后缀标记，适合 MV 剪辑场景。
 
 ## 核心能力
 - **双通道分离**：默认使用 MDX23 ONNX 输出人声/伴奏，失败时自动回退 Demucs v4（可配置关闭）。
@@ -23,10 +23,22 @@ Vocal Smart Splitter 支持高保真声部拆分、纯人声检测，以及带 M
    python quick_start.py
    ```
    - 第一步选择处理范围（单文件或批量处理）。
-   - 第二步选择处理模式：`1` 仅分离；`2` Pure Vocal v2.2 MDD。
+   - 第二步选择处理模式：
+     - `1` 仅分离
+     - `2` Pure Vocal v2.2 MDD
+     - `3` librosa_onset 节拍分割
+     - `4` **Hybrid MDD**（MDD + 节拍卡点，推荐 MV 剪辑）
+   - 选择 Hybrid MDD 后可配置卡点密度（少/中/多）。
 3. 命令行模式：
    ```bash
+   # MDD 模式（默认）
    python run_splitter.py input/your_song.mp3 --mode v2.2_mdd
+   
+   # Hybrid MDD 模式（MDD + 节拍卡点）
+   python run_splitter.py input/your_song.mp3 --mode hybrid_mdd
+   
+   # librosa_onset 模式（纯节拍分割）
+   python run_splitter.py input/your_song.mp3 --mode librosa_onset
    ```
    可按需追加 `--validate-reconstruction`、`--gpu-device cuda:1|cpu`、`--strict-gpu`、`--profile ...`、`--compat-config v2`。
 4. 输出目录统一为 `output/<日期>_<时间>_<原音频名>/`（例如 `20241010_153045_song`），单文件与批处理遵循同一规则。
@@ -54,9 +66,11 @@ Vocal Smart Splitter 支持高保真声部拆分、纯人声检测，以及带 M
 
 ## 输出结构
 - `segment_###_{human|music}_*.wav`：混音片段，文件名追加 `_X.X`（秒，保留 1 位小数）表示片段时长。
+- `segment_###_{human|music}_lib_*.wav`：**节拍卡点片段**（hybrid_mdd 模式），结束切点对齐小节边界。
 - `segments_vocal/segment_###_{human|music}_vocal_*.wav`：对应人声片段，同样追加 `_X.X` 时长后缀。
 - `<stem>_v2.2_mdd_vocal_full_*.wav` / `<stem>_v2.2_mdd_instrumental_*.wav`：全长人声/伴奏文件。
 - `segment_classification_debug`：调试信息（活跃度、阈值、投票），CLI 可自行持久化为 JSON。
+- `segment_lib_flags`：标记哪些片段是节拍卡点片段（hybrid_mdd 模式）。
 - 结果字典包含 `guard_shift_stats`、`guard_adjustments`、`gpu_meta` 等诊断信息。
 - 其他字段：`cut_points_samples/sec`、`guard_adjustments`、`suppressed_cut_points_sec` 等，用于验证切点一致性。
 
@@ -109,6 +123,12 @@ Vocal Smart Splitter 支持高保真声部拆分、纯人声检测，以及带 M
   ```
 
 ## 更新记录
+- **2026-01-17 (v2.5.0)**
+  - 新增 `hybrid_mdd` 模式：MDD 人声分割 + librosa 节拍卡点增强
+  - `_lib` 后缀标记节拍对齐的片段，适合 MV 剪辑
+  - 密度控制 (low/medium/high) 通过 `unified.yaml` 或 quick_start 交互配置
+  - 预过滤算法：节拍切点添加前检查是否会产生短片段
+  - 设计文档: `docs/hybrid_mdd_design.md`, `docs/hybrid_mdd_refactor_evaluation.md`
 - **2026-01-17 (v2.4.1)**
   - 代码清理：删除未生效的 `enable_bpm_adaptation` 和 `interlude_coverage_check` 算法
   - 删除 `unified.yaml` 中对应的冗余配置项

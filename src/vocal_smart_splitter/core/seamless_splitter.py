@@ -1164,36 +1164,67 @@ class SeamlessSplitter:
 
             logger.info("[HYBRID_MDD] Generated %d beat cut points", len(beat_cut_times))
 
-            # ========== 6. Merge MDD and beat cut points ==========
+            # ========== 6. Merge MDD and beat cut points (with pre-filtering) ==========
+            # Get segment_layout constraints for pre-filtering
+            layout_cfg = get_config('segment_layout', {}) or {}
+            min_segment_s = float(layout_cfg.get('soft_min_s', 2.0))
+            min_segment_samples = int(min_segment_s * self.sample_rate)
+
             # Convert beat cuts to samples
             beat_cut_samples = [int(t * self.sample_rate) for t in beat_cut_times]
 
-            # Check for overlap with existing MDD cuts (within snap_to_pause_ms)
+            # Pre-filter: only add beat cut if it won't create a segment shorter than min_segment_s
+            # We need to check against ALL existing cuts (MDD + already added beat cuts)
             snap_samples = int(snap_to_pause_ms / 1000.0 * self.sample_rate)
-            new_cuts: List[int] = []
-            new_cut_is_lib: List[bool] = []
 
-            for beat_sample in beat_cut_samples:
-                # Check if there's an MDD cut point nearby
-                is_duplicate = False
-                for mdd_sample in mdd_cut_points_samples:
-                    if abs(beat_sample - mdd_sample) <= snap_samples:
-                        is_duplicate = True
+            # Start with MDD cuts as base
+            all_cuts_sorted = sorted(mdd_cut_points_samples)
+            cut_sources: Dict[int, bool] = {c: False for c in all_cuts_sorted}  # False = MDD
+
+            added_beat_cuts = 0
+            skipped_too_close = 0
+
+            for beat_sample in sorted(beat_cut_samples):
+                if beat_sample <= 0 or beat_sample >= len(original_audio):
+                    continue
+
+                # Check if there's an MDD cut point nearby (duplicate)
+                is_duplicate = any(abs(beat_sample - mdd_sample) <= snap_samples for mdd_sample in mdd_cut_points_samples)
+                if is_duplicate:
+                    continue
+
+                # Find where this beat cut would be inserted
+                # Check distance to previous and next existing cuts
+                prev_cut = 0
+                next_cut = len(original_audio)
+
+                for existing_cut in all_cuts_sorted:
+                    if existing_cut < beat_sample:
+                        prev_cut = existing_cut
+                    elif existing_cut > beat_sample:
+                        next_cut = existing_cut
                         break
 
-                if not is_duplicate and 0 < beat_sample < len(original_audio):
-                    new_cuts.append(beat_sample)
-                    new_cut_is_lib.append(True)
+                # Calculate segment durations if we add this beat cut
+                duration_before = beat_sample - prev_cut
+                duration_after = next_cut - beat_sample
 
-            # Merge and sort all cut points
-            all_cuts = list(mdd_cut_points_samples)
-            cut_sources: Dict[int, bool] = {c: False for c in all_cuts}  # False = MDD, True = librosa
+                # Only add if BOTH resulting segments are long enough
+                if duration_before >= min_segment_samples and duration_after >= min_segment_samples:
+                    # Insert in sorted order
+                    import bisect
+                    bisect.insort(all_cuts_sorted, beat_sample)
+                    cut_sources[beat_sample] = True  # Mark as librosa cut
+                    added_beat_cuts += 1
+                else:
+                    skipped_too_close += 1
+                    logger.debug("[HYBRID_MDD] Skipped beat cut at %.2fs (would create short segment: %.2fs or %.2fs)",
+                                beat_sample / self.sample_rate, duration_before / self.sample_rate, duration_after / self.sample_rate)
 
-            for cut, is_lib in zip(new_cuts, new_cut_is_lib):
-                all_cuts.append(cut)
-                cut_sources[cut] = is_lib
+            logger.info("[HYBRID_MDD] Beat cuts: %d added, %d skipped (would create short segments)",
+                        added_beat_cuts, skipped_too_close)
 
-            final_cut_points = sorted(set(all_cuts))
+            final_cut_points = all_cuts_sorted
 
             # Ensure first and last cut points are correct
             if final_cut_points[0] != 0:
@@ -1202,8 +1233,8 @@ class SeamlessSplitter:
                 final_cut_points.append(len(original_audio))
             final_cut_points = sorted(set(final_cut_points))
 
-            logger.info("[HYBRID_MDD] Merged cut points: %d total (%d from MDD, %d new beat cuts)",
-                        len(final_cut_points), len(mdd_cut_points_samples), len(new_cuts))
+            logger.info("[HYBRID_MDD] Final cut points: %d total (%d from MDD, %d from beat alignment)",
+                        len(final_cut_points), len(mdd_cut_points_samples), added_beat_cuts)
 
             # Build lib flags for each segment (segment i is between cut i and cut i+1)
             # A segment is marked as lib if its END cut point is from librosa

@@ -7,10 +7,11 @@
 
 ## 1. 版本演进
 
+- **v2.5.0（2026-01-17）**: 新增 `hybrid_mdd` 模式（MDD + 节拍卡点增强），支持 `_lib` 后缀标记、密度控制、预过滤短片段。
 - **v2.4.1（2026-01-17）**: 删除未生效算法 (`enable_bpm_adaptation`, `interlude_coverage_check`)，清理冗余配置。
-- **v2.4（2026-01-17）: 统一配置入口 `config/unified.yaml`，新增 `librosa_onset` 模式。
+- **v2.4（2026-01-17）**: 统一配置入口 `config/unified.yaml`，新增 `librosa_onset` 模式。
+- **v2.3（2025-09-26）**：SeamlessSplitter 成为唯一入口；结果调试（`segment_classification_debug`、`guard_shift_stats`）结构化。
 - **v2.2（2025-09-12）**：Pure Vocal + MDD 合流，确立“一次检测 + NMS + 守卫”策略。
-- **v2.3（2025-09-26）**：SeamlessSplitter 成为唯一入口；结果调试（`segment_classification_debug`、`guard_shift_stats`）结构化；`audio_cut.*` 拆分通用特征与切点精修；新增 `segment_layout_refiner`。
 
 ## 2. 目录职责
 - `src/vocal_smart_splitter/core/`：主流程组件（SeamlessSplitter、PureVocalPauseDetector、EnhancedVocalSeparator、VocalPauseDetectorV2）；QualityController 保留为 legacy 兜底。
@@ -74,14 +75,17 @@
   - Silero 分块 VAD、ChunkFeatureBuilder GPU 缓存。
   - `segment_layout_refiner` 接入主流程，并统一 `_X.X` 时长后缀。
   - 输出目录统一为 `<日期>_<时间>_<原音频名>`。
-- **进行中**：
-  - 同类型母带回放基线收集与验证。
-  - `--strict-gpu` 策略、质量守则对照表（Milestone 2-G1/G2）。
-  - quick_start 批量模式 + CLI 端的回归与文档核对。
+  - **`hybrid_mdd` 模式实现**：MDD + librosa 节拍卡点，`_lib` 后缀标记，密度控制 (low/medium/high)。
+  - **预过滤算法**：节拍切点添加前检查是否会产生短片段，避免合并后丢失 `_lib` 标记。
+  - **quick_start.py 更新**：支持 hybrid_mdd 模式选择与密度配置。
+- **设计文档**：
+  - `docs/hybrid_mdd_design.md` - 三种切点策略方案 (A/B/C) 对比。
+  - `docs/hybrid_mdd_refactor_evaluation.md` - 重构评估报告，建议 Strategy 模式拆分。
 - **待规划**：
-  - IO Binding / TensorRT / FP16 支持，评估对特征精度影响。
-  - `tests/test_seamless_reconstruction.py` 适配 v2.3 结果结构。
-  - 自动化 regression tracker，记录输出文件命名、守卫统计等关键指标。
+  - 实现方案 B/C（纯节拍分割 / MDD 吸附到节拍）。
+  - `seamless_splitter.py` 模块拆分（strategies/analyzers）。
+  - IO Binding / TensorRT / FP16 支持。
+  - `tests/test_seamless_reconstruction.py` 适配 v2.5 结果结构。
 
 ## 9. 环境与工具
 - Python 3.10+；核心依赖：PyTorch、librosa、numpy/scipy/soundfile、pydub（MP3 导出需 FFmpeg）。
