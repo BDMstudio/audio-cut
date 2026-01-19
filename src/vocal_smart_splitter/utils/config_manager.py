@@ -124,20 +124,26 @@ class ConfigManager:
         """加载配置文件
 
         加载优先级（从低到高）：
-        1. config/unified.yaml (统一配置入口，必须存在)
+        1. 统一配置文件 (自动查找多个位置)
         2. VSS_EXTERNAL_CONFIG_PATH 环境变量指定的配置
         3. 显式指定的 config_path
         4. VSS__* 环境变量覆盖
         """
         try:
-            # 1. 加载统一配置文件 (config/unified.yaml) 作为基础配置
-            unified_path = _PROJECT_ROOT / 'config' / 'unified.yaml'
-            if not unified_path.exists():
-                raise FileNotFoundError(f"统一配置文件不存在: {unified_path}")
+            # 1. 加载统一配置文件 - 智能查找多个位置
+            unified_path = self._find_unified_config()
+            if not unified_path:
+                raise FileNotFoundError(
+                    "找不到统一配置文件 unified.yaml。已尝试以下位置:\n"
+                    f"  - {_PROJECT_ROOT / 'config' / 'unified.yaml'}\n"
+                    f"  - {Path(__file__).parent.parent.parent / 'audio_cut' / 'config' / 'unified.yaml'}\n"
+                    f"  - {Path(__file__).parent.parent.parent.parent / 'config' / 'unified.yaml'}"
+                )
+            
             config = self._load_unified_config(unified_path)
             logger.info(f"[ConfigManager] 加载统一配置: {unified_path}")
 
-            # 3. 加载外部配置 (VSS_EXTERNAL_CONFIG_PATH)
+            # 2. 加载外部配置 (VSS_EXTERNAL_CONFIG_PATH)
             external_path = os.environ.get('VSS_EXTERNAL_CONFIG_PATH')
             if external_path:
                 external_raw = _load_yaml_file(Path(external_path))
@@ -152,7 +158,7 @@ class ConfigManager:
 
             # 3. 加载显式指定的配置文件
             explicit_path = Path(self.config_path)
-            if explicit_path.resolve() != unified_path.resolve():
+            if unified_path and explicit_path.resolve() != unified_path.resolve():
                 if explicit_path.exists():
                     explicit_raw = _load_yaml_file(explicit_path)
                     if is_v3_schema(explicit_raw) or (
@@ -172,6 +178,41 @@ class ConfigManager:
         except Exception as e:
             logger.error(f"配置文件加载失败: {e}")
             raise
+    
+    def _find_unified_config(self) -> Optional[Path]:
+        """智能查找 unified.yaml 配置文件
+        
+        查找顺序：
+        1. 项目根目录 config/unified.yaml（开发环境）
+        2. audio_cut package 内 config/unified.yaml（安装的 wheel）
+        3. 上级目录 config/unified.yaml（其他部署方式）
+        
+        Returns:
+            配置文件路径，如果找不到返回 None
+        """
+        # 候选路径列表
+        candidates = [
+            # 1. 开发环境：audio-cut/config/unified.yaml
+            _PROJECT_ROOT / 'config' / 'unified.yaml',
+            
+            # 2. 安装的包：site-packages/audio_cut/config/unified.yaml
+            Path(__file__).parent.parent.parent / 'audio_cut' / 'config' / 'unified.yaml',
+            
+            # 3. 备选：上级目录
+            Path(__file__).parent.parent.parent.parent / 'config' / 'unified.yaml',
+            
+            # 4. 再往上一级（某些安装方式）
+            Path(__file__).parent.parent.parent.parent.parent / 'config' / 'unified.yaml',
+        ]
+        
+        # 查找第一个存在的配置文件
+        for candidate in candidates:
+            if candidate.exists():
+                logger.debug(f"[ConfigManager] 找到配置文件: {candidate}")
+                return candidate
+        
+        logger.warning(f"[ConfigManager] 未找到配置文件，尝试了 {len(candidates)} 个位置")
+        return None
 
     def _load_unified_config(self, path: Path) -> Dict[str, Any]:
         """加载统一配置文件并扁平化 v2_mdd 嵌套结构
