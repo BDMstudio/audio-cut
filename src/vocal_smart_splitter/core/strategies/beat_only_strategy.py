@@ -71,10 +71,11 @@ class BeatOnlyStrategy(SegmentationStrategy):
         else:
             energy_threshold = context.energy_threshold
         
-        high_energy_bars = identify_high_energy_bars(bar_energies, energy_threshold)
+        # Use continuity-based chorus detection (same as snap_to_beat)
+        high_energy_bars = self._detect_chorus_regions(bar_energies, energy_threshold)
         
         logger.info(
-            "[BEAT_ONLY] High-energy detection: %d/%d bars above P%.0f threshold",
+            "[BEAT_ONLY] Chorus detection: %d/%d bars (continuous regions, P%.0f threshold)",
             len(high_energy_bars), len(bar_energies), energy_percentile
         )
         
@@ -175,3 +176,43 @@ class BeatOnlyStrategy(SegmentationStrategy):
                 'segment_durations': segment_durations,
             },
         )
+    
+    def _detect_chorus_regions(
+        self, bar_energies: np.ndarray, energy_threshold: float, min_consecutive_bars: int = 4
+    ) -> set:
+        """
+        Detect chorus regions by identifying continuous high-energy segments.
+        Same logic as snap_to_beat strategy for consistency.
+        """
+        if len(bar_energies) == 0:
+            return set()
+        
+        # Convert to numpy array if needed
+        if not isinstance(bar_energies, np.ndarray):
+            bar_energies = np.array(bar_energies)
+        
+        # Identify which bars are above threshold
+        is_high_energy = bar_energies >= energy_threshold
+        
+        # Find continuous regions
+        chorus_bars = set()
+        current_start = None
+        consecutive_count = 0
+        
+        for i, is_high in enumerate(is_high_energy):
+            if is_high:
+                if current_start is None:
+                    current_start = i
+                consecutive_count += 1
+            else:
+                # End of a continuous segment
+                if consecutive_count >= min_consecutive_bars:
+                    chorus_bars.update(range(current_start, i))
+                current_start = None
+                consecutive_count = 0
+        
+        # Handle final segment
+        if consecutive_count >= min_consecutive_bars and current_start is not None:
+            chorus_bars.update(range(current_start, len(bar_energies)))
+        
+        return chorus_bars
