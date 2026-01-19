@@ -22,8 +22,8 @@ def read_requirements():
 
 setup(
     name="vocal-smart-splitter",
-    version="2.4.0",
-    description="智能人声分割器 - 基于人声内容和换气停顿的智能音频分割工具",
+    version="2.5.1",
+    description="智能人声分割器 - 基于人声内容和换气停顿的智能音频分割工具（支持多特征副歌检测）",
     long_description=read_readme(),
     long_description_content_type="text/markdown",
     author="BDM Team",
