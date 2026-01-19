@@ -1,7 +1,7 @@
 <!-- File: development.md -->
 <!-- AI-SUMMARY: 记录 Vocal Smart Splitter 的架构、流程、测试矩阵与演进规划。 -->
 
-# development.md — 技术路线与模块总览（更新于 2026-01-17）
+# development.md — 技术路线与模块总览（更新于 2026-01-18）
 
 本文档是工程事实的单一可信来源（SSOT），持续记录系统架构、实现约束与进度。所有涉及流程、参数或测试的改动，须同步更新此处。
 
@@ -15,6 +15,7 @@
 
 ## 2. 目录职责
 - `src/vocal_smart_splitter/core/`：主流程组件（SeamlessSplitter、PureVocalPauseDetector、EnhancedVocalSeparator、VocalPauseDetectorV2）；QualityController 保留为 legacy 兜底。
+- `src/vocal_smart_splitter/core/utils/`：`SegmentExporter` 与 `ResultBuilder` 等编排辅助工具。
 - `src/vocal_smart_splitter/utils/`：音频 IO、配置优先级、BPM 自适应参数、特征抽取。
 - `src/audio_cut/analysis/`：`TrackFeatureCache` 及构建器，集中缓存 BPM/MDD/RMS 等特征。
 - `src/audio_cut/utils/`：GPU 流水线（chunk 规划、CUDA streams、pinned buffer、inflight 限流）与 ORT Provider 注入。
@@ -34,7 +35,7 @@
 5. `audio_cut.cutting.finalize_cut_points` 对候选执行加权 NMS、静音守卫、最小间隔，输出守卫位移统计。
 6. `SeamlessSplitter._classify_segments_vocal_presence` 根据 RMS 活跃度估计 `_human/_music` 标签并记录调试信息。
 7. `segment_layout_refiner.refine_layout` 执行微碎片合并、软最小合并、软最大救援；如开启 `quality_control.local_boundary_refine`，再次细调边界。
-8. `_save_segments` 统一调用 `audio_export` 模块导出文件，默认追加 `_X.X`（秒，保留一位小数）后缀；落盘目录按 `<日期>_<时间>_<原音频名>` 命名。
+8. `SegmentExporter` 统一调用 `audio_export` 模块导出文件，默认追加 `_X.X`（秒，保留一位小数）后缀；落盘目录按 `<日期>_<时间>_<原音频名>` 命名。
 
 ## 4. 核心模块要点
 - **SeamlessSplitter**：统一调度入口，缓存 `segment_classification_debug`、`guard_shift_stats`、守卫调整明细，确保 GPU chunk 与整段流程可追踪。
@@ -42,6 +43,7 @@
 - **GPU Pipeline**：`PipelineConfig`/`PipelineContext` 管理 chunk 规划、CUDA stream、pinned buffer 与背压。
 - **SileroChunkVAD**：分块推理 + halo 裁剪 + 焦点窗口构造，仅在关键区间运行昂贵特征。
 - **ChunkFeatureBuilder/TrackFeatureCache**：集中管理 STFT/RMS/MDD 等特征，支持 GPU 批量计算与跨块拼接。
+- **SegmentExporter/ResultBuilder**：统一导出与结果字典构建，减少重复逻辑与手工拼接字段。
 - **segment_layout_refiner**：微碎片合并、软最小合并、软最大救援，复用 NMS 被抑制的 cut point；配合 `_last_suppressed_cut_points` 提升布局质量。
 - **输出目录策略**：`quick_start.py` 与 `run_splitter.py` 均使用 `<日期>_<时间>_<原音频名>` 创建输出目录，便于批量回归与部署一致。
 
@@ -80,7 +82,8 @@
   - **quick_start.py 更新**：支持 hybrid_mdd 模式选择与密度配置。
   - **Strategy 模式重构**：新增 `strategies/` 目录，实现 `SegmentationStrategy` 基类。
   - **方案 B (beat_only)**：高能量段纯节拍分割，低能量段用 MDD。
-  - **方案 C (snap_to_beat)**：MDD 切点吸附到节拍 + VAD 保护。
+  - **方案 C (snap_to_beat)**：MDD 切点吸附到节拍（优先吸附副歌/高能量段），支持 VAD 保护配置（副歌段自动放宽保护以确保卡点）。
+  - **SeamlessSplitter 重构完成**：Plan A (`mdd_start`) 策略提取，BeatAnalyzer/SegmentExporter/ResultBuilder 接入；详见 `docs/SeamlessSplitter 重构记录.md`。
 - **设计文档**：
   - `docs/hybrid_mdd_design.md` - 三种切点策略方案 (A/B/C) 对比。
   - `docs/hybrid_mdd_refactor_evaluation.md` - 重构评估报告。

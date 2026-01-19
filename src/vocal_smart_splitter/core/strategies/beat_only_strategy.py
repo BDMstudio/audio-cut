@@ -8,7 +8,13 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 
 import numpy as np
 
-from .base import SegmentationContext, SegmentationResult, SegmentationStrategy
+from .base import (
+    SegmentationContext,
+    SegmentationResult,
+    SegmentationStrategy,
+    deduplicate_and_convert_cuts,
+    identify_high_energy_bars,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -65,11 +71,7 @@ class BeatOnlyStrategy(SegmentationStrategy):
         else:
             energy_threshold = context.energy_threshold
         
-        # Identify high-energy bars
-        high_energy_bars: Set[int] = set()
-        for i, energy in enumerate(bar_energies):
-            if energy >= energy_threshold:
-                high_energy_bars.add(i)
+        high_energy_bars = identify_high_energy_bars(bar_energies, energy_threshold)
         
         logger.info(
             "[BEAT_ONLY] High-energy detection: %d/%d bars above P%.0f threshold",
@@ -99,7 +101,7 @@ class BeatOnlyStrategy(SegmentationStrategy):
                 # High-energy: add beat cut every N bars
                 if bars_since_last_cut >= bars_per_cut:
                     cut_time = float(bar_end)
-                    if cut_time < audio_duration and cut_time - last_cut_time >= min_segment_s:
+                    if cut_time <= audio_duration and cut_time - last_cut_time >= min_segment_s:
                         cut_times.append(cut_time)
                         cut_is_lib.append(True)  # This is a beat-aligned cut
                         last_cut_time = cut_time
@@ -119,7 +121,7 @@ class BeatOnlyStrategy(SegmentationStrategy):
                     low_energy_interval = bars_per_cut * 2  # Longer intervals for quiet sections
                     if bars_since_last_cut >= low_energy_interval:
                         cut_time = float(bar_end)
-                        if cut_time < audio_duration and cut_time - last_cut_time >= min_segment_s:
+                        if cut_time <= audio_duration and cut_time - last_cut_time >= min_segment_s:
                             cut_times.append(cut_time)
                             cut_is_lib.append(False)  # Not a _lib cut
                             last_cut_time = cut_time
@@ -127,58 +129,23 @@ class BeatOnlyStrategy(SegmentationStrategy):
         
         cut_times.append(audio_duration)  # End
         
-        # Remove duplicates and sort, maintaining lib flag association
-        cut_with_flags: List[Tuple[float, bool]] = [(0.0, False)]  # Start is never lib
+        cut_with_flags: List[Tuple[float, bool]] = [(0.0, False)]
         seen = {0.0}
         for i, t in enumerate(cut_times[1:-1]):
-            if t not in seen:
-                seen.add(t)
-                is_lib = cut_is_lib[i] if i < len(cut_is_lib) else False
-                cut_with_flags.append((t, is_lib))
-        cut_with_flags.append((audio_duration, False))  # End is never lib
-        
-        # Sort by time
-        cut_with_flags.sort(key=lambda x: x[0])
-        
-        # Convert to sample indices
-        cut_points_samples: List[int] = []
-        lib_flags: List[bool] = []
-        
-        for i, (t, is_lib) in enumerate(cut_with_flags):
-            sample_idx = int(t * sample_rate)
-            sample_idx = max(0, min(sample_idx, audio_len))
-            cut_points_samples.append(sample_idx)
-            
-            # lib_flags is per-segment (between cuts), so we track the END cut's lib status
-            if i > 0:
-                # Segment i-1 ends at cut i; mark if end cut is lib
-                lib_flags.append(is_lib)
-        
-        # Ensure first=0 and last=audio_len
-        if cut_points_samples[0] != 0:
-            cut_points_samples.insert(0, 0)
-            lib_flags.insert(0, False)
-        if cut_points_samples[-1] != audio_len:
-            cut_points_samples.append(audio_len)
-            # Last segment's lib flag already handled
-        
-        cut_points_samples = sorted(set(cut_points_samples))
-        
-        # Recalculate lib_flags after deduplication
-        # lib_flags needs to match number of segments
+            if t in seen:
+                continue
+            seen.add(t)
+            is_lib = cut_is_lib[i] if i < len(cut_is_lib) else False
+            cut_with_flags.append((t, is_lib))
+        cut_with_flags.append((audio_duration, False))
+
+        cut_points_samples, lib_flags = deduplicate_and_convert_cuts(
+            cut_with_flags,
+            sample_rate,
+            audio_len,
+        )
+
         num_segments = len(cut_points_samples) - 1
-        if len(lib_flags) != num_segments:
-            # Rebuild from cut_with_flags
-            time_to_lib = {t: is_lib for t, is_lib in cut_with_flags}
-            lib_flags = []
-            for i in range(num_segments):
-                end_time = cut_points_samples[i + 1] / float(sample_rate)
-                # Find closest matching time
-                is_lib = any(
-                    abs(end_time - t) < 0.1 and flag
-                    for t, flag in time_to_lib.items()
-                )
-                lib_flags.append(is_lib)
         
         # Calculate segment durations for logging
         segment_durations = [
@@ -208,4 +175,3 @@ class BeatOnlyStrategy(SegmentationStrategy):
                 'segment_durations': segment_durations,
             },
         )
-

@@ -5,7 +5,7 @@
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 import numpy as np
 
@@ -81,3 +81,72 @@ class SegmentationStrategy(ABC):
     def name(self) -> str:
         """Strategy identifier for logging/config."""
         pass
+
+
+def identify_high_energy_bars(
+    bar_energies: List[float],
+    energy_threshold: float,
+) -> Set[int]:
+    """Identify bar indices whose energy meets or exceeds the threshold."""
+    return {i for i, energy in enumerate(bar_energies) if energy >= energy_threshold}
+
+
+def deduplicate_and_convert_cuts(
+    cut_with_flags: List[Tuple[float, bool]],
+    sample_rate: int,
+    audio_len: int,
+    *,
+    time_tolerance_s: float = 0.1,
+) -> Tuple[List[int], List[bool]]:
+    """Deduplicate cut times, convert to samples, and align lib flags to segments."""
+    if sample_rate <= 0 or audio_len < 0:
+        return [0, max(0, audio_len)], []
+
+    audio_duration = audio_len / float(sample_rate)
+    if not cut_with_flags:
+        cut_with_flags = [(0.0, False), (audio_duration, False)]
+
+    unique: List[Tuple[float, bool]] = []
+    seen = set()
+    for t, flag in cut_with_flags:
+        if t in seen:
+            continue
+        seen.add(t)
+        unique.append((float(t), bool(flag)))
+
+    unique.sort(key=lambda x: x[0])
+    if not unique or unique[0][0] != 0.0:
+        unique.insert(0, (0.0, False))
+    if unique[-1][0] != audio_duration:
+        unique.append((audio_duration, False))
+
+    cut_points_samples: List[int] = []
+    lib_flags: List[bool] = []
+    for i, (t, is_lib) in enumerate(unique):
+        sample_idx = int(t * sample_rate)
+        sample_idx = max(0, min(sample_idx, audio_len))
+        cut_points_samples.append(sample_idx)
+        if i > 0:
+            lib_flags.append(is_lib)
+
+    if cut_points_samples[0] != 0:
+        cut_points_samples.insert(0, 0)
+        lib_flags.insert(0, False)
+    if cut_points_samples[-1] != audio_len:
+        cut_points_samples.append(audio_len)
+
+    cut_points_samples = sorted(set(cut_points_samples))
+
+    num_segments = len(cut_points_samples) - 1
+    if len(lib_flags) != num_segments:
+        time_to_lib = {t: is_lib for t, is_lib in unique}
+        lib_flags = []
+        for i in range(num_segments):
+            end_time = cut_points_samples[i + 1] / float(sample_rate)
+            is_lib = any(
+                abs(end_time - t) < time_tolerance_s and flag
+                for t, flag in time_to_lib.items()
+            )
+            lib_flags.append(is_lib)
+
+    return cut_points_samples, lib_flags

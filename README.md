@@ -87,6 +87,9 @@ Vocal Smart Splitter 支持高保真声部拆分、纯人声检测，以及带 M
   - `segment_vocal_activity_ratio`：阈值上调可减少误判；
   - `enforce_quiet_cut.*`：静音守卫参数（`guard_db`, `search_right_ms`）。
 - `segment_layout.*`：`micro_merge_s`/`soft_min_s`/`soft_max_s`/`min_gap_s`/`beat_snap_ms` 控制微碎片合并与节拍吸附。
+- `hybrid_mdd` (方案 C) 参数：
+  - `snap_tolerance_ms`：吸附容差（默认 200-500ms）；
+  - `vad_protection`：是否开启 VAD 保护（副歌高能量段会自动放宽以确保卡点）。
 - `output.*`：默认 `format: wav`；`wav.subtype`, `mp3.bitrate` 可单独配置；其他格式可在 `audio_export` 注册扩展。
 
 ## 调参指引
@@ -123,11 +126,15 @@ Vocal Smart Splitter 支持高保真声部拆分、纯人声检测，以及带 M
   ```
 
 ## 更新记录
+- **2026-01-18**
+  - 完成 SeamlessSplitter 重构：Plan A (`mdd_start`) 策略提取，BeatAnalyzer/SegmentExporter/ResultBuilder 接入
+  - 新增重构记录：`docs/SeamlessSplitter 重构记录.md`
 - **2026-01-17 (v2.5.0)**
   - 新增 `hybrid_mdd` 模式：MDD 人声分割 + librosa 节拍卡点增强
   - `_lib` 后缀标记节拍对齐的片段，适合 MV 剪辑
   - 密度控制 (low/medium/high) 通过 `unified.yaml` 或 quick_start 交互配置
   - 预过滤算法：节拍切点添加前检查是否会产生短片段
+  - **方案 C (snap_to_beat)**：仅在副歌/高能量段将 MDD 切点吸附到最近节拍（卡点感），主歌保持 MDD 原切点；`_lib` 标记仅出现在副歌。
   - 设计文档: `docs/hybrid_mdd_design.md`, `docs/hybrid_mdd_refactor_evaluation.md`
 - **2026-01-17 (v2.4.1)**
   - 代码清理：删除未生效的 `enable_bpm_adaptation` 和 `interlude_coverage_check` 算法

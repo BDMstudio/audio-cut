@@ -8,7 +8,13 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 
 import numpy as np
 
-from .base import SegmentationContext, SegmentationResult, SegmentationStrategy
+from .base import (
+    SegmentationContext,
+    SegmentationResult,
+    SegmentationStrategy,
+    deduplicate_and_convert_cuts,
+    identify_high_energy_bars,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -75,11 +81,7 @@ class SnapToBeatStrategy(SegmentationStrategy):
         else:
             energy_threshold = context.energy_threshold
         
-        # Identify high-energy bars (chorus regions)
-        high_energy_bars: Set[int] = set()
-        for i, energy in enumerate(bar_energies):
-            if energy >= energy_threshold:
-                high_energy_bars.add(i)
+        high_energy_bars = identify_high_energy_bars(bar_energies, energy_threshold)
         
         # Calculate beat interval for logging
         if len(beat_times) >= 2:
@@ -153,49 +155,23 @@ class SnapToBeatStrategy(SegmentationStrategy):
             snap_stats['snapped'], snap_stats['vad_blocked'], snap_stats['low_energy'], snap_stats['too_far']
         )
         
-        # Remove duplicates and sort
         cut_with_flags: List[Tuple[float, bool]] = [(0.0, False)]
         seen = {0.0}
         for i, t in enumerate(snapped_cuts[1:-1]):
-            if t not in seen:
-                seen.add(t)
-                is_lib = cut_is_lib[i] if i < len(cut_is_lib) else False
-                cut_with_flags.append((t, is_lib))
+            if t in seen:
+                continue
+            seen.add(t)
+            is_lib = cut_is_lib[i] if i < len(cut_is_lib) else False
+            cut_with_flags.append((t, is_lib))
         cut_with_flags.append((audio_duration, False))
-        cut_with_flags.sort(key=lambda x: x[0])
-        
-        # Convert to samples
-        cut_points_samples: List[int] = []
-        lib_flags: List[bool] = []
-        
-        for i, (t, is_lib) in enumerate(cut_with_flags):
-            sample_idx = int(t * sample_rate)
-            sample_idx = max(0, min(sample_idx, audio_len))
-            cut_points_samples.append(sample_idx)
-            if i > 0:
-                lib_flags.append(is_lib)
-        
-        # Ensure boundaries
-        if cut_points_samples[0] != 0:
-            cut_points_samples.insert(0, 0)
-            lib_flags.insert(0, False)
-        if cut_points_samples[-1] != audio_len:
-            cut_points_samples.append(audio_len)
-        
-        cut_points_samples = sorted(set(cut_points_samples))
-        
-        # Recalculate lib_flags after deduplication
+
+        cut_points_samples, lib_flags = deduplicate_and_convert_cuts(
+            cut_with_flags,
+            sample_rate,
+            audio_len,
+        )
+
         num_segments = len(cut_points_samples) - 1
-        if len(lib_flags) != num_segments:
-            time_to_lib = {t: is_lib for t, is_lib in cut_with_flags}
-            lib_flags = []
-            for i in range(num_segments):
-                end_time = cut_points_samples[i + 1] / float(sample_rate)
-                is_lib = any(
-                    abs(end_time - t) < 0.1 and flag
-                    for t, flag in time_to_lib.items()
-                )
-                lib_flags.append(is_lib)
         
         # Calculate stats
         segment_durations = [

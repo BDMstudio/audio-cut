@@ -13,7 +13,7 @@ from pathlib import Path
 import time
 import tempfile
 
-from audio_cut.analysis import TrackFeatureCache, build_feature_cache
+from audio_cut.analysis import BeatAnalyzer, TrackFeatureCache, build_feature_cache
 from audio_cut.utils.gpu_pipeline import PipelineConfig, PipelineContext, build_pipeline_context
 from audio_cut.cutting.refine import (
     CutAdjustment,
@@ -32,15 +32,17 @@ from ..utils.config_manager import get_config, get_librosa_onset_config, get_hyb
 from ..utils.audio_export import (
     build_export_options,
     ensure_supported_format,
-    export_audio,
 )
 from ..utils.audio_processor import AudioProcessor
 from .pure_vocal_pause_detector import PureVocalPauseDetector
 from .quality_controller import QualityController
 from .enhanced_vocal_separator import EnhancedVocalSeparator
-from .strategies.base import SegmentationContext, SegmentationResult
+from .strategies.base import SegmentationContext
 from .strategies.beat_only_strategy import BeatOnlyStrategy
+from .strategies.mdd_start_strategy import MddStartStrategy
 from .strategies.snap_to_beat_strategy import SnapToBeatStrategy
+from .utils.result_builder import ResultBuilder
+from .utils.segment_exporter import ExportResult, SegmentExporter
 
 logger = logging.getLogger(__name__)
 
@@ -56,6 +58,17 @@ class SeamlessSplitter:
         self.pure_vocal_detector = PureVocalPauseDetector(sample_rate)  # default to v2.2 configuration
         self.quality_controller = QualityController(sample_rate)
         self.separator = EnhancedVocalSeparator(sample_rate)
+        self.beat_analyzer = BeatAnalyzer(sample_rate=sample_rate)
+        self.segment_exporter = SegmentExporter(sample_rate=sample_rate)
+        self.result_builder = ResultBuilder(
+            precision_guard_avg_ms=PRECISION_GUARD_AVG_MS,
+            precision_guard_p95_ms=PRECISION_GUARD_P95_MS,
+        )
+        self._hybrid_strategies = {
+            'mdd_start': MddStartStrategy(),
+            'beat_only': BeatOnlyStrategy(),
+            'snap_to_beat': SnapToBeatStrategy(),
+        }
         self._last_segment_classification_debug: List[Dict[str, Any]] = []
         self._last_guard_shift_stats: Dict[str, float] = self._blank_guard_stats()
         self._last_guard_adjustments: List[Dict[str, float]] = []
@@ -510,63 +523,59 @@ class SeamlessSplitter:
             default=('mix_segments', 'vocal_segments', 'full_vocal', 'full_instrumental'),
         )
 
-        saved_files: List[str] = []
-
-        mix_segment_files: List[str] = []
+        export_result = ExportResult()
         if 'mix_segments' in export_flags:
-            mix_segment_files = self._save_segments(
+            export_result.mix_segment_files = self.segment_exporter.export_segments(
                 segments,
                 output_dir,
                 segment_is_vocal=segment_vocal_flags,
+                export_format=self._export_format,
+                export_options=self._export_options,
                 duration_map=segment_durations_map,
+                index_offset=1,
             )
-            saved_files.extend(mix_segment_files)
+            export_result.saved_files.extend(export_result.mix_segment_files)
 
-        vocal_segment_files: List[str] = []
         if 'vocal_segments' in export_flags:
             vocal_segments, _, _ = self._split_at_sample_level(vocal_track, final_cut_points)
-            vocal_segment_files = self._save_segments(
+            export_result.vocal_segment_files = self.segment_exporter.export_segments(
                 vocal_segments,
                 output_dir,
                 segment_is_vocal=segment_vocal_flags,
+                export_format=self._export_format,
+                export_options=self._export_options,
                 subdir='segments_vocal',
                 file_suffix='_vocal',
                 duration_map=segment_durations_map,
+                index_offset=1,
             )
-            saved_files.extend(vocal_segment_files)
+            export_result.saved_files.extend(export_result.vocal_segment_files)
 
-        # 5. Save full-length separated files
         input_name = Path(input_path).stem
-        full_vocal_file: Optional[str] = None
         if 'full_vocal' in export_flags:
             full_vocal_duration = len(vocal_track) / float(self.sample_rate)
             full_vocal_base = Path(output_dir) / f"{input_name}_{mode}_vocal_full_{full_vocal_duration:.1f}"
-            full_vocal_path = export_audio(
+            export_result.full_vocal_file = self.segment_exporter.export_full_track(
                 vocal_track,
-                self.sample_rate,
                 full_vocal_base,
-                self._export_format,
-                options=self._export_options,
+                export_format=self._export_format,
+                export_options=self._export_options,
             )
-            full_vocal_file = str(full_vocal_path)
-            saved_files.append(full_vocal_file)
+            export_result.saved_files.append(export_result.full_vocal_file)
 
-        full_instrumental_file: Optional[str] = None
         if 'full_instrumental' in export_flags:
             if separation_result.instrumental_track is not None:
                 instrumental_duration = len(separation_result.instrumental_track) / float(self.sample_rate)
                 full_instrumental_base = (
                     Path(output_dir) / f"{input_name}_{mode}_instrumental_{instrumental_duration:.1f}"
                 )
-                full_instrumental_path = export_audio(
+                export_result.full_instrumental_file = self.segment_exporter.export_full_track(
                     separation_result.instrumental_track,
-                    self.sample_rate,
                     full_instrumental_base,
-                    self._export_format,
-                    options=self._export_options,
+                    export_format=self._export_format,
+                    export_options=self._export_options,
                 )
-                full_instrumental_file = str(full_instrumental_path)
-                saved_files.append(full_instrumental_file)
+                export_result.saved_files.append(export_result.full_instrumental_file)
             else:
                 logger.warning("[EXPORT] Instrumental track unavailable; skip full_instrumental export.")
 
@@ -576,33 +585,25 @@ class SeamlessSplitter:
         cuts_seconds = [sample / float(self.sample_rate) for sample in cuts_samples]
         guard_adjustments = self._get_guard_adjustments()
 
-        result = {
-            'success': True, 'method': f'pure_vocal_split_{mode}', 'num_segments': len(segments),
-            'saved_files': saved_files,
-            'mix_segment_files': mix_segment_files,
-            'vocal_segment_files': vocal_segment_files,
-            'full_vocal_file': full_vocal_file,
-            'full_instrumental_file': full_instrumental_file,
-            'export_plan': sorted(export_flags),
-            'backend_used': separation_result.backend_used,
-            'separation_confidence': separation_result.separation_confidence, 'processing_time': total_time,
-            'segment_durations': segment_durations,
-            'segment_vocal_flags': segment_vocal_flags,
-            'segment_labels': ['human' if flag else 'music' for flag in segment_vocal_flags],
-            'segment_classification_debug': getattr(self, '_last_segment_classification_debug', []),
-            'guard_shift_stats': self._get_guard_shift_stats(),
-            'guard_adjustments': guard_adjustments,
-            'segment_layout_applied': bool(layout_applied),
-            'suppressed_cut_points_sec': [float(cut.t) for cut in self._last_suppressed_cut_points],
-            'cut_points_samples': cuts_samples,
-            'cut_points_sec': cuts_seconds,
-            'precision_guard_ok': bool(self._precision_guard_ok),
-            'precision_guard_threshold_ms': {
-                'avg': PRECISION_GUARD_AVG_MS,
-                'p95': PRECISION_GUARD_P95_MS,
-            },
-            'input_file': input_path, 'output_dir': output_dir
-        }
+        result = self.result_builder.build_base(
+            method=f'pure_vocal_split_{mode}',
+            export_result=export_result,
+            export_plan=sorted(export_flags),
+            processing_time=total_time,
+            input_path=input_path,
+            output_dir=output_dir,
+            cut_points_samples=cuts_samples,
+            cut_points_sec=cuts_seconds,
+            segment_durations=segment_durations,
+            segment_vocal_flags=segment_vocal_flags,
+            precision_guard_ok=bool(self._precision_guard_ok),
+            include_precision_guard_threshold=True,
+            guard_shift_stats=self._get_guard_shift_stats(),
+            guard_adjustments=guard_adjustments,
+            segment_classification_debug=getattr(self, '_last_segment_classification_debug', []),
+        )
+        result['segment_layout_applied'] = bool(layout_applied)
+        result['suppressed_cut_points_sec'] = [float(cut.t) for cut in self._last_suppressed_cut_points]
         result.update(gpu_meta)
         return result
 
@@ -653,14 +654,12 @@ class SeamlessSplitter:
         if 'full_vocal' in export_flags:
             vocal_duration = len(separation_result.vocal_track) / float(self.sample_rate)
             vocal_base = Path(output_dir) / f"{input_name}_vocal_{vocal_duration:.1f}"
-            vocal_path = export_audio(
+            full_vocal_file = self.segment_exporter.export_full_track(
                 separation_result.vocal_track,
-                self.sample_rate,
                 vocal_base,
-                self._export_format,
-                options=self._export_options,
+                export_format=self._export_format,
+                export_options=self._export_options,
             )
-            full_vocal_file = str(vocal_path)
             saved_files.append(full_vocal_file)
 
         full_instrumental_file: Optional[str] = None
@@ -668,14 +667,12 @@ class SeamlessSplitter:
             if separation_result.instrumental_track is not None:
                 instrumental_duration = len(separation_result.instrumental_track) / float(self.sample_rate)
                 instrumental_base = Path(output_dir) / f"{input_name}_instrumental_{instrumental_duration:.1f}"
-                instrumental_path = export_audio(
+                full_instrumental_file = self.segment_exporter.export_full_track(
                     separation_result.instrumental_track,
-                    self.sample_rate,
                     instrumental_base,
-                    self._export_format,
-                    options=self._export_options,
+                    export_format=self._export_format,
+                    export_options=self._export_options,
                 )
-                full_instrumental_file = str(instrumental_path)
                 saved_files.append(full_instrumental_file)
             else:
                 logger.warning("[EXPORT] Instrumental track unavailable; skip full_instrumental export.")
@@ -965,65 +962,60 @@ class SeamlessSplitter:
             export_plan,
             default=('mix_segments',),
         )
-        
-        Path(output_dir).mkdir(parents=True, exist_ok=True)
-        saved_files: List[str] = []
-        mix_segment_files: List[str] = []
-        
+
+        export_result = ExportResult()
         if 'mix_segments' in export_flags:
-            mix_segment_files = self._save_segments(
+            export_result.mix_segment_files = self.segment_exporter.export_segments(
                 segments,
                 output_dir,
                 segment_is_vocal=returned_flags,
+                export_format=self._export_format,
+                export_options=self._export_options,
                 duration_map=segment_durations_map,
+                index_offset=1,
             )
-            saved_files.extend(mix_segment_files)
-        
-        vocal_segment_files: List[str] = []
+            export_result.saved_files.extend(export_result.mix_segment_files)
+
         if 'vocal_segments' in export_flags and vocal_track is not None:
             vocal_segments, _, _ = self._split_at_sample_level(vocal_track, cut_points)
-            vocal_segment_files = self._save_segments(
+            export_result.vocal_segment_files = self.segment_exporter.export_segments(
                 vocal_segments,
                 output_dir,
                 segment_is_vocal=returned_flags,
+                export_format=self._export_format,
+                export_options=self._export_options,
                 subdir='segments_vocal',
                 file_suffix='_vocal',
                 duration_map=segment_durations_map,
+                index_offset=1,
             )
-            saved_files.extend(vocal_segment_files)
+            export_result.saved_files.extend(export_result.vocal_segment_files)
         
         processing_time = time.time() - start_time
         cuts_seconds = [sample / float(self.sample_rate) for sample in cut_points]
         
         # ========== 9. Build result ==========
-        result = {
-            'success': True,
-            'method': 'smart_segment_v2',
-            'num_segments': len(segments),
-            'saved_files': saved_files,
-            'mix_segment_files': mix_segment_files,
-            'vocal_segment_files': vocal_segment_files,
-            'export_plan': sorted(export_flags),
+        result = self.result_builder.build_base(
+            method='smart_segment_v2',
+            export_result=export_result,
+            export_plan=sorted(export_flags),
+            processing_time=processing_time,
+            input_path=input_path,
+            output_dir=output_dir,
+            cut_points_samples=list(cut_points),
+            cut_points_sec=cuts_seconds,
+            segment_durations=segment_durations,
+            segment_vocal_flags=returned_flags,
+            precision_guard_ok=True,
+        )
+        result.update({
             'use_vocal_preprocessing': use_vocal,
-            'processing_time': processing_time,
-            'segment_durations': segment_durations,
-            'segment_vocal_flags': returned_flags,
-            'segment_labels': ['human' if flag else 'music' for flag in returned_flags],
-            'cut_points_samples': list(cut_points),
-            'cut_points_sec': cuts_seconds,
-            # Smart segmentation metadata
             'bpm': tempo,
             'bar_duration_s': bar_duration,
             'density': density,
             'silence_boundaries': silence_boundaries,
-            'precision_guard_ok': True,
-            'input_file': input_path,
-            'output_dir': output_dir,
-        }
-        if separation_result is not None:
-            result['backend_used'] = separation_result.backend_used
-            result['separation_confidence'] = separation_result.separation_confidence
-            result.update(dict(separation_result.gpu_meta or {}))
+        })
+        result = self.result_builder.add_separation_metadata(result, separation_result)
         return result
 
     def _process_hybrid_mdd_split(
@@ -1051,7 +1043,6 @@ class SeamlessSplitter:
         start_time = time.time()
         self._precision_guard_ok = True
 
-        # ========== 0. Load configuration ==========
         hybrid_config = get_hybrid_mdd_config(density_override)
         enable_beat_cuts = hybrid_config['enable_beat_cuts']
         energy_percentile = hybrid_config['energy_percentile']
@@ -1059,249 +1050,93 @@ class SeamlessSplitter:
         hop_length = hybrid_config['beat_detection']['hop_length']
         time_signature = hybrid_config['beat_detection']['time_signature']
         snap_to_pause_ms = hybrid_config['beat_detection']['snap_to_pause_ms']
+        snap_tolerance_ms = hybrid_config['snap_tolerance_ms']
+        vad_protection = hybrid_config['vad_protection']
         lib_suffix = hybrid_config['labeling']['lib_suffix']
         lib_alignment = hybrid_config.get('lib_alignment', 'mdd_start')
 
-        logger.info("[HYBRID_MDD] Config: density=%s, enable_beat_cuts=%s, energy_percentile=%d, bars_per_cut=%d, lib_alignment=%s",
-                    hybrid_config['density'], enable_beat_cuts, energy_percentile, bars_per_cut, lib_alignment)
+        logger.info(
+            "[HYBRID_MDD] Config: density=%s, enable_beat_cuts=%s, energy_percentile=%d, bars_per_cut=%d, lib_alignment=%s",
+            hybrid_config['density'],
+            enable_beat_cuts,
+            energy_percentile,
+            bars_per_cut,
+            lib_alignment,
+        )
 
-        # ========== 1. Load original audio for beat detection ==========
         original_audio = self._load_and_resample_if_needed(input_path)
-        audio_duration = len(original_audio) / float(self.sample_rate)
 
-        # ========== 2. Perform vocal separation ==========
         separation_result = self.separator.separate_for_detection(original_audio)
         vocal_track = separation_result.vocal_track if separation_result.vocal_track is not None else original_audio
 
-        # ========== 3. Route to strategy based on lib_alignment ==========
-        if lib_alignment == 'beat_only':
-            # Plan B: Pure beat segmentation (ignore MDD)
-            logger.info("[HYBRID_MDD] Using beat_only strategy (Plan B)")
-            return self._process_hybrid_mdd_beat_only(
-                original_audio=original_audio,
-                vocal_track=vocal_track,
-                separation_result=separation_result,
-                hybrid_config=hybrid_config,
-                output_dir=output_dir,
-                input_path=input_path,
-                export_plan=export_plan,
-                start_time=start_time,
-            )
-
-        if lib_alignment == 'snap_to_beat':
-            # Plan C: MDD snap to beat with VAD protection
-            logger.info("[HYBRID_MDD] Using snap_to_beat strategy (Plan C)")
-            return self._process_hybrid_mdd_snap_to_beat(
-                original_audio=original_audio,
-                vocal_track=vocal_track,
-                separation_result=separation_result,
-                hybrid_config=hybrid_config,
-                output_dir=output_dir,
-                input_path=input_path,
-                export_plan=export_plan,
-                start_time=start_time,
-            )
-
-        # ========== Plan A: MDD start + beat end (default, existing logic) ==========
-        logger.info("[HYBRID_MDD] Using mdd_start strategy (Plan A)")
-
-        # ========== 4. Run standard MDD pipeline to get base cut points ==========
-        # Call MDD split to get base result (we reuse its cut points, not its exports)
         mdd_result = self._process_pure_vocal_split(
             input_path,
             output_dir,
             'v2.2_mdd',
-            export_plan=('none',),  # Skip all exports - we'll do our own with _lib suffix
+            export_plan=('none',),
         )
 
-        if not mdd_result.get('success'):
-            return mdd_result
-
-        # Get MDD cut points
-        mdd_cut_points_samples: List[int] = list(mdd_result.get('cut_points_samples', []))
-        mdd_cut_points_sec = [s / float(self.sample_rate) for s in mdd_cut_points_samples]
-
-        logger.info("[HYBRID_MDD] MDD provided %d cut points", len(mdd_cut_points_samples))
-
-        # ========== 2. Load original audio for beat detection ==========
-        original_audio = self._load_and_resample_if_needed(input_path)
-        audio_duration = len(original_audio) / float(self.sample_rate)
-
-        # Track which cut points are from librosa beat detection
-        lib_cut_flags: List[bool] = [False] * (len(mdd_cut_points_samples) - 1)  # Per segment
-
-        if not enable_beat_cuts:
-            logger.info("[HYBRID_MDD] Beat cuts disabled (density=low), using MDD cuts only")
-            final_cut_points = mdd_cut_points_samples
+        mdd_cut_points_samples: List[int] = []
+        if mdd_result.get('success'):
+            mdd_cut_points_samples = list(mdd_result.get('cut_points_samples', []))
+            logger.info("[HYBRID_MDD] MDD provided %d cut points", len(mdd_cut_points_samples))
         else:
-            # ========== 3. Beat detection on ORIGINAL audio ==========
-            tempo, beat_frames = librosa.beat.beat_track(y=original_audio, sr=self.sample_rate, hop_length=hop_length)
-            tempo = float(tempo) if not hasattr(tempo, '__len__') else float(tempo[0])
-            beat_times = librosa.frames_to_time(beat_frames, sr=self.sample_rate, hop_length=hop_length)
-            bar_duration = 60.0 / tempo * time_signature
-            logger.info("[HYBRID_MDD] BPM: %.1f, bar duration: %.2fs, detected %d beats", tempo, bar_duration, len(beat_times))
-
-            # ========== 4. Energy analysis to identify high-energy segments ==========
-            rms = librosa.feature.rms(y=original_audio, hop_length=hop_length)[0]
-            rms_times = librosa.frames_to_time(np.arange(len(rms)), sr=self.sample_rate, hop_length=hop_length)
-
-            # Calculate bar boundaries from ACTUAL detected beats (not from 0)
-            # Each bar = time_signature beats (e.g., 4 beats for 4/4 time)
-            # Group beats into bars
-            bar_times_list: List[float] = []
-            if len(beat_times) >= time_signature:
-                for i in range(0, len(beat_times), time_signature):
-                    bar_times_list.append(float(beat_times[i]))
-                # Add the end of the last bar
-                if len(beat_times) > 0:
-                    bar_times_list.append(float(audio_duration))
+            if lib_alignment == 'snap_to_beat':
+                logger.warning("[HYBRID_MDD] MDD failed for snap_to_beat; fallback to beat_only")
+                lib_alignment = 'beat_only'
+            if lib_alignment == 'beat_only':
+                logger.warning("[HYBRID_MDD] MDD failed, using beat-only cut generation")
+                mdd_cut_points_samples = []
             else:
-                # Fallback if not enough beats detected
-                bar_times_list = list(np.arange(0, audio_duration + bar_duration, bar_duration))
+                return mdd_result
 
-            bar_times = np.array(bar_times_list)
-            logger.info("[HYBRID_MDD] Generated %d bar boundaries from detected beats", len(bar_times))
+        beat_result = self.beat_analyzer.analyze(
+            original_audio,
+            sr=self.sample_rate,
+            hop_length=hop_length,
+            time_signature=time_signature,
+            energy_percentile=energy_percentile,
+            feature_cache=separation_result.feature_cache,
+        )
 
-            # Compute average RMS energy for each bar
-            bar_energies: List[float] = []
-            for i in range(len(bar_times) - 1):
-                bar_start = bar_times[i]
-                bar_end = bar_times[i + 1]
-                mask = (rms_times >= bar_start) & (rms_times < bar_end)
-                if np.any(mask):
-                    bar_energies.append(float(np.mean(rms[mask])))
-                else:
-                    bar_energies.append(0.0)
+        layout_cfg_raw = get_config('segment_layout', {}) or {}
+        if isinstance(layout_cfg_raw, dict):
+            layout_cfg_raw = dict(layout_cfg_raw)
+        else:
+            layout_cfg_raw = {}
 
-            # Determine energy threshold for beat cuts
-            if bar_energies:
-                energy_threshold = float(np.percentile(bar_energies, energy_percentile))
-            else:
-                energy_threshold = 0.0
+        min_segment_s = float(layout_cfg_raw.get('soft_min_s', 2.0))
 
-            # Identify high-energy bars
-            high_energy_bars: Set[int] = set()
-            for i, energy in enumerate(bar_energies):
-                if energy >= energy_threshold:
-                    high_energy_bars.add(i)
+        context = SegmentationContext(
+            audio=original_audio,
+            sample_rate=self.sample_rate,
+            tempo=beat_result.tempo,
+            beat_times=beat_result.beat_times,
+            bar_times=beat_result.bar_times,
+            bar_duration=beat_result.bar_duration,
+            mdd_cut_points_samples=mdd_cut_points_samples,
+            energy_threshold=beat_result.energy_threshold,
+            bar_energies=beat_result.bar_energies,
+            config={
+                'enable_beat_cuts': enable_beat_cuts,
+                'bars_per_cut': bars_per_cut,
+                'min_segment_s': min_segment_s,
+                'energy_percentile': energy_percentile,
+                'snap_to_pause_ms': snap_to_pause_ms,
+                'snap_tolerance_ms': snap_tolerance_ms,
+                'vad_protection': vad_protection,
+            },
+        )
 
-            logger.info("[HYBRID_MDD] High-energy bars: %d / %d (threshold P%d=%.4f)",
-                        len(high_energy_bars), len(bar_energies), energy_percentile, energy_threshold)
+        strategy = self._hybrid_strategies.get(lib_alignment)
+        if strategy is None:
+            logger.warning("[HYBRID_MDD] Unknown lib_alignment=%s, fallback to mdd_start", lib_alignment)
+            lib_alignment = 'mdd_start'
+            strategy = self._hybrid_strategies[lib_alignment]
 
-            # ========== 5. Generate beat cut points for high-energy segments ==========
-            # Use ACTUAL beat times for cut points, not bar boundaries
-            beat_cut_times: List[float] = []
-            bars_since_last_cut = 0
-
-            for bar_idx in range(len(bar_times) - 1):
-                bars_since_last_cut += 1
-                # Get the beat time at the END of this bar (start of next bar)
-                # This ensures the cut is at an actual detected beat
-                if bar_idx + 1 < len(bar_times):
-                    bar_end_time = bar_times[bar_idx + 1]
-                else:
-                    continue
-
-                if bar_idx in high_energy_bars and bars_since_last_cut >= bars_per_cut:
-                    beat_cut_times.append(float(bar_end_time))
-                    bars_since_last_cut = 0
-
-            logger.info("[HYBRID_MDD] Generated %d beat cut points", len(beat_cut_times))
-
-            # ========== 6. Merge MDD and beat cut points (with pre-filtering) ==========
-            # Get segment_layout constraints for pre-filtering
-            layout_cfg = get_config('segment_layout', {}) or {}
-            min_segment_s = float(layout_cfg.get('soft_min_s', 2.0))
-            min_segment_samples = int(min_segment_s * self.sample_rate)
-
-            # Convert beat cuts to samples
-            beat_cut_samples = [int(t * self.sample_rate) for t in beat_cut_times]
-
-            # Pre-filter: only add beat cut if it won't create a segment shorter than min_segment_s
-            # We need to check against ALL existing cuts (MDD + already added beat cuts)
-            snap_samples = int(snap_to_pause_ms / 1000.0 * self.sample_rate)
-
-            # Start with MDD cuts as base
-            all_cuts_sorted = sorted(mdd_cut_points_samples)
-            cut_sources: Dict[int, bool] = {c: False for c in all_cuts_sorted}  # False = MDD
-
-            added_beat_cuts = 0
-            skipped_too_close = 0
-
-            for beat_sample in sorted(beat_cut_samples):
-                if beat_sample <= 0 or beat_sample >= len(original_audio):
-                    continue
-
-                # Check if there's an MDD cut point nearby (duplicate)
-                is_duplicate = any(abs(beat_sample - mdd_sample) <= snap_samples for mdd_sample in mdd_cut_points_samples)
-                if is_duplicate:
-                    continue
-
-                # Find where this beat cut would be inserted
-                # Check distance to previous and next existing cuts
-                prev_cut = 0
-                next_cut = len(original_audio)
-
-                for existing_cut in all_cuts_sorted:
-                    if existing_cut < beat_sample:
-                        prev_cut = existing_cut
-                    elif existing_cut > beat_sample:
-                        next_cut = existing_cut
-                        break
-
-                # Calculate segment durations if we add this beat cut
-                duration_before = beat_sample - prev_cut
-                duration_after = next_cut - beat_sample
-
-                # Only add if BOTH resulting segments are long enough
-                if duration_before >= min_segment_samples and duration_after >= min_segment_samples:
-                    # Insert in sorted order
-                    import bisect
-                    bisect.insort(all_cuts_sorted, beat_sample)
-                    cut_sources[beat_sample] = True  # Mark as librosa cut
-                    added_beat_cuts += 1
-                else:
-                    skipped_too_close += 1
-                    logger.debug("[HYBRID_MDD] Skipped beat cut at %.2fs (would create short segment: %.2fs or %.2fs)",
-                                beat_sample / self.sample_rate, duration_before / self.sample_rate, duration_after / self.sample_rate)
-
-            logger.info("[HYBRID_MDD] Beat cuts: %d added, %d skipped (would create short segments)",
-                        added_beat_cuts, skipped_too_close)
-
-            final_cut_points = all_cuts_sorted
-
-            # Ensure first and last cut points are correct
-            if final_cut_points[0] != 0:
-                final_cut_points.insert(0, 0)
-            if final_cut_points[-1] != len(original_audio):
-                final_cut_points.append(len(original_audio))
-            final_cut_points = sorted(set(final_cut_points))
-
-            logger.info("[HYBRID_MDD] Final cut points: %d total (%d from MDD, %d from beat alignment)",
-                        len(final_cut_points), len(mdd_cut_points_samples), added_beat_cuts)
-
-            # Build lib flags for each segment (segment i is between cut i and cut i+1)
-            # A segment is marked as lib if its END cut point is from librosa
-            lib_cut_flags = []
-            for i in range(len(final_cut_points) - 1):
-                end_cut = final_cut_points[i + 1]
-                is_lib = cut_sources.get(end_cut, False)
-                lib_cut_flags.append(is_lib)
-
-        # ========== 7. Classify segments as human/music ==========
-        # Reuse vocal track from MDD result if available
-        vocal_track = None
-        separation_result = None
-        if hasattr(self, '_last_separation_result'):
-            separation_result = self._last_separation_result
-            if separation_result and separation_result.vocal_track is not None:
-                vocal_track = separation_result.vocal_track
-
-        # If no cached result, perform separation
-        if vocal_track is None:
-            separation_result = self.separator.separate_for_detection(original_audio)
-            if separation_result.vocal_track is not None:
-                vocal_track = separation_result.vocal_track
+        seg_result = strategy.generate_cut_points(context)
+        final_cut_points = list(seg_result.cut_points_samples)
+        lib_cut_flags = list(seg_result.lib_flags)
 
         segment_vocal_flags = self._classify_segments_vocal_presence(
             vocal_track if vocal_track is not None else original_audio,
@@ -1312,25 +1147,18 @@ class SeamlessSplitter:
             original_audio=original_audio,
         )
 
-        # ========== 8. Apply segment layout refinement (merge short segments) ==========
-        # Load segment_layout config
-        layout_cfg_raw = get_config('segment_layout', {}) or {}
-        if isinstance(layout_cfg_raw, dict):
-            layout_cfg_raw = dict(layout_cfg_raw)
-        else:
-            layout_cfg_raw = {}
-
         micro_merge_s = float(layout_cfg_raw.get('micro_merge_s', 2.0))
-        soft_min_s = float(layout_cfg_raw.get('soft_min_s', 2.0))
+        soft_min_s = min_segment_s
 
         if micro_merge_s > 0 and len(final_cut_points) > 2:
-            logger.info("[HYBRID_MDD] Applying segment layout refinement (micro_merge=%.1fs, soft_min=%.1fs)",
-                        micro_merge_s, soft_min_s)
+            logger.info(
+                "[HYBRID_MDD] Applying segment layout refinement (micro_merge=%.1fs, soft_min=%.1fs)",
+                micro_merge_s,
+                soft_min_s,
+            )
 
-            # Merge segments shorter than micro_merge_s
             merged_cut_points: List[int] = [final_cut_points[0]]
             merged_lib_flags: List[bool] = []
-            # Track if we're in a merge chain (any previous segment was merged into current)
             current_segment_was_merged = False
 
             for i in range(len(final_cut_points) - 1):
@@ -1339,32 +1167,32 @@ class SeamlessSplitter:
                 duration_s = (end_sample - start_sample) / float(self.sample_rate)
 
                 if duration_s < micro_merge_s and i < len(final_cut_points) - 2:
-                    # Merge with next segment: skip this cut point
-                    # IMPORTANT: When we merge, the _lib status is LOST because
-                    # the merged segment no longer ends at a beat boundary
                     current_segment_was_merged = True
-                    logger.debug("[HYBRID_MDD] Merging short segment %d (%.1fs) - _lib flag discarded", i, duration_s)
+                    logger.debug(
+                        "[HYBRID_MDD] Merging short segment %d (%.1fs) - _lib flag discarded",
+                        i,
+                        duration_s,
+                    )
                 else:
                     merged_cut_points.append(end_sample)
-                    # If this segment absorbed a merged segment, it loses _lib status
-                    # because it no longer ends at the original beat boundary
                     if current_segment_was_merged:
-                        merged_lib_flags.append(False)  # Discard _lib status
+                        merged_lib_flags.append(False)
                     elif i < len(lib_cut_flags):
                         merged_lib_flags.append(lib_cut_flags[i])
                     else:
                         merged_lib_flags.append(False)
-                    current_segment_was_merged = False  # Reset for next segment
+                    current_segment_was_merged = False
 
-            # Update the data
             if len(merged_cut_points) != len(final_cut_points):
-                logger.info("[HYBRID_MDD] Merged %d short segments: %d → %d cut points",
-                            len(final_cut_points) - len(merged_cut_points),
-                            len(final_cut_points), len(merged_cut_points))
+                logger.info(
+                    "[HYBRID_MDD] Merged %d short segments: %d → %d cut points",
+                    len(final_cut_points) - len(merged_cut_points),
+                    len(final_cut_points),
+                    len(merged_cut_points),
+                )
                 final_cut_points = merged_cut_points
                 lib_cut_flags = merged_lib_flags
 
-                # Re-classify after merging
                 segment_vocal_flags = self._classify_segments_vocal_presence(
                     vocal_track if vocal_track is not None else original_audio,
                     final_cut_points,
@@ -1374,7 +1202,6 @@ class SeamlessSplitter:
                     original_audio=original_audio,
                 )
 
-        # ========== 9. Split and export with _lib suffix for beat cuts ==========
         segments, returned_flags, _ = self._split_at_sample_level(
             original_audio,
             final_cut_points,
@@ -1389,640 +1216,123 @@ class SeamlessSplitter:
             default=('mix_segments', 'vocal_segments', 'full_vocal'),
         )
 
-        Path(output_dir).mkdir(parents=True, exist_ok=True)
-        saved_files: List[str] = []
-        mix_segment_files: List[str] = []
-
+        export_result = ExportResult()
         if 'mix_segments' in export_flags:
-            mix_segment_files = self._save_segments_with_lib_suffix(
+            export_result.mix_segment_files = self.segment_exporter.export_segments(
                 segments,
                 output_dir,
                 segment_is_vocal=returned_flags if returned_flags else segment_vocal_flags,
+                export_format=self._export_format,
+                export_options=self._export_options,
                 lib_flags=lib_cut_flags,
                 lib_suffix=lib_suffix,
                 duration_map=segment_durations_map,
+                index_offset=0,
+                always_append_duration=True,
             )
-            saved_files.extend(mix_segment_files)
+            export_result.saved_files.extend(export_result.mix_segment_files)
 
-        vocal_segment_files: List[str] = []
         if 'vocal_segments' in export_flags and vocal_track is not None:
             vocal_segments, _, _ = self._split_at_sample_level(vocal_track, final_cut_points)
-            vocal_segment_files = self._save_segments_with_lib_suffix(
+            export_result.vocal_segment_files = self.segment_exporter.export_segments(
                 vocal_segments,
                 output_dir,
                 segment_is_vocal=returned_flags if returned_flags else segment_vocal_flags,
+                export_format=self._export_format,
+                export_options=self._export_options,
                 lib_flags=lib_cut_flags,
                 lib_suffix=lib_suffix,
                 subdir='segments_vocal',
                 file_suffix='_vocal',
                 duration_map=segment_durations_map,
+                index_offset=0,
+                always_append_duration=True,
             )
-            saved_files.extend(vocal_segment_files)
+            export_result.saved_files.extend(export_result.vocal_segment_files)
 
-        # Export full vocal/instrumental
         input_name = Path(input_path).stem
-        full_vocal_file: Optional[str] = None
         if 'full_vocal' in export_flags and vocal_track is not None:
             full_vocal_duration = len(vocal_track) / float(self.sample_rate)
             full_vocal_base = Path(output_dir) / f"{input_name}_hybrid_mdd_vocal_full_{full_vocal_duration:.1f}"
-            full_vocal_path = export_audio(
+            export_result.full_vocal_file = self.segment_exporter.export_full_track(
                 vocal_track,
-                self.sample_rate,
                 full_vocal_base,
-                self._export_format,
-                options=self._export_options,
+                export_format=self._export_format,
+                export_options=self._export_options,
             )
-            full_vocal_file = str(full_vocal_path)
-            saved_files.append(full_vocal_file)
+            export_result.saved_files.append(export_result.full_vocal_file)
 
         processing_time = time.time() - start_time
         cuts_seconds = [sample / float(self.sample_rate) for sample in final_cut_points]
 
-        # Count lib segments
-        lib_segment_count = sum(1 for f in lib_cut_flags if f)
-
-        result = {
-            'success': True,
-            'method': 'hybrid_mdd',
-            'num_segments': len(segments),
-            'saved_files': saved_files,
-            'mix_segment_files': mix_segment_files,
-            'vocal_segment_files': vocal_segment_files,
-            'full_vocal_file': full_vocal_file,
-            'export_plan': sorted(export_flags),
-            'processing_time': processing_time,
-            'segment_durations': segment_durations,
-            'segment_vocal_flags': returned_flags if returned_flags else segment_vocal_flags,
-            'segment_labels': ['human' if flag else 'music' for flag in (returned_flags or segment_vocal_flags)],
-            'segment_lib_flags': lib_cut_flags,
-            'lib_segment_count': lib_segment_count,
-            'cut_points_samples': list(final_cut_points),
-            'cut_points_sec': cuts_seconds,
-            'hybrid_config': {
-                'density': hybrid_config['density'],
-                'enable_beat_cuts': enable_beat_cuts,
-                'energy_percentile': energy_percentile,
-                'bars_per_cut': bars_per_cut,
-            },
-            'precision_guard_ok': True,
-            'input_file': input_path,
-            'output_dir': output_dir,
+        method_name = 'hybrid_mdd'
+        hybrid_meta = {
+            'density': hybrid_config['density'],
+            'enable_beat_cuts': enable_beat_cuts,
+            'energy_percentile': energy_percentile,
+            'bars_per_cut': bars_per_cut,
         }
+        beat_analysis = None
+        strategy_name = None
 
-        if separation_result is not None:
-            result['backend_used'] = separation_result.backend_used
-            result['separation_confidence'] = separation_result.separation_confidence
-            result.update(dict(separation_result.gpu_meta or {}))
-
-        logger.info("[HYBRID_MDD] Completed: %d segments (%d with _lib suffix), processing_time=%.1fs",
-                    len(segments), lib_segment_count, processing_time)
-        return result
-
-    def _process_hybrid_mdd_beat_only(
-        self,
-        original_audio: np.ndarray,
-        vocal_track: np.ndarray,
-        separation_result: Any,
-        hybrid_config: Dict[str, Any],
-        output_dir: str,
-        input_path: str,
-        export_plan: Optional[Sequence[str]],
-        start_time: float,
-    ) -> Dict:
-        """
-        Plan B: Beat segmentation ONLY for high-energy (exciting) segments.
-        
-        Uses MDD-based cuts for low-energy segments and pure beat segmentation
-        for high-energy (chorus/exciting) segments only.
-        
-        Args:
-            original_audio: Original audio array (already loaded)
-            vocal_track: Separated vocal track
-            separation_result: Result from vocal separation
-            hybrid_config: Hybrid MDD configuration
-            output_dir: Output directory path
-            input_path: Input file path
-            export_plan: Export plan configuration
-            start_time: Processing start time for timing
-            
-        Returns:
-            Result dictionary with cut points and exported files
-        """
-        hop_length = hybrid_config['beat_detection']['hop_length']
-        time_signature = hybrid_config['beat_detection']['time_signature']
-        bars_per_cut = hybrid_config['bars_per_cut']
-        energy_percentile = hybrid_config['energy_percentile']
-        lib_suffix = hybrid_config['labeling']['lib_suffix']
-        
-        audio_duration = len(original_audio) / float(self.sample_rate)
-        
-        # ========== 1. Run MDD to get base cut points for low-energy segments ==========
-        logger.info("[BEAT_ONLY] Running MDD pipeline for base cut points...")
-        mdd_result = self._process_pure_vocal_split(
-            input_path,
-            output_dir,
-            'v2.2_mdd',
-            export_plan=('none',),  # Skip all exports
-        )
-        
-        mdd_cut_points_samples: List[int] = []
-        if mdd_result.get('success'):
-            mdd_cut_points_samples = list(mdd_result.get('cut_points_samples', []))
-            logger.info("[BEAT_ONLY] MDD provided %d base cut points", len(mdd_cut_points_samples))
-        else:
-            logger.warning("[BEAT_ONLY] MDD failed, will use beat-only for all segments")
-        
-        # ========== 2. Beat detection on original audio ==========
-        tempo, beat_frames = librosa.beat.beat_track(
-            y=original_audio, sr=self.sample_rate, hop_length=hop_length
-        )
-        tempo = float(tempo) if not hasattr(tempo, '__len__') else float(tempo[0])
-        beat_times = librosa.frames_to_time(beat_frames, sr=self.sample_rate, hop_length=hop_length)
-        bar_duration = 60.0 / tempo * time_signature
-        
-        logger.info("[BEAT_ONLY] BPM: %.1f, bar duration: %.2fs, detected %d beats",
-                    tempo, bar_duration, len(beat_times))
-        
-        # ========== 3. Generate bar boundaries from beats ==========
-        bar_times_list: List[float] = []
-        if len(beat_times) >= time_signature:
-            for i in range(0, len(beat_times), time_signature):
-                bar_times_list.append(float(beat_times[i]))
-            bar_times_list.append(float(audio_duration))
-        else:
-            # Fallback if not enough beats detected
-            bar_times_list = list(np.arange(0, audio_duration + bar_duration, bar_duration))
-        
-        bar_times = np.array(bar_times_list)
-        
-        # ========== 4. Compute bar energies for high/low energy detection ==========
-        rms = librosa.feature.rms(y=original_audio, hop_length=hop_length)[0]
-        rms_times = librosa.frames_to_time(np.arange(len(rms)), sr=self.sample_rate, hop_length=hop_length)
-        
-        bar_energies: List[float] = []
-        for i in range(len(bar_times) - 1):
-            bar_start = bar_times[i]
-            bar_end = bar_times[i + 1]
-            mask = (rms_times >= bar_start) & (rms_times < bar_end)
-            if np.any(mask):
-                bar_energies.append(float(np.mean(rms[mask])))
-            else:
-                bar_energies.append(0.0)
-        
-        energy_threshold = float(np.percentile(bar_energies, energy_percentile)) if bar_energies else 0.0
-        
-        # ========== 5. Use BeatOnlyStrategy with energy filtering ==========
-        layout_cfg = get_config('segment_layout', {}) or {}
-        min_segment_s = float(layout_cfg.get('soft_min_s', 2.0))
-        
-        context = SegmentationContext(
-            audio=original_audio,
-            sample_rate=self.sample_rate,
-            tempo=tempo,
-            beat_times=beat_times,
-            bar_times=bar_times,
-            bar_duration=bar_duration,
-            mdd_cut_points_samples=mdd_cut_points_samples,  # Pass MDD cuts for low-energy segments
-            energy_threshold=energy_threshold,
-            bar_energies=bar_energies,
-            config={
-                'bars_per_cut': bars_per_cut,
-                'min_segment_s': min_segment_s,
-                'energy_percentile': energy_percentile,
-            },
-        )
-        
-        strategy = BeatOnlyStrategy()
-        result = strategy.generate_cut_points(context)
-        
-        final_cut_points = result.cut_points_samples
-        lib_cut_flags = result.lib_flags
-        
-        logger.info("[BEAT_ONLY] Strategy generated %d cut points, %d segments",
-                    len(final_cut_points), len(lib_cut_flags))
-        
-        # ========== 5. Classify segments as human/music ==========
-        segment_vocal_flags = self._classify_segments_vocal_presence(
-            vocal_track,
-            final_cut_points,
-            marker_segments=None,
-            pure_music_segments=None,
-            instrumental_audio=separation_result.instrumental_track if separation_result else None,
-            original_audio=original_audio,
-        )
-        
-        # ========== 6. Split and export ==========
-        segments, returned_flags, _ = self._split_at_sample_level(
-            original_audio,
-            final_cut_points,
-            segment_flags=segment_vocal_flags,
-        )
-        
-        segment_durations = [len(seg) / float(self.sample_rate) for seg in segments]
-        segment_durations_map = {i: duration for i, duration in enumerate(segment_durations)}
-        
-        export_flags = self._normalize_export_plan(
-            export_plan,
-            default=('mix_segments', 'vocal_segments', 'full_vocal'),
-        )
-        
-        Path(output_dir).mkdir(parents=True, exist_ok=True)
-        saved_files: List[str] = []
-        mix_segment_files: List[str] = []
-        
-        if 'mix_segments' in export_flags:
-            mix_segment_files = self._save_segments_with_lib_suffix(
-                segments,
-                output_dir,
-                segment_is_vocal=returned_flags if returned_flags else segment_vocal_flags,
-                lib_flags=lib_cut_flags,
-                lib_suffix=lib_suffix,
-                duration_map=segment_durations_map,
-            )
-            saved_files.extend(mix_segment_files)
-        
-        vocal_segment_files: List[str] = []
-        if 'vocal_segments' in export_flags and vocal_track is not None:
-            vocal_segments, _, _ = self._split_at_sample_level(vocal_track, final_cut_points)
-            vocal_segment_files = self._save_segments_with_lib_suffix(
-                vocal_segments,
-                output_dir,
-                segment_is_vocal=returned_flags if returned_flags else segment_vocal_flags,
-                lib_flags=lib_cut_flags,
-                lib_suffix=lib_suffix,
-                subdir='segments_vocal',
-                file_suffix='_vocal',
-                duration_map=segment_durations_map,
-            )
-            saved_files.extend(vocal_segment_files)
-        
-        # Export full vocal
-        input_name = Path(input_path).stem
-        full_vocal_file: Optional[str] = None
-        if 'full_vocal' in export_flags and vocal_track is not None:
-            full_vocal_duration = len(vocal_track) / float(self.sample_rate)
-            full_vocal_base = Path(output_dir) / f"{input_name}_hybrid_mdd_vocal_full_{full_vocal_duration:.1f}"
-            full_vocal_path = export_audio(
-                vocal_track,
-                self.sample_rate,
-                full_vocal_base,
-                self._export_format,
-                options=self._export_options,
-            )
-            full_vocal_file = str(full_vocal_path)
-            saved_files.append(full_vocal_file)
-        
-        processing_time = time.time() - start_time
-        cuts_seconds = [sample / float(self.sample_rate) for sample in final_cut_points]
-        
-        lib_segment_count = sum(1 for f in lib_cut_flags if f)
-        
-        result_dict = {
-            'success': True,
-            'method': 'hybrid_mdd_beat_only',
-            'strategy': 'beat_only',
-            'num_segments': len(segments),
-            'saved_files': saved_files,
-            'mix_segment_files': mix_segment_files,
-            'vocal_segment_files': vocal_segment_files,
-            'full_vocal_file': full_vocal_file,
-            'export_plan': sorted(export_flags),
-            'processing_time': processing_time,
-            'segment_durations': segment_durations,
-            'segment_vocal_flags': returned_flags if returned_flags else segment_vocal_flags,
-            'segment_labels': ['human' if flag else 'music' for flag in (returned_flags or segment_vocal_flags)],
-            'segment_lib_flags': lib_cut_flags,
-            'lib_segment_count': lib_segment_count,
-            'cut_points_samples': list(final_cut_points),
-            'cut_points_sec': cuts_seconds,
-            'hybrid_config': {
+        if lib_alignment == 'beat_only':
+            method_name = 'hybrid_mdd_beat_only'
+            hybrid_meta = {
                 'density': hybrid_config['density'],
                 'lib_alignment': 'beat_only',
                 'bars_per_cut': bars_per_cut,
-            },
-            'beat_analysis': {
-                'bpm': tempo,
-                'bar_duration_s': bar_duration,
-                'num_bars': len(bar_times),
-            },
-            'precision_guard_ok': True,
-            'input_file': input_path,
-            'output_dir': output_dir,
-        }
-        
-        if separation_result is not None:
-            result_dict['backend_used'] = separation_result.backend_used
-            result_dict['separation_confidence'] = separation_result.separation_confidence
-            result_dict.update(dict(separation_result.gpu_meta or {}))
-        
-        logger.info("[BEAT_ONLY] Completed: %d segments (%d with _lib high-energy, %d low-energy), processing_time=%.1fs",
-                    len(segments), lib_segment_count, len(segments) - lib_segment_count, processing_time)
-        return result_dict
-
-    def _process_hybrid_mdd_snap_to_beat(
-        self,
-        original_audio: np.ndarray,
-        vocal_track: np.ndarray,
-        separation_result: Any,
-        hybrid_config: Dict[str, Any],
-        output_dir: str,
-        input_path: str,
-        export_plan: Optional[Sequence[str]],
-        start_time: float,
-    ) -> Dict:
-        """
-        Plan C: MDD snap to beat with VAD protection using SnapToBeatStrategy.
-        
-        MDD-detected cut points are snapped to the nearest bar boundary
-        if within the snap tolerance. VAD protection prevents cutting vocals.
-        
-        Args:
-            original_audio: Original audio array (already loaded)
-            vocal_track: Separated vocal track
-            separation_result: Result from vocal separation
-            hybrid_config: Hybrid MDD configuration
-            output_dir: Output directory path
-            input_path: Input file path
-            export_plan: Export plan configuration
-            start_time: Processing start time for timing
-            
-        Returns:
-            Result dictionary with cut points and exported files
-        """
-        hop_length = hybrid_config['beat_detection']['hop_length']
-        time_signature = hybrid_config['beat_detection']['time_signature']
-        bars_per_cut = hybrid_config['bars_per_cut']
-        energy_percentile = hybrid_config['energy_percentile']
-        snap_tolerance_ms = hybrid_config['snap_tolerance_ms']
-        vad_protection = hybrid_config['vad_protection']
-        lib_suffix = hybrid_config['labeling']['lib_suffix']
-        
-        audio_duration = len(original_audio) / float(self.sample_rate)
-        
-        # ========== 1. Run MDD to get base cut points ==========
-        logger.info("[SNAP_TO_BEAT] Running MDD pipeline for base cut points...")
-        mdd_result = self._process_pure_vocal_split(
-            input_path,
-            output_dir,
-            'v2.2_mdd',
-            export_plan=('none',),
-        )
-        
-        mdd_cut_points_samples: List[int] = []
-        if mdd_result.get('success'):
-            mdd_cut_points_samples = list(mdd_result.get('cut_points_samples', []))
-            logger.info("[SNAP_TO_BEAT] MDD provided %d base cut points", len(mdd_cut_points_samples))
-        else:
-            logger.warning("[SNAP_TO_BEAT] MDD failed, falling back to beat-only")
-            return self._process_hybrid_mdd_beat_only(
-                original_audio, vocal_track, separation_result, hybrid_config,
-                output_dir, input_path, export_plan, start_time
-            )
-        
-        # ========== 2. Beat detection on original audio ==========
-        tempo, beat_frames = librosa.beat.beat_track(
-            y=original_audio, sr=self.sample_rate, hop_length=hop_length
-        )
-        tempo = float(tempo) if not hasattr(tempo, '__len__') else float(tempo[0])
-        beat_times = librosa.frames_to_time(beat_frames, sr=self.sample_rate, hop_length=hop_length)
-        bar_duration = 60.0 / tempo * time_signature
-        
-        logger.info("[SNAP_TO_BEAT] BPM: %.1f, bar duration: %.2fs, detected %d beats",
-                    tempo, bar_duration, len(beat_times))
-        
-        # ========== 3. Generate bar boundaries from beats ==========
-        bar_times_list: List[float] = []
-        if len(beat_times) >= time_signature:
-            for i in range(0, len(beat_times), time_signature):
-                bar_times_list.append(float(beat_times[i]))
-            bar_times_list.append(float(audio_duration))
-        else:
-            bar_times_list = list(np.arange(0, audio_duration + bar_duration, bar_duration))
-        
-        bar_times = np.array(bar_times_list)
-        
-        # ========== 4. Compute bar energies ==========
-        rms = librosa.feature.rms(y=original_audio, hop_length=hop_length)[0]
-        rms_times = librosa.frames_to_time(np.arange(len(rms)), sr=self.sample_rate, hop_length=hop_length)
-        
-        bar_energies: List[float] = []
-        for i in range(len(bar_times) - 1):
-            bar_start = bar_times[i]
-            bar_end = bar_times[i + 1]
-            mask = (rms_times >= bar_start) & (rms_times < bar_end)
-            if np.any(mask):
-                bar_energies.append(float(np.mean(rms[mask])))
-            else:
-                bar_energies.append(0.0)
-        
-        energy_threshold = float(np.percentile(bar_energies, energy_percentile)) if bar_energies else 0.0
-        
-        # ========== 5. Use SnapToBeatStrategy ==========
-        layout_cfg = get_config('segment_layout', {}) or {}
-        min_segment_s = float(layout_cfg.get('soft_min_s', 2.0))
-        
-        context = SegmentationContext(
-            audio=original_audio,
-            sample_rate=self.sample_rate,
-            tempo=tempo,
-            beat_times=beat_times,
-            bar_times=bar_times,
-            bar_duration=bar_duration,
-            mdd_cut_points_samples=mdd_cut_points_samples,
-            energy_threshold=energy_threshold,
-            bar_energies=bar_energies,
-            config={
-                'bars_per_cut': bars_per_cut,
-                'min_segment_s': min_segment_s,
-                'energy_percentile': energy_percentile,
-                'snap_tolerance_ms': snap_tolerance_ms,
-                'vad_protection': vad_protection,
-            },
-        )
-        
-        strategy = SnapToBeatStrategy()
-        result = strategy.generate_cut_points(context)
-        
-        final_cut_points = result.cut_points_samples
-        lib_cut_flags = result.lib_flags
-        
-        logger.info("[SNAP_TO_BEAT] Strategy generated %d cut points, %d segments",
-                    len(final_cut_points), len(lib_cut_flags))
-        
-        # ========== 6. Classify segments as human/music ==========
-        segment_vocal_flags = self._classify_segments_vocal_presence(
-            vocal_track,
-            final_cut_points,
-            marker_segments=None,
-            pure_music_segments=None,
-            instrumental_audio=separation_result.instrumental_track if separation_result else None,
-            original_audio=original_audio,
-        )
-        
-        # ========== 7. Split and export ==========
-        segments, returned_flags, _ = self._split_at_sample_level(
-            original_audio,
-            final_cut_points,
-            segment_flags=segment_vocal_flags,
-        )
-        
-        segment_durations = [len(seg) / float(self.sample_rate) for seg in segments]
-        segment_durations_map = {i: duration for i, duration in enumerate(segment_durations)}
-        
-        export_flags = self._normalize_export_plan(
-            export_plan,
-            default=('mix_segments', 'vocal_segments', 'full_vocal'),
-        )
-        
-        Path(output_dir).mkdir(parents=True, exist_ok=True)
-        saved_files: List[str] = []
-        mix_segment_files: List[str] = []
-        
-        if 'mix_segments' in export_flags:
-            mix_segment_files = self._save_segments_with_lib_suffix(
-                segments,
-                output_dir,
-                segment_is_vocal=returned_flags if returned_flags else segment_vocal_flags,
-                lib_flags=lib_cut_flags,
-                lib_suffix=lib_suffix,
-                duration_map=segment_durations_map,
-            )
-            saved_files.extend(mix_segment_files)
-        
-        vocal_segment_files: List[str] = []
-        if 'vocal_segments' in export_flags and vocal_track is not None:
-            vocal_segments, _, _ = self._split_at_sample_level(vocal_track, final_cut_points)
-            vocal_segment_files = self._save_segments_with_lib_suffix(
-                vocal_segments,
-                output_dir,
-                segment_is_vocal=returned_flags if returned_flags else segment_vocal_flags,
-                lib_flags=lib_cut_flags,
-                lib_suffix=lib_suffix,
-                subdir='segments_vocal',
-                file_suffix='_vocal',
-                duration_map=segment_durations_map,
-            )
-            saved_files.extend(vocal_segment_files)
-        
-        # Export full vocal
-        input_name = Path(input_path).stem
-        full_vocal_file: Optional[str] = None
-        if 'full_vocal' in export_flags and vocal_track is not None:
-            full_vocal_duration = len(vocal_track) / float(self.sample_rate)
-            full_vocal_base = Path(output_dir) / f"{input_name}_hybrid_mdd_vocal_full_{full_vocal_duration:.1f}"
-            full_vocal_path = export_audio(
-                vocal_track,
-                self.sample_rate,
-                full_vocal_base,
-                self._export_format,
-                options=self._export_options,
-            )
-            full_vocal_file = str(full_vocal_path)
-            saved_files.append(full_vocal_file)
-        
-        processing_time = time.time() - start_time
-        cuts_seconds = [sample / float(self.sample_rate) for sample in final_cut_points]
-        
-        lib_segment_count = sum(1 for f in lib_cut_flags if f)
-        
-        result_dict = {
-            'success': True,
-            'method': 'hybrid_mdd_snap_to_beat',
-            'strategy': 'snap_to_beat',
-            'num_segments': len(segments),
-            'saved_files': saved_files,
-            'mix_segment_files': mix_segment_files,
-            'vocal_segment_files': vocal_segment_files,
-            'full_vocal_file': full_vocal_file,
-            'export_plan': sorted(export_flags),
-            'processing_time': processing_time,
-            'segment_durations': segment_durations,
-            'segment_vocal_flags': returned_flags if returned_flags else segment_vocal_flags,
-            'segment_labels': ['human' if flag else 'music' for flag in (returned_flags or segment_vocal_flags)],
-            'segment_lib_flags': lib_cut_flags,
-            'lib_segment_count': lib_segment_count,
-            'cut_points_samples': list(final_cut_points),
-            'cut_points_sec': cuts_seconds,
-            'hybrid_config': {
+            }
+            beat_analysis = {
+                'bpm': beat_result.tempo,
+                'bar_duration_s': beat_result.bar_duration,
+                'num_bars': len(beat_result.bar_times),
+            }
+            strategy_name = 'beat_only'
+        elif lib_alignment == 'snap_to_beat':
+            method_name = 'hybrid_mdd_snap_to_beat'
+            hybrid_meta = {
                 'density': hybrid_config['density'],
                 'lib_alignment': 'snap_to_beat',
                 'bars_per_cut': bars_per_cut,
                 'snap_tolerance_ms': snap_tolerance_ms,
                 'vad_protection': vad_protection,
-            },
-            'beat_analysis': {
-                'bpm': tempo,
-                'bar_duration_s': bar_duration,
-                'num_bars': len(bar_times),
-            },
-            'precision_guard_ok': True,
-            'input_file': input_path,
-            'output_dir': output_dir,
-        }
-        
-        if separation_result is not None:
-            result_dict['backend_used'] = separation_result.backend_used
-            result_dict['separation_confidence'] = separation_result.separation_confidence
-            result_dict.update(dict(separation_result.gpu_meta or {}))
-        
-        logger.info("[SNAP_TO_BEAT] Completed: %d segments (%d snapped to beat, %d kept at MDD), processing_time=%.1fs",
-                    len(segments), lib_segment_count, len(segments) - lib_segment_count, processing_time)
-        return result_dict
+            }
+            beat_analysis = {
+                'bpm': beat_result.tempo,
+                'bar_duration_s': beat_result.bar_duration,
+                'num_bars': len(beat_result.bar_times),
+            }
+            strategy_name = 'snap_to_beat'
 
-    def _save_segments_with_lib_suffix(
-        self,
-        segments: List[np.ndarray],
-        output_dir: str,
-        segment_is_vocal: List[bool],
-        lib_flags: List[bool],
-        lib_suffix: str = "_lib",
-        subdir: Optional[str] = None,
-        file_suffix: str = "",
-        duration_map: Optional[Dict[int, float]] = None,
-    ) -> List[str]:
-        """Save segments with optional _lib suffix for beat-cut segments.
+        result = self.result_builder.build_base(
+            method=method_name,
+            export_result=export_result,
+            export_plan=sorted(export_flags),
+            processing_time=processing_time,
+            input_path=input_path,
+            output_dir=output_dir,
+            cut_points_samples=list(final_cut_points),
+            cut_points_sec=cuts_seconds,
+            segment_durations=segment_durations,
+            segment_vocal_flags=returned_flags if returned_flags else segment_vocal_flags,
+            precision_guard_ok=True,
+        )
+        result = self.result_builder.add_hybrid_metadata(
+            result,
+            lib_flags=lib_cut_flags,
+            hybrid_config=hybrid_meta,
+            beat_analysis=beat_analysis,
+            strategy=strategy_name,
+        )
+        result = self.result_builder.add_separation_metadata(result, separation_result)
 
-        Args:
-            segments: Audio segment data
-            segment_is_vocal: Whether each segment is vocal (human) or music
-            lib_flags: Whether each segment ends at a librosa beat cut point
-            lib_suffix: Suffix to add for beat-cut segments (e.g., "_lib")
-            subdir: Optional subdirectory for output
-            file_suffix: Additional suffix for filenames
-            duration_map: Optional mapping of segment index to duration
-
-        Returns:
-            List of saved file paths
-        """
-        final_output_dir = Path(output_dir)
-        if subdir:
-            final_output_dir = final_output_dir / subdir
-        final_output_dir.mkdir(parents=True, exist_ok=True)
-
-        saved_files: List[str] = []
-
-        for i, segment in enumerate(segments):
-            is_vocal = segment_is_vocal[i] if i < len(segment_is_vocal) else True
-            is_lib = lib_flags[i] if i < len(lib_flags) else False
-            label = "human" if is_vocal else "music"
-
-            # Build filename with optional _lib suffix
-            lib_part = lib_suffix if is_lib else ""
-            duration = duration_map.get(i, len(segment) / float(self.sample_rate)) if duration_map else len(segment) / float(self.sample_rate)
-
-            base_name = f"segment_{i:03d}_{label}{lib_part}{file_suffix}_{duration:.1f}"
-            output_base = final_output_dir / base_name
-
-            output_path = export_audio(
-                segment,
-                self.sample_rate,
-                output_base,
-                self._export_format,
-                options=self._export_options,
-            )
-            saved_files.append(str(output_path))
-
-        return saved_files
+        logger.info(
+            "[HYBRID_MDD] Completed: %d segments (%d with _lib suffix), processing_time=%.1fs",
+            len(segments),
+            result.get('lib_segment_count', 0),
+            processing_time,
+        )
+        return result
 
     def _find_no_vocal_runs(self, vocal_audio: np.ndarray, min_duration: float):
         """
@@ -2471,50 +1781,6 @@ class SeamlessSplitter:
         flags = self._classify_segments_vocal_presence(vocal_audio, [0, len(vocal_audio)])
         return bool(flags[0]) if flags else False
 
-    def _save_segments(
-        self,
-        segments: List[np.ndarray],
-        output_dir: str,
-        segment_is_vocal: Optional[List[bool]] = None,
-        *,
-        subdir: Optional[str] = None,
-        file_suffix: str = '',
-        duration_map: Optional[Dict[int, float]] = None,
-    ) -> List[str]:
-        """Persist split segments using the configured export format."""
-        base_dir = Path(output_dir)
-        if subdir:
-            base_dir = base_dir / subdir
-            base_dir.mkdir(parents=True, exist_ok=True)
-
-        saved_files: List[str] = []
-        for i, segment_audio in enumerate(segments):
-            is_vocal = True
-            if segment_is_vocal is not None and i < len(segment_is_vocal):
-                is_vocal = bool(segment_is_vocal[i])
-
-            duration_s = None
-            if duration_map and i in duration_map:
-                duration_s = max(0.0, float(duration_map[i]))
-
-            label = 'human' if is_vocal else 'music'
-            suffix = file_suffix
-            if duration_s is not None:
-                formatted = f"_{duration_s:.1f}"
-                suffix = f"{file_suffix}{formatted}" if file_suffix else formatted
-
-            output_base = base_dir / f"segment_{i + 1:03d}_{label}{suffix}"
-            exported_path = export_audio(
-                segment_audio,
-                self.sample_rate,
-                output_base,
-                self._export_format,
-                options=self._export_options,
-            )
-            saved_files.append(str(exported_path))
-
-        return saved_files
-
     @staticmethod
     def _blank_guard_stats() -> Dict[str, float]:
         return {
@@ -2588,6 +1854,103 @@ class SeamlessSplitter:
             return self._blank_guard_stats()
         return dict(stats)
 
+    @staticmethod
+    def _select_hybrid_cut_points(
+        bar_times: Sequence[float],
+        bar_sections: Sequence[str],
+        section_bars: Dict[str, int],
+        mdd_candidates: Sequence[Tuple[float, float, str]],
+        *,
+        bar_duration: float,
+        min_gap_s: float,
+        search_radius_s: float,
+        snap_enabled: bool,
+        allow_offbeat_mdd: bool,
+    ) -> Tuple[List[float], List[str]]:
+        """Legacy helper: select hybrid cut points with optional snap/offbeat MDD."""
+        cut_times: List[float] = [0.0]
+        cut_sources: List[str] = ['start']
+
+        if mdd_candidates:
+            best = max(mdd_candidates, key=lambda x: float(x[1]) if len(x) > 1 else 0.0)
+            mdd_time = float(best[0])
+            source = 'mdd'
+
+            if snap_enabled and bar_times:
+                nearest = min(bar_times, key=lambda t: abs(float(t) - mdd_time))
+                if abs(float(nearest) - mdd_time) <= float(search_radius_s) and not allow_offbeat_mdd:
+                    mdd_time = float(nearest)
+                    source = 'lib'
+
+            if mdd_time - cut_times[-1] >= float(min_gap_s):
+                cut_times.append(mdd_time)
+                cut_sources.append(source)
+            return cut_times, cut_sources
+
+        if bar_times:
+            end_time = float(bar_times[-1])
+        else:
+            end_time = 0.0
+        if end_time - cut_times[-1] >= float(min_gap_s):
+            cut_times.append(end_time)
+            cut_sources.append('lib')
+        return cut_times, cut_sources
+
+    @staticmethod
+    def _apply_layout_refiner_to_cuts(
+        cut_points: Sequence[int],
+        segment_kinds: Sequence[str],
+        *,
+        layout_config,
+        sample_rate: int,
+        features: Optional[TrackFeatureCache],
+    ) -> Tuple[List[int], bool]:
+        """Legacy helper: apply layout refiner to sample cut points."""
+        if not layout_config or not getattr(layout_config, 'enable', False):
+            return list(cut_points), False
+        if len(cut_points) < 2 or sample_rate <= 0:
+            return list(cut_points), False
+
+        boundaries_sec = [sample / float(sample_rate) for sample in cut_points]
+        layout_segments = []
+        for i in range(len(boundaries_sec) - 1):
+            kind = segment_kinds[i] if i < len(segment_kinds) else 'human'
+            layout_segments.append(
+                SegmentLayoutItem(
+                    start=boundaries_sec[i],
+                    end=boundaries_sec[i + 1],
+                    kind=kind,
+                )
+            )
+
+        layout_result = refine_layout(
+            layout_segments,
+            [],
+            config=layout_config,
+            sample_rate=sample_rate,
+            suppressed_cut_points=[],
+            features=features,
+        )
+
+        if not layout_result.segments:
+            return list(cut_points), False
+
+        layout_boundaries_sec = [layout_result.segments[0].start]
+        layout_boundaries_sec.extend(seg.end for seg in layout_result.segments)
+
+        updated_cut_points: List[int] = []
+        sample_count = int(cut_points[-1])
+        for t in layout_boundaries_sec:
+            sample_idx = int(round(float(t) * sample_rate))
+            sample_idx = max(0, min(sample_idx, sample_count))
+            updated_cut_points.append(sample_idx)
+        if updated_cut_points:
+            updated_cut_points[0] = 0
+            updated_cut_points[-1] = sample_count
+
+        updated_cut_points = sorted(set(updated_cut_points))
+        return updated_cut_points, updated_cut_points != list(cut_points)
+
     def _refine_boundaries_local_valley(
         self,
         sample_boundaries: List[int],
@@ -2646,7 +2009,14 @@ class SeamlessSplitter:
         self._last_suppressed_cut_points = []
         sample_count = audio.shape[-1] if hasattr(audio, 'shape') else len(audio)
         duration_s = float(sample_count) / float(self.sample_rate) if self.sample_rate > 0 else 0.0
-        saved_files = self._save_segments([audio], output_dir, segment_is_vocal=[is_vocal])
+        saved_files = self.segment_exporter.export_segments(
+            [audio],
+            output_dir,
+            segment_is_vocal=[is_vocal],
+            export_format=self._export_format,
+            export_options=self._export_options,
+            index_offset=1,
+        )
         result = {
             'success': True, 'num_segments': 1, 'saved_files': saved_files,
             'mix_segment_files': saved_files,
@@ -2672,7 +2042,3 @@ class SeamlessSplitter:
         if gpu_meta:
             result.update(gpu_meta)
         return result
-
-
-
-
