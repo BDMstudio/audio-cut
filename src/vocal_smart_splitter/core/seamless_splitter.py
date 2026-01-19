@@ -39,7 +39,6 @@ from .quality_controller import QualityController
 from .enhanced_vocal_separator import EnhancedVocalSeparator
 from .strategies.base import SegmentationContext
 from .strategies.beat_only_strategy import BeatOnlyStrategy
-from .strategies.mdd_start_strategy import MddStartStrategy
 from .strategies.snap_to_beat_strategy import SnapToBeatStrategy
 from .utils.result_builder import ResultBuilder
 from .utils.segment_exporter import ExportResult, SegmentExporter
@@ -65,7 +64,6 @@ class SeamlessSplitter:
             precision_guard_p95_ms=PRECISION_GUARD_P95_MS,
         )
         self._hybrid_strategies = {
-            'mdd_start': MddStartStrategy(),
             'beat_only': BeatOnlyStrategy(),
             'snap_to_beat': SnapToBeatStrategy(),
         }
@@ -1053,7 +1051,7 @@ class SeamlessSplitter:
         snap_tolerance_ms = hybrid_config['snap_tolerance_ms']
         vad_protection = hybrid_config['vad_protection']
         lib_suffix = hybrid_config['labeling']['lib_suffix']
-        lib_alignment = hybrid_config.get('lib_alignment', 'mdd_start')
+        lib_alignment = hybrid_config.get('lib_alignment', 'snap_to_beat')
 
         logger.info(
             "[HYBRID_MDD] Config: density=%s, enable_beat_cuts=%s, energy_percentile=%d, bars_per_cut=%d, lib_alignment=%s",
@@ -1117,6 +1115,8 @@ class SeamlessSplitter:
             mdd_cut_points_samples=mdd_cut_points_samples,
             energy_threshold=beat_result.energy_threshold,
             bar_energies=beat_result.bar_energies,
+            bar_spectral_centroids=beat_result.bar_spectral_centroids,
+            bar_spectral_bandwidths=beat_result.bar_spectral_bandwidths,
             config={
                 'density': hybrid_config['density'],  # NEW: pass density to strategy
                 'enable_beat_cuts': enable_beat_cuts,
@@ -1132,8 +1132,8 @@ class SeamlessSplitter:
 
         strategy = self._hybrid_strategies.get(lib_alignment)
         if strategy is None:
-            logger.warning("[HYBRID_MDD] Unknown lib_alignment=%s, fallback to mdd_start", lib_alignment)
-            lib_alignment = 'mdd_start'
+            logger.warning("[HYBRID_MDD] Unknown lib_alignment=%s, fallback to snap_to_beat", lib_alignment)
+            lib_alignment = 'snap_to_beat'
             strategy = self._hybrid_strategies[lib_alignment]
 
         seg_result = strategy.generate_cut_points(context)

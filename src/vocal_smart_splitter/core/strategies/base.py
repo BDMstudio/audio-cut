@@ -4,7 +4,7 @@
 # AI-SUMMARY: Abstract base class for segmentation strategies in hybrid_mdd mode.
 
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 import numpy as np
@@ -24,6 +24,8 @@ class SegmentationContext:
         mdd_cut_points_samples: MDD-detected cut points (sample indices)
         energy_threshold: RMS energy threshold for high-energy detection
         bar_energies: List of average RMS energy per bar
+        bar_spectral_centroids: List of average spectral centroid per bar
+        bar_spectral_bandwidths: List of average spectral bandwidth per bar
         config: Strategy-specific configuration dict
     """
     audio: np.ndarray
@@ -35,7 +37,9 @@ class SegmentationContext:
     mdd_cut_points_samples: List[int]
     energy_threshold: float
     bar_energies: List[float]
-    config: Dict[str, Any]
+    bar_spectral_centroids: List[float] = field(default_factory=list)
+    bar_spectral_bandwidths: List[float] = field(default_factory=list)
+    config: Dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass

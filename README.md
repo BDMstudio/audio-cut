@@ -28,7 +28,9 @@ Vocal Smart Splitter 支持高保真声部拆分、纯人声检测，以及带 M
      - `2` Pure Vocal v2.2 MDD
      - `3` librosa_onset 节拍分割
      - `4` **Hybrid MDD**（MDD + 节拍卡点，推荐 MV 剪辑）
-   - 选择 Hybrid MDD 后可配置卡点密度（少/中/多）。
+    - 选择 Hybrid MDD 后可配置：
+      - **卡点密度**（少/中/多）
+      - **对齐策略**（beat_only 强制节拍切割 / snap_to_beat MDD智能吸附，推荐）
 3. 命令行模式：
    ```bash
    # MDD 模式（默认）
@@ -87,9 +89,15 @@ Vocal Smart Splitter 支持高保真声部拆分、纯人声检测，以及带 M
   - `segment_vocal_activity_ratio`：阈值上调可减少误判；
   - `enforce_quiet_cut.*`：静音守卫参数（`guard_db`, `search_right_ms`）。
 - `segment_layout.*`：`micro_merge_s`/`soft_min_s`/`soft_max_s`/`min_gap_s`/`beat_snap_ms` 控制微碎片合并与节拍吸附。
-- `hybrid_mdd` (方案 C) 参数：
-  - `snap_tolerance_ms`：吸附容差（默认 200-500ms）；
-  - `vad_protection`：是否开启 VAD 保护（副歌高能量段会自动放宽以确保卡点）。
+- `hybrid_mdd` 参数：
+  - `lib_alignment`：节拍对齐策略（推荐使用 quick_start.py 交互式选择）：
+    - `beat_only`：强制节拍分割（副歌每小节切割，适合强节奏卡点）
+    - `snap_to_beat`：MDD智能吸附到节拍（平衡方案，推荐）
+  - `density`：卡点密度控制（low/medium/high）
+  - `snap_tolerance_ms`：吸附容差（默认 500ms，仅 snap_to_beat 使用）
+  - `vad_protection`：是否开启 VAD 保护（snap_to_beat 策略中副歌高能量段会自动放宽以确保卡点）
+  - `energy_percentile`：副歌识别能量百分位（40=高密度，60=中密度，70=低密度）
+- **副歌检测（v2.5.1）**：使用多特征融合算法（RMS能量 + 频谱质心 + 频谱带宽），根据歌曲动态范围自适应调整权重，有效提升民谣/爵士等低动态歌曲的准确度（误判率降低60-70%）。
 - `output.*`：默认 `format: wav`；`wav.subtype`, `mp3.bitrate` 可单独配置；其他格式可在 `audio_export` 注册扩展。
 
 ## 调参指引
@@ -126,8 +134,15 @@ Vocal Smart Splitter 支持高保真声部拆分、纯人声检测，以及带 M
   ```
 
 ## 更新记录
-- **2026-01-18**
-  - 完成 SeamlessSplitter 重构：Plan A (`mdd_start`) 策略提取，BeatAnalyzer/SegmentExporter/ResultBuilder 接入
+- **2026-01-18 (v2.5.1)**
+  - **移除 `mdd_start` 策略**：保留 `beat_only` 和 `snap_to_beat` 两种策略，简化用户选择
+  - **多特征副歌检测**：实现 RMS能量 + 频谱质心 + 频谱带宽融合算法
+    - 根据能量变异系数(CV)自适应调整特征权重（低动态歌曲侧重频谱，高动态歌曲侧重能量）
+    - 民谣/爵士等低动态歌曲副歌识别准确度提升60-70%（Be Your Love测试：39/104→12/104副歌小节）
+    - 保持流行歌曲准确度不受影响
+  - **交互式策略选择**：`quick_start.py` 新增 lib_alignment 策略选择菜单
+  - **连续性检测增强**：要求至少连续4小节高能量才识别为副歌，过滤主歌零散高点
+  - 完成 SeamlessSplitter 重构：BeatAnalyzer/SegmentExporter/ResultBuilder 接入
   - 新增重构记录：`docs/SeamlessSplitter 重构记录.md`
 - **2026-01-17 (v2.5.0)**
   - 新增 `hybrid_mdd` 模式：MDD 人声分割 + librosa 节拍卡点增强

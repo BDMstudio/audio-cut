@@ -28,6 +28,8 @@ class BeatAnalysisResult:
         bar_times: Bar boundary timestamps in seconds (grouped beats)
         bar_duration: Duration of one bar in seconds
         bar_energies: Average RMS energy per bar
+        bar_spectral_centroids: Average spectral centroid per bar (brightness)
+        bar_spectral_bandwidths: Average spectral bandwidth per bar (richness)
         high_energy_bars: Set of bar indices above energy threshold
         energy_threshold: The computed energy threshold value
     """
@@ -36,8 +38,10 @@ class BeatAnalysisResult:
     bar_times: np.ndarray
     bar_duration: float
     bar_energies: List[float]
-    high_energy_bars: Set[int]
-    energy_threshold: float
+    bar_spectral_centroids: List[float] = field(default_factory=list)
+    bar_spectral_bandwidths: List[float] = field(default_factory=list)
+    high_energy_bars: Set[int] = field(default_factory=set)
+    energy_threshold: float = 0.0
     # Additional metadata
     num_beats: int = field(default=0)
     num_bars: int = field(default=0)
@@ -94,40 +98,61 @@ def _generate_bar_boundaries(
     return np.array(bar_times_list)
 
 
-def _compute_bar_energies(
+def _compute_bar_features(
     audio: np.ndarray,
     sr: int,
     bar_times: np.ndarray,
     hop_length: int = 512,
-) -> List[float]:
-    """Compute average RMS energy for each bar.
+) -> tuple[List[float], List[float], List[float]]:
+    """Compute multiple acoustic features for each bar.
 
     Args:
         audio: Audio signal (mono)
         sr: Sample rate
         bar_times: Bar boundary timestamps in seconds
-        hop_length: Hop length for RMS computation
+        hop_length: Hop length for feature computation
 
     Returns:
-        List of average RMS energy per bar
+        Tuple of (bar_energies, bar_centroids, bar_bandwidths)
     """
     # Compute RMS energy curve
     rms = librosa.feature.rms(y=audio, hop_length=hop_length)[0]
     rms_times = librosa.frames_to_time(np.arange(len(rms)), sr=sr, hop_length=hop_length)
 
+    # Compute spectral centroid (brightness/timbre)
+    centroid = librosa.feature.spectral_centroid(y=audio, sr=sr, hop_length=hop_length)[0]
+    
+    # Compute spectral bandwidth (frequency richness)
+    bandwidth = librosa.feature.spectral_bandwidth(y=audio, sr=sr, hop_length=hop_length)[0]
+    
+    # Frame times for spectral features
+    feature_times = librosa.frames_to_time(np.arange(len(centroid)), sr=sr, hop_length=hop_length)
+
     bar_energies: List[float] = []
+    bar_centroids: List[float] = []
+    bar_bandwidths: List[float] = []
+    
     for i in range(len(bar_times) - 1):
         bar_start = bar_times[i]
         bar_end = bar_times[i + 1]
 
         # Find RMS frames within this bar
-        mask = (rms_times >= bar_start) & (rms_times < bar_end)
-        if np.any(mask):
-            bar_energies.append(float(np.mean(rms[mask])))
+        rms_mask = (rms_times >= bar_start) & (rms_times < bar_end)
+        if np.any(rms_mask):
+            bar_energies.append(float(np.mean(rms[rms_mask])))
         else:
             bar_energies.append(0.0)
+        
+        # Find spectral feature frames within this bar
+        feature_mask = (feature_times >= bar_start) & (feature_times < bar_end)
+        if np.any(feature_mask):
+            bar_centroids.append(float(np.mean(centroid[feature_mask])))
+            bar_bandwidths.append(float(np.mean(bandwidth[feature_mask])))
+        else:
+            bar_centroids.append(0.0)
+            bar_bandwidths.append(0.0)
 
-    return bar_energies
+    return bar_energies, bar_centroids, bar_bandwidths
 
 
 def analyze_beats(
@@ -203,10 +228,12 @@ def analyze_beats(
     # 3. Generate bar boundaries
     bar_times = _generate_bar_boundaries(beat_times, audio_duration, time_signature)
 
-    # 4. Compute bar energies
-    bar_energies = _compute_bar_energies(audio, sr, bar_times, hop_length)
+    # 4. Compute bar features (energy + spectral)
+    bar_energies, bar_centroids, bar_bandwidths = _compute_bar_features(
+        audio, sr, bar_times, hop_length
+    )
 
-    # 5. Identify high-energy bars
+    # 5. Identify high-energy bars (still using energy for compatibility)
     if bar_energies:
         energy_threshold = float(np.percentile(bar_energies, energy_percentile))
     else:
@@ -228,6 +255,8 @@ def analyze_beats(
         bar_times=bar_times,
         bar_duration=bar_duration,
         bar_energies=bar_energies,
+        bar_spectral_centroids=bar_centroids,
+        bar_spectral_bandwidths=bar_bandwidths,
         high_energy_bars=high_energy_bars,
         energy_threshold=energy_threshold,
     )

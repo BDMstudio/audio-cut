@@ -567,7 +567,7 @@ def get_hybrid_mdd_config(density_override: Optional[str] = None) -> Dict[str, A
         'energy_percentile': preset.get('energy_percentile', 70),
         'bars_per_cut': preset.get('bars_per_cut', 2),
         'lib_alignment': _get_with_env_override(
-            base_config.get('lib_alignment', 'mdd_start'),
+            base_config.get('lib_alignment', 'snap_to_beat'),
             'AUDIOCUT_HYBRID_LIB_ALIGNMENT',
             str
         ),

@@ -323,10 +323,9 @@ hybrid_mdd:
   # 节拍对齐策略 (Beat Alignment Strategy)
   # 控制 _lib 片段的切点生成算法
   # ---------------------------------------------------------------------------
-  lib_alignment: beat_only            # 策略选择:
-                                      # - mdd_start: MDD 起点 + 节拍终点 (方案 A, 默认)
+  lib_alignment: snap_to_beat     # 策略选择 (默认: snap_to_beat):
                                       # - beat_only: 强制节拍分割 (方案 B)
-                                      # - snap_to_beat: MDD 智能吸附到节拍 (方案 C)
+                                      # - snap_to_beat: MDD 智能吸附到节拍 (方案 C, 推荐)
 
   # ---------------------------------------------------------------------------
   # 方案 C 专用参数 (snap_to_beat)

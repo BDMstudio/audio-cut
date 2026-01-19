@@ -82,7 +82,12 @@ class SnapToBeatStrategy(SegmentationStrategy):
             energy_threshold = context.energy_threshold
         
         # Identify chorus regions (continuous high-energy bars)
-        high_energy_bars = self._detect_chorus_regions(bar_energies, energy_threshold)
+        high_energy_bars = self._detect_chorus_regions(
+            bar_energies, 
+            energy_threshold,
+            bar_centroids=context.bar_spectral_centroids,
+            bar_bandwidths=context.bar_spectral_bandwidths
+        )
         
         # Calculate beat interval for logging
         if len(beat_times) >= 2:
@@ -313,18 +318,23 @@ class SnapToBeatStrategy(SegmentationStrategy):
         return False
     
     def _detect_chorus_regions(
-        self, bar_energies: np.ndarray, energy_threshold: float, min_consecutive_bars: int = 4
+        self, bar_energies: np.ndarray, energy_threshold: float, min_consecutive_bars: int = 4,
+        bar_centroids: list = None, bar_bandwidths: list = None
     ) -> set:
         """
-        Detect chorus regions by identifying continuous high-energy segments.
+        Detect chorus regions using multi-feature fusion and continuity analysis.
         
-        Unlike simple energy thresholding, this filters out isolated high-energy bars
-        (e.g., in verses) and only keeps regions with N+ consecutive high-energy bars.
+        Features:
+        - RMS Energy: Overall loudness
+        - Spectral Centroid: Brightness/timbre
+        - Spectral Bandwidth: Frequency richness
         
         Args:
             bar_energies: Energy levels for each bar
             energy_threshold: Energy threshold for "high energy"
             min_consecutive_bars: Minimum consecutive high-energy bars to be considered chorus
+            bar_centroids: Optional spectral centroid per bar
+            bar_bandwidths: Optional spectral bandwidth per bar
             
         Returns:
             Set of bar indices that belong to chorus regions
@@ -336,8 +346,55 @@ class SnapToBeatStrategy(SegmentationStrategy):
         if not isinstance(bar_energies, np.ndarray):
             bar_energies = np.array(bar_energies)
         
-        # Identify which bars are above threshold
-        is_high_energy = bar_energies >= energy_threshold
+        # Multi-feature fusion
+        if bar_centroids and bar_bandwidths and len(bar_centroids) == len(bar_energies):
+            # Normalize features to [0, 1]
+            def normalize(arr):
+                arr = np.array(arr)
+                arr_min, arr_max = arr.min(), arr.max()
+                if arr_max - arr_min > 1e-6:
+                    return (arr - arr_min) / (arr_max - arr_min)
+                return np.zeros_like(arr)
+            
+            norm_energy = normalize(bar_energies)
+            norm_centroid = normalize(bar_centroids)
+            norm_bandwidth = normalize(bar_bandwidths)
+            
+            # Adaptive weighting based on energy variance
+            energy_cv = np.std(bar_energies) / (np.mean(bar_energies) + 1e-6)
+            
+            if energy_cv < 0.15:  # Low dynamic range (folk/ballad)
+                # Rely more on spectral changes
+                weights = {'energy': 0.3, 'centroid': 0.4, 'bandwidth': 0.3}
+                logger.debug("[ChorusDetect] Low dynamics (CV=%.3f), using spectral-heavy weights", energy_cv)
+            elif energy_cv > 0.4:  # High dynamic range (rock/pop)
+                # Energy is reliable
+                weights = {'energy': 0.6, 'centroid': 0.2, 'bandwidth': 0.2}
+                logger.debug("[ChorusDetect] High dynamics (CV=%.3f), using energy-heavy weights", energy_cv)
+            else:  # Medium dynamic range
+                # Balanced
+                weights = {'energy': 0.5, 'centroid': 0.25, 'bandwidth': 0.25}
+                logger.debug("[ChorusDetect] Medium dynamics (CV=%.3f), using balanced weights", energy_cv)
+            
+            # Fused chorus score
+            chorus_score = (
+                norm_energy * weights['energy'] +
+                norm_centroid * weights['centroid'] +
+                norm_bandwidth * weights['bandwidth']
+            )
+            
+            # Adaptive threshold
+            fused_threshold = np.percentile(chorus_score, 60)  # Top 40%
+            is_high_energy = chorus_score >= fused_threshold
+            
+            logger.info(
+                "[ChorusDetect] Multi-feature fusion: CV=%.3f, weights=%s, threshold=%.3f",
+                energy_cv, weights, fused_threshold
+            )
+        else:
+            # Fallback to simple energy thresholding
+            is_high_energy = bar_energies >= energy_threshold
+            logger.debug("[ChorusDetect] Using simple energy threshold (no spectral features)")
         
         # Find continuous regions
         chorus_bars = set()

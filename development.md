@@ -7,6 +7,7 @@
 
 ## 1. 版本演进
 
+- **v2.5.1（2026-01-18）**: 多特征副歌检测（能量+频谱融合，自适应权重），移除 `mdd_start` 策略，交互式策略选择，连续性检测增强。
 - **v2.5.0（2026-01-17）**: 新增 `hybrid_mdd` 模式（MDD + 节拍卡点增强），支持 `_lib` 后缀标记、密度控制、预过滤短片段。
 - **v2.4.1（2026-01-17）**: 删除未生效算法 (`enable_bpm_adaptation`, `interlude_coverage_check`)，清理冗余配置。
 - **v2.4（2026-01-17）**: 统一配置入口 `config/unified.yaml`，新增 `librosa_onset` 模式。
@@ -72,25 +73,33 @@
 - 性能脚本：`python scripts/bench/run_gpu_cpu_baseline.py`、`python scripts/bench/run_multi_gpu_probe.py` 输出性能报告。
 
 ## 8. 当前进展与下一步
-- **已完成**：
-  - GPU 多流流水线（streams / pinned buffer / inflight limiter）。
-  - Silero 分块 VAD、ChunkFeatureBuilder GPU 缓存。
-  - `segment_layout_refiner` 接入主流程，并统一 `_X.X` 时长后缀。
-  - 输出目录统一为 `<日期>_<时间>_<原音频名>`。
-  - **`hybrid_mdd` 模式实现**：MDD + librosa 节拍卡点，`_lib` 后缀标记，密度控制 (low/medium/high)。
-  - **预过滤算法**：节拍切点添加前检查是否会产生短片段，避免合并后丢失 `_lib` 标记。
-  - **quick_start.py 更新**：支持 hybrid_mdd 模式选择与密度配置。
-  - **Strategy 模式重构**：新增 `strategies/` 目录，实现 `SegmentationStrategy` 基类。
-  - **方案 B (beat_only)**：高能量段纯节拍分割，低能量段用 MDD。
-  - **方案 C (snap_to_beat)**：MDD 切点吸附到节拍（优先吸附副歌/高能量段），支持 VAD 保护配置（副歌段自动放宽保护以确保卡点）。
-  - **SeamlessSplitter 重构完成**：Plan A (`mdd_start`) 策略提取，BeatAnalyzer/SegmentExporter/ResultBuilder 接入；详见 `docs/SeamlessSplitter 重构记录.md`。
+- **已完成 (v2.5.1 - 2026-01-18)**：
+  - **多特征副歌检测算法**：
+    - 实现 RMS能量 + 频谱质心 + 频谱带宽三特征融合
+    - 基于能量变异系数(CV)的自适应权重机制（低动态侧重频谱，高动态侧重能量）
+    - 连续性检测：要求至少连续4小节高能量才识别为副歌
+    - 民谣/爵士等低动态歌曲准确度提升60-70%，流行歌曲保持稳定
+  - **移除 `mdd_start` 策略**：保留 `beat_only` 和 `snap_to_beat` 两种策略，简化选择
+  - **交互式策略选择**：`quick_start.py` 新增 lib_alignment 策略选择菜单（beat_only/snap_to_beat）
+  - **BeatAnalyzer 增强**：新增 `bar_spectral_centroids` 和 `bar_spectral_bandwidths` 特征计算
+  - **SegmentationContext 扩展**：支持传递频谱特征到策略层
+- **已完成 (v2.5.0)**：
+  - GPU 多流流水线（streams / pinned buffer / inflight limiter）
+  - Silero 分块 VAD、ChunkFeatureBuilder GPU 缓存
+  - `segment_layout_refiner` 接入主流程，并统一 `_X.X` 时长后缀
+  - 输出目录统一为 `<日期>_<时间>_<原音频名>`
+  - `hybrid_mdd` 模式实现：MDD + librosa 节拍卡点，`_lib` 后缀标记，密度控制
+  - 预过滤算法：节拍切点添加前检查是否会产生短片段
+  - Strategy 模式重构：新增 `strategies/` 目录，实现 `SegmentationStrategy` 基类
+  - SeamlessSplitter 重构：BeatAnalyzer/SegmentExporter/ResultBuilder 接入
 - **设计文档**：
-  - `docs/hybrid_mdd_design.md` - 三种切点策略方案 (A/B/C) 对比。
-  - `docs/hybrid_mdd_refactor_evaluation.md` - 重构评估报告。
+  - `docs/hybrid_mdd_design.md` - 切点策略方案对比
+  - `docs/SeamlessSplitter 重构记录.md` - 重构评估报告
 - **待规划**：
-  - `seamless_splitter.py` 进一步模块拆分（analyzers）。
-  - IO Binding / TensorRT / FP16 支持。
-  - `tests/test_seamless_reconstruction.py` 适配 v2.5 结果结构。
+  - 副歌检测阶段2：重复结构检测、MFCC变化率特征（提升至85-90%准确度）
+  - `seamless_splitter.py` 进一步模块拆分（analyzers）
+  - IO Binding / TensorRT / FP16 支持
+  - `tests/test_seamless_reconstruction.py` 适配 v2.5 结果结构
 
 ## 9. 环境与工具
 - Python 3.10+；核心依赖：PyTorch、librosa、numpy/scipy/soundfile、pydub（MP3 导出需 FFmpeg）。

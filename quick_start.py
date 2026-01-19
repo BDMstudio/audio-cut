@@ -108,6 +108,28 @@ def select_hybrid_density():
         return 'medium'
 
 
+def select_lib_alignment():
+    """让用户选择 hybrid_mdd 模式的节拍对齐策略"""
+    print("\n" + "=" * 60)
+    print("选择节拍对齐策略")
+    print("=" * 60)
+    print("  1. 强制节拍分割 (beat_only) - 副歌每小节切割")
+    print("     - _lib片段: 副歌段纯节拍切割，适合强节奏卡点")
+    print("  2. MDD智能吸附到节拍 (snap_to_beat) - 平衡方案 (推荐)")
+    print("     - _lib片段: MDD切点吸附最近节拍，副歌额外添加节拍切点")
+    print()
+
+    try:
+        choice = int(input("请选择 (1-2，默认2): ").strip() or "2")
+        strategies = {1: 'beat_only', 2: 'snap_to_beat'}
+        strategy = strategies.get(choice, 'snap_to_beat')
+        print(f"[SELECT] 已选择对齐策略: {strategy}")
+        return strategy
+    except ValueError:
+        print("[INFO] 使用默认策略 snap_to_beat")
+        return 'snap_to_beat'
+
+
 def select_output_format(default_format: str) -> str:
     """选择输出格式（模块化扩展接口）"""
     formats = get_supported_formats()
@@ -264,12 +286,17 @@ def main():
 
     processing_mode = select_processing_mode()
 
-    # 如果选择了 hybrid_mdd 模式，询问卡点密度
+    # 如果选择了 hybrid_mdd 模式，询问卡点密度和对齐策略
     hybrid_density = None
+    lib_alignment = None
     if processing_mode == 'hybrid_mdd':
         hybrid_density = select_hybrid_density()
-        # 通过运行时配置覆盖密度设置
-        set_runtime_config({'hybrid_mdd.beat_cut_density': hybrid_density})
+        lib_alignment = select_lib_alignment()
+        # 通过运行时配置覆盖密度和策略设置
+        set_runtime_config({
+            'hybrid_mdd.beat_cut_density': hybrid_density,
+            'hybrid_mdd.lib_alignment': lib_alignment,
+        })
 
     try:
         default_format = ensure_supported_format(get_config('output.format', 'wav'))
