@@ -81,7 +81,8 @@ class SnapToBeatStrategy(SegmentationStrategy):
         else:
             energy_threshold = context.energy_threshold
         
-        high_energy_bars = identify_high_energy_bars(bar_energies, energy_threshold)
+        # Identify chorus regions (continuous high-energy bars)
+        high_energy_bars = self._detect_chorus_regions(bar_energies, energy_threshold)
         
         # Calculate beat interval for logging
         if len(beat_times) >= 2:
@@ -147,6 +148,30 @@ class SnapToBeatStrategy(SegmentationStrategy):
             
             snapped_cuts.append(final_cut_time)
             cut_is_lib.append(should_snap)  # Mark as _lib if we snapped
+        
+        # 【NEW】For high density, add beat cuts in high-energy bars
+        # This creates bar-length _lib segments in chorus
+        density = config.get('density', 'medium')
+        if density == 'high' and high_energy_bars:
+            logger.info("[SNAP_TO_BEAT] High density: adding beat cuts in %d high-energy bars", len(high_energy_bars))
+            
+            for bar_idx in high_energy_bars:
+                bar_start = bar_times[bar_idx]
+                bar_end = bar_times[bar_idx + 1] if bar_idx + 1 < len(bar_times) else audio_duration
+                
+                # Get all beats in this bar
+                beats_in_bar = [b for b in beat_times if bar_start <= b < bar_end]
+                
+                # Add bar starting beat as cut point (creates bar-length segments)
+                if beats_in_bar:
+                    beat_cut = float(beats_in_bar[0])  # First beat of bar
+                    
+                    # Check if we already have a cut nearby (avoid duplicates)
+                    min_distance = min(abs(beat_cut - c) for c in snapped_cuts) if snapped_cuts else float('inf')
+                    
+                    if min_distance > min_segment_s * 0.5:  # At least half segment duration away
+                        snapped_cuts.append(beat_cut)
+                        cut_is_lib.append(True)  # Mark as _lib
         
         snapped_cuts.append(audio_duration)  # End
         
@@ -286,3 +311,54 @@ class SnapToBeatStrategy(SegmentationStrategy):
             if start + margin < cut_time < end - margin:
                 return True
         return False
+    
+    def _detect_chorus_regions(
+        self, bar_energies: np.ndarray, energy_threshold: float, min_consecutive_bars: int = 4
+    ) -> set:
+        """
+        Detect chorus regions by identifying continuous high-energy segments.
+        
+        Unlike simple energy thresholding, this filters out isolated high-energy bars
+        (e.g., in verses) and only keeps regions with N+ consecutive high-energy bars.
+        
+        Args:
+            bar_energies: Energy levels for each bar
+            energy_threshold: Energy threshold for "high energy"
+            min_consecutive_bars: Minimum consecutive high-energy bars to be considered chorus
+            
+        Returns:
+            Set of bar indices that belong to chorus regions
+        """
+        if len(bar_energies) == 0:
+            return set()
+        
+        # Convert to numpy array if needed
+        if not isinstance(bar_energies, np.ndarray):
+            bar_energies = np.array(bar_energies)
+        
+        # Identify which bars are above threshold
+        is_high_energy = bar_energies >= energy_threshold
+        
+        # Find continuous regions
+        chorus_bars = set()
+        current_start = None
+        consecutive_count = 0
+        
+        for i, is_high in enumerate(is_high_energy):
+            if is_high:
+                if current_start is None:
+                    current_start = i
+                consecutive_count += 1
+            else:
+                # End of a continuous segment
+                if consecutive_count >= min_consecutive_bars:
+                    # Add all bars in this chorus region
+                    chorus_bars.update(range(current_start, i))
+                current_start = None
+                consecutive_count = 0
+        
+        # Handle final segment
+        if consecutive_count >= min_consecutive_bars and current_start is not None:
+            chorus_bars.update(range(current_start, len(bar_energies)))
+        
+        return chorus_bars

@@ -127,6 +127,10 @@ def _apply_micro_merge(
     idx = 0
     while len(segs) > 1 and idx < len(segs):
         seg = segs[idx]
+        # Skip merging _lib segments (preserve beat-aligned segments)
+        if "_lib" in seg.kind:
+            idx += 1
+            continue
         if seg.duration >= micro_threshold_s:
             idx += 1
             continue
@@ -181,6 +185,10 @@ def _apply_soft_min_merge(
     idx = 0
     while len(segs) > 1 and idx < len(segs):
         seg = segs[idx]
+        # Skip merging _lib segments (preserve beat-aligned segments)
+        if "_lib" in seg.kind:
+            idx += 1
+            continue
         if seg.duration >= soft_min_s:
             idx += 1
             continue
@@ -296,6 +304,10 @@ def _enforce_min_gap(segments: List[Segment], min_gap_s: float) -> List[Segment]
     idx = 0
     while len(segs) > 1 and idx < len(segs):
         seg = segs[idx]
+        # Skip merging _lib segments (preserve beat-aligned segments)
+        if "_lib" in seg.kind:
+            idx += 1
+            continue
         if seg.duration >= min_gap_s:
             idx += 1
             continue

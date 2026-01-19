@@ -314,7 +314,7 @@ hybrid_mdd:
   # 卡点数量控制 (Beat Cut Quantity)
   # 控制在高能量段添加的节拍卡点数量
   # ---------------------------------------------------------------------------
-  beat_cut_density: high            # 卡点密度: low / medium / high
+  beat_cut_density: medium            # 卡点密度: low / medium / high
                                       # - low: 较少或没有卡点
                                       # - medium: 默认卡点数量
                                       # - high: 较多卡点 (可能碎片化)
@@ -346,7 +346,7 @@ hybrid_mdd:
       bars_per_cut: 2                 # 每2小节一个卡点
     high:
       enable_beat_cuts: true
-      energy_percentile: 35           # top 35% 能量段添加卡点
+      energy_percentile: 40           # top 40% 能量段添加卡点
       bars_per_cut: 1                 # 每1小节一个卡点
 
   # ---------------------------------------------------------------------------

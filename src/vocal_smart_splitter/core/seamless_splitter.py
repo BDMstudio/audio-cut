@@ -1118,6 +1118,7 @@ class SeamlessSplitter:
             energy_threshold=beat_result.energy_threshold,
             bar_energies=beat_result.bar_energies,
             config={
+                'density': hybrid_config['density'],  # NEW: pass density to strategy
                 'enable_beat_cuts': enable_beat_cuts,
                 'bars_per_cut': bars_per_cut,
                 'min_segment_s': min_segment_s,
@@ -1127,6 +1128,7 @@ class SeamlessSplitter:
                 'vad_protection': vad_protection,
             },
         )
+
 
         strategy = self._hybrid_strategies.get(lib_alignment)
         if strategy is None:
@@ -1165,8 +1167,12 @@ class SeamlessSplitter:
                 start_sample = final_cut_points[i]
                 end_sample = final_cut_points[i + 1]
                 duration_s = (end_sample - start_sample) / float(self.sample_rate)
+                
+                # Check if this segment is marked as _lib
+                is_lib_segment = lib_cut_flags[i] if i < len(lib_cut_flags) else False
 
-                if duration_s < micro_merge_s and i < len(final_cut_points) - 2:
+                # Only merge if: short AND not last segment AND not _lib (preserve beat-aligned)
+                if duration_s < micro_merge_s and i < len(final_cut_points) - 2 and not is_lib_segment:
                     current_segment_was_merged = True
                     logger.debug(
                         "[HYBRID_MDD] Merging short segment %d (%.1fs) - _lib flag discarded",
