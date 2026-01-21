@@ -29,12 +29,22 @@ setup(
     author="BDM Team",
     author_email="bdm@example.com",
     url="https://github.com/bdm/vocal-smart-splitter",
-    packages=find_packages(where="src"),
+    packages=find_packages(where="src") + ["audio_cut.config"],
     package_dir={"": "src"},
     include_package_data=True,
     package_data={
         "vocal_smart_splitter": ["config.yaml"],
+        "audio_cut.config": [
+            "unified.yaml",
+            "schema_v3.yaml",
+            "profiles/*.yaml",
+            "examples/*.yaml",
+        ],
     },
+    # 确保 config 目录被复制到安装位置
+    data_files=[
+        ("audio_cut_config", ["config/unified.yaml"]),
+    ],
     install_requires=read_requirements(),
     extras_require={
         "dev": [

@@ -75,3 +75,9 @@ htmlcov/
 
 # Bug snapshots (local only)
 BUG_snip/
+
+# Build files
+build/
+dist/
+*.egg-info/
+*.whl

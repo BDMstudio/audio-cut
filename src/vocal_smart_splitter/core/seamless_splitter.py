@@ -1233,7 +1233,7 @@ class SeamlessSplitter:
                 lib_flags=lib_cut_flags,
                 lib_suffix=lib_suffix,
                 duration_map=segment_durations_map,
-                index_offset=0,
+                index_offset=1,
                 always_append_duration=True,
             )
             export_result.saved_files.extend(export_result.mix_segment_files)
@@ -1251,7 +1251,7 @@ class SeamlessSplitter:
                 subdir='segments_vocal',
                 file_suffix='_vocal',
                 duration_map=segment_durations_map,
-                index_offset=0,
+                index_offset=1,
                 always_append_duration=True,
             )
             export_result.saved_files.extend(export_result.vocal_segment_files)

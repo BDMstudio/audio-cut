@@ -1,15 +1,12 @@
-# File: MANIFEST.in
-# AI-SUMMARY: Packaging manifest ensuring only necessary source files ship with the wheel; excludes models and sample IO directories.
-
 include README.md
+include LICENSE
 include requirements.txt
-recursive-include src *.py *.yaml *.txt
-recursive-include scripts *.py
-exclude quick_start.py
-exclude run_splitter.py
-exclude src/vocal_smart_splitter/config backup-*.yaml
-prune MVSEP-MDX23-music-separation-model
-prune input
-prune output
-prune env
-prune audio_env
+include config/unified.yaml
+include config/schema_v3.yaml
+recursive-include config/profiles *.yaml
+recursive-include config/examples *.yaml
+recursive-include src/audio_cut/config *.yaml
+recursive-include src/vocal_smart_splitter *.yaml
+global-exclude __pycache__
+global-exclude *.py[co]
+global-exclude .DS_Store
