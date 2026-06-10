@@ -6,7 +6,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Iterable, List, Optional, Tuple
+from typing import Iterable, List, Optional, Sequence, Tuple
+
+import numpy as np
 
 from audio_cut.analysis.features_cache import TrackFeatureCache
 from audio_cut.cutting.refine import CutAdjustment, CutPoint
@@ -77,12 +79,21 @@ def refine_layout(
     sample_rate: float,
     suppressed_cut_points: Optional[Iterable[CutPoint]] = None,
     features: Optional[TrackFeatureCache] = None,
+    asr_boundary_times: Optional[Iterable[float]] = None,
+    asr_word_intervals: Optional[Iterable[Tuple[float, float]]] = None,
+    allow_midpoint_fallback: bool = False,
 ) -> LayoutResult:
     """执行段落布局精炼，当前实现微碎片合并、软最小合并和软最大救援切分。"""
 
     segments = [Segment(seg.start, seg.end, seg.kind) for seg in segments]
     adjustments = list(adjustments or [])
     suppressed = list(suppressed_cut_points or [])
+    asr_boundaries = sorted(float(t) for t in (asr_boundary_times or []))
+    word_intervals = sorted(
+        (float(start), float(end))
+        for start, end in (asr_word_intervals or [])
+        if float(end) > float(start)
+    )
 
     if not config.enable or len(segments) <= 1:
         return LayoutResult(segments, adjustments, suppressed)
@@ -94,6 +105,10 @@ def refine_layout(
         suppressed,
         config.soft_max_s,
         min_gap_s=config.min_gap_s,
+        features=features,
+        asr_boundary_times=asr_boundaries,
+        asr_word_intervals=word_intervals,
+        allow_midpoint_fallback=allow_midpoint_fallback,
     )
     refined_segments = _enforce_min_gap(refined_segments, config.min_gap_s)
     refined_segments = _apply_beat_snap(
@@ -240,6 +255,10 @@ def _apply_soft_max_splits(
     soft_max_s: float,
     *,
     min_gap_s: float,
+    features: Optional[TrackFeatureCache],
+    asr_boundary_times: Sequence[float],
+    asr_word_intervals: Sequence[Tuple[float, float]],
+    allow_midpoint_fallback: bool,
 ) -> Tuple[List[Segment], List[CutPoint], List[CutAdjustment]]:
     if soft_max_s <= 0.0 or len(segments) <= 0:
         return segments, suppressed, []
@@ -262,11 +281,22 @@ def _apply_soft_max_splits(
         ]
         cut_time = None
         if candidates:
-            best = max(candidates, key=lambda p: float(getattr(p, "score", 0.0) or 0.0))
+            best = max(candidates, key=lambda p: _layout_candidate_score(p, asr_boundary_times, asr_word_intervals))
             cut_time = float(best.t)
             suppressed.remove(best)
         else:
-            cut_time = seg.start + seg.duration / 2.0
+            cut_time = _find_acoustic_valley_split(
+                seg,
+                features,
+                asr_boundary_times=asr_boundary_times,
+                asr_word_intervals=asr_word_intervals,
+                min_gap_s=min_gap_s,
+            )
+            if cut_time is None and allow_midpoint_fallback:
+                cut_time = seg.start + (seg.duration / 2.0)
+        if cut_time is None:
+            idx += 1
+            continue
 
         left_duration = cut_time - seg.start
         right_duration = seg.end - cut_time
@@ -295,6 +325,108 @@ def _apply_soft_max_splits(
     _restore_continuity(segs)
     return segs, suppressed, new_adjustments
 
+
+
+def _layout_candidate_score(
+    point: CutPoint,
+    asr_boundary_times: Sequence[float],
+    asr_word_intervals: Sequence[Tuple[float, float]],
+) -> float:
+    t = float(point.t)
+    base = float(getattr(point, "score", 0.0) or 0.0)
+    inside_word_penalty = 0.75 if _inside_interval(t, asr_word_intervals) else 0.0
+    return base + 0.5 * _asr_boundary_affinity(t, asr_boundary_times) - inside_word_penalty
+
+
+def _find_acoustic_valley_split(
+    seg: Segment,
+    features: Optional[TrackFeatureCache],
+    *,
+    asr_boundary_times: Sequence[float],
+    asr_word_intervals: Sequence[Tuple[float, float]],
+    min_gap_s: float,
+) -> Optional[float]:
+    if features is None or features.frame_count() <= 2:
+        return None
+
+    start = seg.start + max(0.0, min_gap_s)
+    end = seg.end - max(0.0, min_gap_s)
+    if end <= start:
+        return None
+
+    sl = features.frame_slice(start, end)
+    rms = np.asarray(features.rms_series[sl], dtype=np.float64)
+    if rms.size < 3 or not np.all(np.isfinite(rms)):
+        return None
+
+    median = float(np.median(rms))
+    spread = float(np.percentile(rms, 75) - np.percentile(rms, 5))
+    if median <= 1e-12 or spread <= max(1e-9, median * 0.02):
+        return None
+
+    threshold = min(float(np.percentile(rms, 25)), median * 0.75)
+    frame_start = int(sl.start or 0)
+    best_time: Optional[float] = None
+    best_score = -1.0
+
+    for local_idx in range(1, rms.size - 1):
+        value = float(rms[local_idx])
+        if value > threshold:
+            continue
+        if value > float(rms[local_idx - 1]) or value > float(rms[local_idx + 1]):
+            continue
+        frame_idx = frame_start + local_idx
+        t = frame_idx * float(features.hop_s)
+        if t <= start or t >= end:
+            continue
+        quiet_score = max(0.0, (median - value) / max(median, 1e-12))
+        inside_word_penalty = 0.75 if _inside_interval(t, asr_word_intervals) else 0.0
+        score = quiet_score + 0.5 * _asr_boundary_affinity(t, asr_boundary_times) - inside_word_penalty
+        if score > best_score:
+            best_score = score
+            best_time = float(t)
+
+    for boundary in asr_boundary_times:
+        t = float(boundary)
+        if t <= start or t >= end or _inside_interval(t, asr_word_intervals):
+            continue
+        local_idx = int(round((t / float(features.hop_s)) - frame_start))
+        if local_idx < 0 or local_idx >= rms.size:
+            continue
+        lo = max(0, local_idx - 2)
+        hi = min(rms.size, local_idx + 3)
+        value = float(np.min(rms[lo:hi]))
+        if value > median:
+            continue
+        quiet_score = max(0.0, (median - value) / max(median, 1e-12))
+        score = quiet_score + 0.65
+        if score > best_score:
+            best_score = score
+            best_time = t
+
+    if best_time is None or best_score < 0.5:
+        return None
+    return best_time
+
+
+def _inside_interval(t: float, intervals: Sequence[Tuple[float, float]]) -> bool:
+    for start_s, end_s in intervals:
+        if start_s < t < end_s:
+            return True
+        if start_s >= t:
+            break
+    return False
+
+def _asr_boundary_affinity(t: float, asr_boundary_times: Sequence[float], tolerance_s: float = 0.75) -> float:
+    if not asr_boundary_times:
+        return 0.0
+    best = 0.0
+    for boundary in asr_boundary_times:
+        distance = abs(float(boundary) - float(t))
+        if distance > tolerance_s:
+            continue
+        best = max(best, 1.0 - distance / max(tolerance_s, 1e-6))
+    return best
 
 def _enforce_min_gap(segments: List[Segment], min_gap_s: float) -> List[Segment]:
     if min_gap_s <= 0.0 or len(segments) <= 1:

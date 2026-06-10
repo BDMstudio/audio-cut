@@ -38,6 +38,9 @@ class ResultBuilder:
         guard_shift_stats: Optional[Dict[str, float]] = None,
         guard_adjustments: Optional[List[Dict[str, float]]] = None,
         segment_classification_debug: Optional[List[Dict[str, Any]]] = None,
+        lyrics_alignment: Optional[Dict[str, Any]] = None,
+        boundary_detection: Optional[Dict[str, Any]] = None,
+        segment_lyrics: Optional[List[Optional[Dict[str, Any]]]] = None,
     ) -> Dict[str, Any]:
         flags = list(segment_vocal_flags or [])
         labels = ['human' if flag else 'music' for flag in flags]
@@ -74,6 +77,15 @@ class ResultBuilder:
 
         if segment_classification_debug is not None:
             result['segment_classification_debug'] = segment_classification_debug
+
+        if lyrics_alignment is not None:
+            result['lyrics_alignment'] = lyrics_alignment
+
+        if boundary_detection is not None:
+            result['boundary_detection'] = boundary_detection
+
+        if segment_lyrics is not None:
+            result['segment_lyrics'] = list(segment_lyrics)
 
         return result
 

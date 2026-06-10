@@ -22,6 +22,7 @@ from audio_cut.cutting.refine import (
     CutRefineResult,
     finalize_cut_points,
 )
+from audio_cut.cutting.global_cut_planner import apply_guard_shift_metadata
 from audio_cut.cutting.segment_layout_refiner import (
     Segment as SegmentLayoutItem,
     derive_layout_config,
@@ -35,6 +36,7 @@ from ..utils.audio_export import (
 )
 from ..utils.audio_processor import AudioProcessor
 from .pure_vocal_pause_detector import PureVocalPauseDetector
+from .vocal_phrase_boundary_detector import VocalPhraseBoundaryDetector
 from .quality_controller import QualityController
 from .enhanced_vocal_separator import EnhancedVocalSeparator
 from .strategies.base import SegmentationContext
@@ -48,6 +50,7 @@ logger = logging.getLogger(__name__)
 PRECISION_GUARD_AVG_MS = 150.0
 PRECISION_GUARD_P95_MS = 220.0
 
+
 class SeamlessSplitter:
     """Unified seam-splitting orchestrator (v2.3). Handles every split mode through a single entry point."""
 
@@ -55,6 +58,7 @@ class SeamlessSplitter:
         self.sample_rate = sample_rate
         self.audio_processor = AudioProcessor(sample_rate)
         self.pure_vocal_detector = PureVocalPauseDetector(sample_rate)  # default to v2.2 configuration
+        self.vpbd_detector = VocalPhraseBoundaryDetector(sample_rate)
         self.quality_controller = QualityController(sample_rate)
         self.separator = EnhancedVocalSeparator(sample_rate)
         self.beat_analyzer = BeatAnalyzer(sample_rate=sample_rate)
@@ -169,6 +173,7 @@ class SeamlessSplitter:
             self._export_format = effective_format
             self._export_options = merged_options
             logger.info(f"[EXPORT] active format: {self._export_format}")
+            self._warn_if_unused_lyrics_alignment(mode)
 
             try:
                 if mode == 'vocal_separation':
@@ -189,6 +194,13 @@ class SeamlessSplitter:
                         output_dir,
                         export_plan=export_plan,
                     )
+                if mode in {'vpbd_acoustic', 'vpbd_asr'}:
+                    return self._process_pure_vocal_split(
+                        input_path,
+                        output_dir,
+                        mode,
+                        export_plan=export_plan,
+                    )
                 if mode != 'v2.2_mdd':
                     logger.warning(f"Unknown mode {mode}, default to v2.2_mdd")
                 return self._process_pure_vocal_split(
@@ -204,6 +216,22 @@ class SeamlessSplitter:
         finally:
             self._export_format = previous_format
             self._export_options = previous_options
+    @staticmethod
+    def _warn_if_unused_lyrics_alignment(mode: str) -> None:
+        """Warn when lyrics alignment is configured for a mode that cannot consume it."""
+
+        if mode == 'vpbd_asr':
+            return
+        try:
+            lyrics_enabled = bool(get_config('lyrics_alignment.enabled', False))
+        except Exception:
+            lyrics_enabled = False
+        if lyrics_enabled:
+            logger.warning(
+                "[LYRICS] lyrics_alignment is configured but ignored for mode %s.",
+                mode,
+            )
+
     def _load_and_resample_if_needed(self, input_path: str):
         """Load audio and resample when necessary."""
         original_audio, sr = self.audio_processor.load_audio(input_path, normalize=False)
@@ -283,11 +311,6 @@ class SeamlessSplitter:
                 gpu_meta.get('fallback_reason', gpu_meta.get('gpu_pipeline_failures', 'n/a')),
             )
 
-        # 3. Detect pauses with PureVocalPauseDetector
-        logger.info("[%s-STEP2] Running PureVocalPauseDetector on the vocal track...", mode.upper())
-
-        # Determine whether we are in v2.2 MDD mode
-        enable_mdd = (mode == 'v2.2_mdd')
         feature_cache: Optional[TrackFeatureCache] = separation_result.feature_cache
         if feature_cache is None:
             try:
@@ -301,36 +324,9 @@ class SeamlessSplitter:
                 logger.warning("Failed to build feature cache: %s", exc)
                 feature_cache = None
 
-        vocal_pauses = self.pure_vocal_detector.detect_pure_vocal_pauses(
-            vocal_track,
-            enable_mdd_enhancement=enable_mdd,
-            original_audio=original_audio,
-            feature_cache=feature_cache,
-            vad_segments=separation_result.vad_segments,
-        )
-
-        if not vocal_pauses:
-            has_vocal = self._estimate_vocal_presence(vocal_track)
-            return self._create_single_segment_result(
-                original_audio,
-                input_path,
-                output_dir,
-                "no_pause_candidates",
-                is_vocal=has_vocal,
-                gpu_meta=gpu_meta,
-            )
-
-        cut_points_samples: List[int] = []
-        for pause in vocal_pauses:
-            if hasattr(pause, 'cut_point'):
-                cut_points_samples.append(int(pause.cut_point * self.sample_rate))
-            else:
-                center_time = (pause.start_time + pause.end_time) / 2
-                cut_points_samples.append(int(center_time * self.sample_rate))
-
-        logger.info("[%s-STEP3] Produced %d candidate split points", mode.upper(), len(cut_points_samples))
-        # 将样本点转换为(time, score)形式，暂以score=confidence占位（若有）
-        cut_candidates = []
+        # 3. Detect boundary candidates
+        is_vpbd_mode = mode in {'vpbd_acoustic', 'vpbd_asr'}
+        vpbd_detection = None
         markers = getattr(separation_result, 'quality_metrics', {}) or {}
         marker_times = []
         try:
@@ -338,16 +334,92 @@ class SeamlessSplitter:
         except Exception:
             marker_times = []
         protected_marker_samples = set()
-        for p in vocal_pauses:
-            t = float(getattr(p, 'cut_point', (p.start_time + p.end_time)/2))
-            s = float(getattr(p, 'confidence', 1.0))
-            # Filter long pauses that resemble interludes.
-            dur = float(getattr(p, 'duration', (p.end_time - p.start_time)))
-            interlude_min_s = get_config('pure_vocal_detection.pause_stats_adaptation.interlude_min_s', 4.0)
-            if False and dur >= interlude_min_s:
-                continue
-            cut_candidates.append((t, s))
 
+        if is_vpbd_mode:
+            logger.info("[%s-STEP2] Running VocalPhraseBoundaryDetector...", mode.upper())
+            vpbd_detection = self.vpbd_detector.detect(
+                mode=mode,
+                vocal_track=vocal_track,
+                original_audio=original_audio,
+                pure_vocal_detector=self.pure_vocal_detector,
+                feature_cache=feature_cache,
+                vad_segments=separation_result.vad_segments,
+                input_path=input_path,
+                output_dir=output_dir,
+            )
+            cut_candidates = [(candidate.t, candidate.score) for candidate in vpbd_detection.selected_candidates]
+            fallback_candidates = [
+                (candidate.t, candidate.score)
+                for candidate in vpbd_detection.planner_result.suppressed_candidates
+                if float(candidate.score) > 0.0
+            ]
+            logger.info(
+                "[%s-STEP3] VPBD selected %d/%d candidates",
+                mode.upper(),
+                len(vpbd_detection.selected_candidates),
+                vpbd_detection.boundary_detection.get('candidate_counts', {}).get('total', 0),
+            )
+            if not cut_candidates and fallback_candidates:
+                logger.info(
+                    "[%s-STEP3] Planner rescue used; falling back to %d scored VPBD candidates",
+                    mode.upper(),
+                    len(fallback_candidates),
+                )
+                cut_candidates = fallback_candidates
+            if not cut_candidates:
+                has_vocal = self._estimate_vocal_presence(vocal_track)
+                single = self._create_single_segment_result(
+                    original_audio,
+                    input_path,
+                    output_dir,
+                    "no_vpbd_candidates",
+                    is_vocal=has_vocal,
+                    gpu_meta=gpu_meta,
+                )
+                single['boundary_detection'] = vpbd_detection.boundary_detection
+                single['lyrics_alignment'] = vpbd_detection.lyrics_alignment
+                return single
+        else:
+            # Legacy v2.2 path: detect pauses with PureVocalPauseDetector.
+            logger.info("[%s-STEP2] Running PureVocalPauseDetector on the vocal track...", mode.upper())
+            enable_mdd = (mode == 'v2.2_mdd')
+            vocal_pauses = self.pure_vocal_detector.detect_pure_vocal_pauses(
+                vocal_track,
+                enable_mdd_enhancement=enable_mdd,
+                original_audio=original_audio,
+                feature_cache=feature_cache,
+                vad_segments=separation_result.vad_segments,
+            )
+
+            if not vocal_pauses:
+                has_vocal = self._estimate_vocal_presence(vocal_track)
+                return self._create_single_segment_result(
+                    original_audio,
+                    input_path,
+                    output_dir,
+                    "no_pause_candidates",
+                    is_vocal=has_vocal,
+                    gpu_meta=gpu_meta,
+                )
+
+            cut_points_samples: List[int] = []
+            for pause in vocal_pauses:
+                if hasattr(pause, 'cut_point'):
+                    cut_points_samples.append(int(pause.cut_point * self.sample_rate))
+                else:
+                    center_time = (pause.start_time + pause.end_time) / 2
+                    cut_points_samples.append(int(center_time * self.sample_rate))
+
+            logger.info("[%s-STEP3] Produced %d candidate split points", mode.upper(), len(cut_points_samples))
+            cut_candidates = []
+            for p in vocal_pauses:
+                t = float(getattr(p, 'cut_point', (p.start_time + p.end_time)/2))
+                s = float(getattr(p, 'confidence', 1.0))
+                dur = float(getattr(p, 'duration', (p.end_time - p.start_time)))
+                interlude_min_s = get_config('pure_vocal_detection.pause_stats_adaptation.interlude_min_s', 4.0)
+                if False and dur >= interlude_min_s:
+                    continue
+                cut_candidates.append((t, s))
 
         # Pure music (no vocal) intervals -> inject split boundaries when exceeding the threshold.
         try:
@@ -379,6 +451,22 @@ class SeamlessSplitter:
         )
         self._last_suppressed_cut_points = list(refine_result.suppressed_points or [])
         final_cut_points = sorted(set(refine_result.sample_boundaries))
+        if vpbd_detection is not None and mode == 'vpbd_asr':
+            final_cut_points, restored_adjustments = self._restore_guard_points_outside_lyrics_words(
+                final_cut_points,
+                self._last_guard_adjustments_raw,
+                self._collect_lyrics_word_intervals(vpbd_detection.lyrics_alignment),
+                sample_count=len(original_audio),
+                min_gap_s=float(get_config('quality_control.min_split_gap', 1.0)),
+            )
+            if restored_adjustments is not None:
+                self._set_guard_adjustments(restored_adjustments)
+        if vpbd_detection is not None:
+            updated_plan = apply_guard_shift_metadata(
+                vpbd_detection.planner_result,
+                self._last_guard_adjustments_raw,
+            )
+            vpbd_detection.boundary_detection['planner'] = dict(updated_plan.metadata)
 
         if protected_marker_samples:
             total_samples = len(original_audio)
@@ -449,6 +537,16 @@ class SeamlessSplitter:
                 sample_rate=self.sample_rate,
                 suppressed_cut_points=self._last_suppressed_cut_points,
                 features=feature_cache,
+                asr_boundary_times=(
+                    self._collect_lyrics_boundary_times(vpbd_detection.lyrics_alignment)
+                    if vpbd_detection is not None and mode == 'vpbd_asr'
+                    else None
+                ),
+                asr_word_intervals=(
+                    self._collect_lyrics_word_intervals(vpbd_detection.lyrics_alignment)
+                    if vpbd_detection is not None and mode == 'vpbd_asr'
+                    else None
+                ),
             )
             if layout_result.segments:
                 layout_boundaries_sec = [layout_result.segments[0].start]
@@ -488,6 +586,11 @@ class SeamlessSplitter:
                 vocal_track,
                 local_refine_cfg,
                 min_gap_s=float(get_config('quality_control.min_split_gap', 1.0)),
+                protected_intervals_s=(
+                    self._collect_lyrics_word_intervals(vpbd_detection.lyrics_alignment)
+                    if vpbd_detection is not None and mode == 'vpbd_asr'
+                    else None
+                ),
             )
             if refined_points != final_cut_points:
                 final_cut_points = refined_points
@@ -501,6 +604,8 @@ class SeamlessSplitter:
                     original_audio=original_audio
                 )
                 classification_debug = list(getattr(self, '_last_segment_classification_debug', []))
+
+        lyrics_protection_applied = False
 
         segments, segment_vocal_flags, merged_debug = self._split_at_sample_level(
             original_audio,
@@ -600,7 +705,11 @@ class SeamlessSplitter:
             guard_adjustments=guard_adjustments,
             segment_classification_debug=getattr(self, '_last_segment_classification_debug', []),
         )
+        if vpbd_detection is not None:
+            result['boundary_detection'] = vpbd_detection.boundary_detection
+            result['lyrics_alignment'] = vpbd_detection.lyrics_alignment
         result['segment_layout_applied'] = bool(layout_applied)
+        result['lyrics_cut_protection_applied'] = bool(lyrics_protection_applied)
         result['suppressed_cut_points_sec'] = [float(cut.t) for cut in self._last_suppressed_cut_points]
         result.update(gpu_meta)
         return result
@@ -1514,6 +1623,132 @@ class SeamlessSplitter:
         boundaries = result.sample_boundaries or [0, len(audio_for_split)]
         unique_boundaries = sorted(set(boundaries))
         return CutRefineResult(result.final_points, unique_boundaries, kept_adjustments, result.suppressed_points)
+    def _restore_guard_points_outside_lyrics_words(
+        self,
+        final_cut_points: List[int],
+        adjustments: List[CutAdjustment],
+        word_intervals: List[Tuple[float, float]],
+        *,
+        sample_count: int,
+        min_gap_s: float,
+    ) -> Tuple[List[int], Optional[List[CutAdjustment]]]:
+        """Undo guard moves that push a boundary from outside a word into an ASR word."""
+
+        if not final_cut_points or not adjustments or not word_intervals:
+            return list(final_cut_points), None
+
+        sr = float(self.sample_rate)
+        min_gap_samples = max(0, int(round(float(min_gap_s) * sr)))
+        intervals = sorted(word_intervals)
+        points = sorted({max(0, min(int(point), sample_count)) for point in final_cut_points})
+        changed = False
+        restored_by_raw_time: Set[float] = set()
+
+        def _inside(t: float) -> bool:
+            for start_s, end_s in intervals:
+                if start_s < t < end_s:
+                    return True
+                if start_s >= t:
+                    break
+            return False
+
+        for adjustment in adjustments:
+            raw_t = float(adjustment.raw_time)
+            final_t = float(adjustment.final_time)
+            if not _inside(final_t) or _inside(raw_t):
+                continue
+            raw_sample = max(0, min(int(round(raw_t * sr)), sample_count))
+            final_sample = max(0, min(int(round(final_t * sr)), sample_count))
+            if final_sample not in points or raw_sample in (0, sample_count):
+                continue
+            candidate_points = sorted(raw_sample if point == final_sample else point for point in points)
+            idx = candidate_points.index(raw_sample)
+            left_ok = idx == 0 or candidate_points[idx] - candidate_points[idx - 1] >= min_gap_samples
+            right_ok = idx == len(candidate_points) - 1 or candidate_points[idx + 1] - candidate_points[idx] >= min_gap_samples
+            if not left_ok or not right_ok:
+                continue
+            points = candidate_points
+            restored_by_raw_time.add(raw_t)
+            changed = True
+
+        if not changed:
+            return list(final_cut_points), None
+
+        restored_adjustments: List[CutAdjustment] = []
+        for adjustment in adjustments:
+            if float(adjustment.raw_time) in restored_by_raw_time:
+                restored_adjustments.append(
+                    CutAdjustment(
+                        raw_time=adjustment.raw_time,
+                        guard_time=adjustment.raw_time,
+                        final_time=adjustment.raw_time,
+                        score=adjustment.score,
+                        guard_shift_ms=0.0,
+                        final_shift_ms=0.0,
+                    )
+                )
+            else:
+                restored_adjustments.append(adjustment)
+
+        return points, restored_adjustments
+
+    @staticmethod
+    def _collect_lyrics_word_intervals(lyrics_alignment: Optional[Dict[str, Any]]) -> List[Tuple[float, float]]:
+        """Return ASR word intervals used only to down-rank synthetic layout splits."""
+
+        if not lyrics_alignment:
+            return []
+        timeline = lyrics_alignment.get('timeline') if isinstance(lyrics_alignment, dict) else None
+        if not isinstance(timeline, dict):
+            return []
+
+        intervals: List[Tuple[float, float]] = []
+        for word in timeline.get('words', []) or []:
+            if not isinstance(word, dict):
+                continue
+            try:
+                start_s = float(word.get('start_s'))
+                end_s = float(word.get('end_s'))
+            except (TypeError, ValueError):
+                continue
+            if end_s > start_s:
+                intervals.append((start_s, end_s))
+        return sorted(set(intervals))
+
+    @staticmethod
+    def _collect_lyrics_boundary_times(lyrics_alignment: Optional[Dict[str, Any]]) -> List[float]:
+        """Return ASR sentence/VAD boundaries used as soft priors, not hard cuts."""
+
+        if not lyrics_alignment:
+            return []
+        timeline = lyrics_alignment.get('timeline') if isinstance(lyrics_alignment, dict) else None
+        if not isinstance(timeline, dict):
+            return []
+
+        boundaries: List[float] = []
+        for sentence in timeline.get('sentences', []) or []:
+            if not isinstance(sentence, dict):
+                continue
+            try:
+                value = float(sentence.get('end_s'))
+            except (TypeError, ValueError):
+                continue
+            if value > 0.0:
+                boundaries.append(value)
+
+        for region in timeline.get('vad_regions', []) or []:
+            if not isinstance(region, dict):
+                continue
+            for key in ('start_s', 'end_s'):
+                try:
+                    value = float(region.get(key))
+                except (TypeError, ValueError):
+                    continue
+                if value > 0.0:
+                    boundaries.append(value)
+
+        return sorted(set(boundaries))
+
     def _split_at_sample_level(
         self,
         audio: np.ndarray,
@@ -1936,6 +2171,7 @@ class SeamlessSplitter:
             sample_rate=sample_rate,
             suppressed_cut_points=[],
             features=features,
+            allow_midpoint_fallback=True,
         )
 
         if not layout_result.segments:
@@ -1964,6 +2200,7 @@ class SeamlessSplitter:
         cfg: Dict[str, Any],
         *,
         min_gap_s: float,
+        protected_intervals_s: Optional[Iterable[Tuple[float, float]]] = None,
     ) -> List[int]:
         if vocal_audio is None or vocal_audio.size == 0 or len(sample_boundaries) <= 2:
             return sample_boundaries
@@ -1973,6 +2210,11 @@ class SeamlessSplitter:
         win = max(1, int(float(cfg.get('window_ms', 20)) / 1000.0 * sr))
         drop_db = float(cfg.get('min_drop_db', 3.0))
         min_gap_samples = max(1, int(min_gap_s * sr))
+        protected_intervals = sorted(
+            (float(start_s), float(end_s))
+            for start_s, end_s in (protected_intervals_s or [])
+            if float(end_s) > float(start_s)
+        )
 
         refined = list(sample_boundaries)
         for idx in range(1, len(refined) - 1):
@@ -1999,6 +2241,9 @@ class SeamlessSplitter:
                 continue
 
             candidate = start + valley_idx + win // 2
+            candidate_s = candidate / sr
+            if any(start_s < candidate_s < end_s for start_s, end_s in protected_intervals):
+                continue
             if candidate <= refined[idx - 1] + min_gap_samples:
                 continue
             if candidate >= refined[idx + 1] - min_gap_samples:

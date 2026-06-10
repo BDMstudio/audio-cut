@@ -1,0 +1,17 @@
+{
+  "duration_s": 8.0,
+  "source": "fake",
+  "words": [
+    {"text": "hello", "start_s": 0.50, "end_s": 0.90, "confidence": 0.95},
+    {"text": "world", "start_s": 1.10, "end_s": 1.50, "confidence": 0.93},
+    {"text": "again", "start_s": 4.00, "end_s": 4.40, "confidence": 0.91}
+  ],
+  "sentences": [
+    {"text": "hello world", "start_s": 0.50, "end_s": 1.50, "confidence": 0.94},
+    {"text": "again", "start_s": 4.00, "end_s": 4.40, "confidence": 0.91}
+  ],
+  "vad_regions": [
+    {"start_s": 0.45, "end_s": 1.60, "confidence": 0.90, "kind": "singing"},
+    {"start_s": 3.95, "end_s": 4.50, "confidence": 0.87, "kind": "singing"}
+  ]
+}

@@ -40,6 +40,39 @@ MVSEP-MDX23-music-separation-model/
 
 # Temporary test files and debug scripts
 test_*.py
+!tests/contracts/test_config_contracts.py
+!tests/unit/test_boundary_data_models.py
+!tests/unit/test_fake_lyrics_provider.py
+!tests/unit/test_lyrics_models.py
+!tests/unit/test_lyrics_chunker.py
+!tests/unit/test_lyrics_timeline_merge.py
+!tests/unit/test_boundary_features.py
+!tests/unit/test_phrase_boundary_scorer.py
+!tests/unit/test_global_cut_planner.py
+!tests/unit/test_cutting_consistency.py
+!tests/integration/test_pipeline_vpbd_acoustic_fallback.py
+!tests/integration/test_pipeline_vpbd_asr_fake_provider.py
+!tests/integration/test_pipeline_vpbd_asr_strict_failure.py
+!tests/unit/test_api_manifest.py
+!tests/unit/test_manifest_vpbd_asr.py
+!tests/unit/test_firered_protocol.py
+!tests/unit/test_firered_cli_provider.py
+!tests/unit/test_firered_sidecar_provider.py
+!tests/unit/test_firered_provider_selection.py
+!tests/unit/test_run_splitter_cli.py
+!tests/unit/test_quick_start_vpbd.py
+!tests/unit/test_qa_report.py
+!tests/unit/test_legacy_mode_regression.py
+!tests/unit/test_cpu_baseline_perfect_reconstruction.py
+!tests/unit/test_vpbd_asr_acceptance.py
+!tests/unit/test_lyrics_cut_protection.py
+!tests/unit/test_vocal_phrase_boundary_detector.py
+!tests/unit/test_seamless_splitter_guard_restore.py
+!tests/unit/test_segment_layout_refiner.py
+!tests/unit/test_fireredasr2s_worker.py
+!tests/unit/test_firered_worker_provider_integration.py
+!tests/unit/test_fireredasr2s_env_check.py
+!tests/integration/test_firered_cli_provider_real.py
 debug_*.py
 check_*.py
 # gpu_*.py

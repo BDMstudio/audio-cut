@@ -241,7 +241,9 @@ class ConfigManager:
         direct_merge_keys = [
             'global', 'audio', 'gpu_pipeline', 'enhanced_separation',
             'output', 'logging', 'analysis', 'vocal_separation',
-            'vocal_pause_splitting', 'bpm_adaptive_core', 'hybrid_mdd'
+            'vocal_pause_splitting', 'bpm_adaptive_core', 'hybrid_mdd',
+            'vpbd', 'lyrics_alignment', 'fire_red', 'phrase_boundary',
+            'global_planner',
         ]
 
         for key in direct_merge_keys:

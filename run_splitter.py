@@ -1,16 +1,18 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 # run_splitter.py
-# AI-SUMMARY: 运行脚本，支持纯人声分离、v2.2 MDD 和 librosa_onset 智能分割
+# AI-SUMMARY: 运行脚本，支持纯人声分离、v2.2 MDD、VPBD ASR 和 librosa_onset 智能分割
 
 """
 智能人声分割器运行脚本
 
-- 支持四种模式：
+- 支持六种模式：
   1. `vocal_separation` —— 仅输出人声/伴奏轨
   2. `v2.2_mdd` —— 启用纯人声检测 + MDD 增强的无缝分割
   3. `librosa_onset` —— 智能分割 v2（BPM 节拍对齐 + 能量曲线分析）
   4. `hybrid_mdd` —— 混合模式（MDD 基础 + 节拍卡点增强，卡点感强）
+  5. `vpbd_acoustic` —— VPBD 声学候选全局规划，无 ASR
+  6. `vpbd_asr` —— VPBD + 歌词时间轴 soft prior（FireRed/Fake provider）
 """
 
 import sys
@@ -18,6 +20,7 @@ import argparse
 import logging
 from datetime import datetime
 from pathlib import Path
+from typing import Any, Dict, Optional
 
 project_root = Path(__file__).parent
 sys.path.insert(0, str(project_root))
@@ -54,25 +57,35 @@ def create_output_dir_for(input_path: Path) -> str:
     return str(output_dir)
 
 
+def build_parser() -> argparse.ArgumentParser:
+    """Build the command-line parser without running the splitter."""
 
-def main() -> None:
     parser = argparse.ArgumentParser(
-        description="智能人声分割器 - 纯人声分离 / v2.2 MDD 无缝分割",
+        description="智能人声分割器 - 纯人声分离 / v2.2 MDD / VPBD ASR 无缝分割",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 示例:
   python run_splitter.py input/song.mp3 --mode vocal_separation
   python run_splitter.py input/song.mp3 --mode v2.2_mdd --validate-reconstruction
   python run_splitter.py input/song.mp3 --mode librosa_onset --gpu-device cuda:0
+  python run_splitter.py input/song.mp3 --mode vpbd_asr --lyrics-provider fake --lyrics-fixture tests/fixtures/lyrics/simple_song_timeline.json
+  python run_splitter.py input/song.mp3 --mode vpbd_asr --lyrics-provider sidecar --firered-endpoint http://127.0.0.1:8765
         """,
     )
 
     parser.add_argument('input_file', help='输入音频文件路径')
     parser.add_argument(
         '--mode',
-        choices=['vocal_separation', 'v2.2_mdd', 'librosa_onset', 'hybrid_mdd'],
+        choices=[
+            'vocal_separation',
+            'v2.2_mdd',
+            'librosa_onset',
+            'hybrid_mdd',
+            'vpbd_acoustic',
+            'vpbd_asr',
+        ],
         default='v2.2_mdd',
-        help='运行模式 (默认: v2.2_mdd)。hybrid_mdd = MDD + 节拍卡点',
+        help='运行模式 (默认: v2.2_mdd)。vpbd_asr = VPBD + 歌词时间轴 soft prior',
     )
     parser.add_argument(
         '--validate-reconstruction',
@@ -104,7 +117,80 @@ def main() -> None:
         choices=['v2'],
         help='迁移旧版配置（当前仅支持 v2）并覆盖运行时参数',
     )
+    parser.add_argument(
+        '--lyrics-provider',
+        choices=['disabled', 'fake', 'auto', 'sidecar', 'cli', 'null'],
+        default=None,
+        help='vpbd_asr 歌词对齐 provider：fake/sidecar/cli/auto/disabled',
+    )
+    parser.add_argument(
+        '--firered-endpoint',
+        default=None,
+        help='FireRed sidecar 地址，例如 http://127.0.0.1:8765',
+    )
+    parser.add_argument(
+        '--asr-chunk-s',
+        type=float,
+        default=None,
+        help='ASR 分块长度秒数，默认读取 lyrics_alignment.chunk_s',
+    )
+    parser.add_argument(
+        '--asr-overlap-s',
+        type=float,
+        default=None,
+        help='ASR 分块重叠秒数，默认读取 lyrics_alignment.overlap_s',
+    )
+    parser.add_argument(
+        '--asr-strict',
+        action='store_true',
+        help='ASR provider 失败时直接报错，不降级 vpbd_acoustic',
+    )
+    parser.add_argument(
+        '--lyrics-fixture',
+        default=None,
+        help='fake provider 使用的 lyrics timeline fixture JSON',
+    )
+    return parser
 
+
+def apply_asr_runtime_overrides(
+    args: argparse.Namespace,
+    runtime_overrides: Dict[str, Any],
+    logger: Optional[logging.Logger] = None,
+) -> None:
+    """Apply VPBD ASR CLI flags to runtime config overrides."""
+
+    provider = getattr(args, 'lyrics_provider', None)
+    if provider is None and getattr(args, 'lyrics_fixture', None):
+        provider = 'fake'
+    if provider is None and getattr(args, 'firered_endpoint', None):
+        provider = 'sidecar'
+
+    if provider is not None:
+        normalized = 'disabled' if provider == 'null' else str(provider)
+        runtime_overrides['lyrics_alignment.provider'] = normalized
+        runtime_overrides['lyrics_alignment.enabled'] = normalized not in {'disabled', 'null'}
+        if logger:
+            logger.info('[VPBD ASR] lyrics_provider=%s', normalized)
+
+    if getattr(args, 'lyrics_fixture', None):
+        runtime_overrides['lyrics_alignment.fixture_path'] = args.lyrics_fixture
+    if getattr(args, 'firered_endpoint', None):
+        runtime_overrides['fire_red.endpoint'] = args.firered_endpoint
+    if getattr(args, 'asr_chunk_s', None) is not None:
+        if args.asr_chunk_s <= 0.0:
+            raise ValueError('--asr-chunk-s must be positive')
+        runtime_overrides['lyrics_alignment.chunk_s'] = float(args.asr_chunk_s)
+    if getattr(args, 'asr_overlap_s', None) is not None:
+        if args.asr_overlap_s < 0.0:
+            raise ValueError('--asr-overlap-s must be >= 0')
+        runtime_overrides['lyrics_alignment.overlap_s'] = float(args.asr_overlap_s)
+    if getattr(args, 'asr_strict', False):
+        runtime_overrides['lyrics_alignment.strict'] = True
+
+
+def main() -> None:
+    parser = build_parser()
     args = parser.parse_args()
     setup_logging(verbose=args.verbose)
     logger = logging.getLogger(__name__)
@@ -147,6 +233,11 @@ def main() -> None:
     if args.strict_gpu:
         runtime_overrides['gpu_pipeline.strict_gpu'] = True
         logger.info("[GPU Pipeline] strict_gpu 模式已开启")
+    try:
+        apply_asr_runtime_overrides(args, runtime_overrides, logger)
+    except ValueError as exc:
+        logger.error(str(exc))
+        sys.exit(1)
     if runtime_overrides:
         set_runtime_config(runtime_overrides)
 

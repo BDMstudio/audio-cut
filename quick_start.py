@@ -74,11 +74,19 @@ def select_processing_mode():
     print("  4. [新] 混合模式 (Hybrid MDD + 节拍卡点)")
     print("     - MDD人声分割为基础 + 副歌添加节拍卡点")
     print("     - 卡点片段带 _lib 后缀，适合剪辑")
+    print("  5. [实验] VPBD + FireRedASR2S")
+    print("     - 声学候选 + 歌词时间轴 soft prior，全局规划切点")
     print()
 
     try:
-        choice = int(input("请选择 (1-4): ").strip())
-        modes = {1: 'vocal_separation', 2: 'v2.2_mdd', 3: 'librosa_onset', 4: 'hybrid_mdd'}
+        choice = int(input("请选择 (1-5): ").strip())
+        modes = {
+            1: 'vocal_separation',
+            2: 'v2.2_mdd',
+            3: 'librosa_onset',
+            4: 'hybrid_mdd',
+            5: 'vpbd_asr',
+        }
         mode = modes.get(choice, 'v2.2_mdd')
         print(f"[SELECT] 已选择模式: {mode}")
         return mode
@@ -128,6 +136,75 @@ def select_lib_alignment():
     except ValueError:
         print("[INFO] 使用默认策略 snap_to_beat")
         return 'snap_to_beat'
+
+
+def build_vpbd_asr_runtime_overrides(
+    provider: str,
+    endpoint: str | None = None,
+    cli_executable: str | None = None,
+    fixture_path: str | None = None,
+    strict: bool = False,
+):
+    """Build runtime config overrides for VPBD ASR quick-start choices."""
+
+    normalized = str(provider or 'sidecar').strip().lower()
+    overrides = {
+        'lyrics_alignment.enabled': normalized not in {'disabled', 'null'},
+        'lyrics_alignment.provider': 'disabled' if normalized == 'null' else normalized,
+        'lyrics_alignment.strict': bool(strict),
+    }
+    if endpoint:
+        overrides['fire_red.endpoint'] = endpoint.strip()
+    if cli_executable:
+        overrides['fire_red.cli.executable'] = cli_executable.strip()
+    if fixture_path:
+        overrides['lyrics_alignment.fixture_path'] = fixture_path.strip()
+    return overrides
+
+
+def select_vpbd_asr_runtime_overrides():
+    """让用户选择 VPBD ASR provider 并返回运行时配置覆盖。"""
+
+    print("\n" + "=" * 60)
+    print("选择 VPBD ASR Provider")
+    print("=" * 60)
+    print("  1. FireRed sidecar (推荐，本地常驻 HTTP worker)")
+    print("  2. FireRed CLI worker")
+    print("  3. Fake fixture (测试用)")
+    print("  4. Auto")
+    print()
+
+    try:
+        choice = int(input("请选择 (1-4，默认1): ").strip() or "1")
+    except ValueError:
+        choice = 1
+
+    provider_map = {1: 'sidecar', 2: 'cli', 3: 'fake', 4: 'auto'}
+    provider = provider_map.get(choice, 'sidecar')
+    endpoint = None
+    cli_executable = None
+    fixture_path = None
+
+    if provider == 'sidecar':
+        default_endpoint = get_config('fire_red.endpoint', None) or 'http://127.0.0.1:8765'
+        endpoint = input(f"FireRed sidecar endpoint (默认 {default_endpoint}): ").strip() or default_endpoint
+    elif provider == 'cli':
+        cli_executable = input("FireRed CLI worker 路径或命令: ").strip()
+    elif provider == 'fake':
+        default_fixture = 'tests/fixtures/lyrics/simple_song_timeline.json'
+        fixture_path = input(f"lyrics fixture JSON (默认 {default_fixture}): ").strip() or default_fixture
+
+    strict_text = input("ASR strict 模式? (y/N): ").strip().lower()
+    strict = strict_text in {'y', 'yes', '1', 'true'}
+    overrides = build_vpbd_asr_runtime_overrides(
+        provider=provider,
+        endpoint=endpoint,
+        cli_executable=cli_executable,
+        fixture_path=fixture_path,
+        strict=strict,
+    )
+    print(f"[SELECT] VPBD ASR provider: {provider}")
+    return overrides
 
 
 def select_output_format(default_format: str) -> str:
@@ -297,6 +374,8 @@ def main():
             'hybrid_mdd.beat_cut_density': hybrid_density,
             'hybrid_mdd.lib_alignment': lib_alignment,
         })
+    elif processing_mode == 'vpbd_asr':
+        set_runtime_config(select_vpbd_asr_runtime_overrides())
 
     try:
         default_format = ensure_supported_format(get_config('output.format', 'wav'))

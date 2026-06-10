@@ -14,6 +14,7 @@ from .refine import (
     finalize_cut_points,
 )
 from .metrics import compute_cut_time_diffs_ms, summarize_diffs
+from .cut_candidate import CandidateSource, CutCandidate
 from .segment_layout_refiner import (
     Segment,
     LayoutConfig,
@@ -38,4 +39,6 @@ __all__ = [
     'LayoutResult',
     'derive_layout_config',
     'refine_layout',
+    'CandidateSource',
+    'CutCandidate',
 ]

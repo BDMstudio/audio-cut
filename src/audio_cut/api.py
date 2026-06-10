@@ -12,6 +12,10 @@ import logging
 from pathlib import Path
 from typing import Any, Dict, Mapping, MutableMapping, Optional, Sequence
 
+from audio_cut.lyrics.models import LyricsTimeline
+from audio_cut.lyrics.segment_attach import attach_lyrics_to_segments
+from audio_cut.qa_report import build_qa_report
+
 try:  # soundfile 对部分格式（如 mp3）可能不可用，运行时回退
     import soundfile as sf  # type: ignore
 except Exception:  # pragma: no cover - optional dependency
@@ -168,7 +172,7 @@ def _build_manifest(
         },
         'layout_cfg': dict(layout_cfg) | {'applied': bool(result.get('segment_layout_applied', False))},
         'cuts': {
-            'final': result.get('cut_points_sec', []),
+            'final': _build_final_cuts(result),
             'samples': result.get('cut_points_samples', []),
             'suppressed': result.get('suppressed_cut_points_sec', []),
         },
@@ -196,9 +200,17 @@ def _build_manifest(
     if note:
         manifest['note'] = note
 
+    if result.get('lyrics_alignment') is not None:
+        manifest['lyrics_alignment'] = result.get('lyrics_alignment')
+
+    if result.get('boundary_detection') is not None:
+        manifest['boundary_detection'] = result.get('boundary_detection')
+
     gpu_meta = {k: result[k] for k in result.keys() if k.startswith('gpu_pipeline_')}
     if gpu_meta:
         manifest['gpu'] = gpu_meta
+
+    manifest['qa_report'] = build_qa_report(manifest)
 
     # Smart segmentation v2 metadata (librosa_onset mode)
     if result.get('bpm') is not None or result.get('method') == 'smart_segment_v2':
@@ -248,7 +260,87 @@ def _build_segments(result: Mapping[str, Any], export_dir: Path) -> list[Dict[st
 
         segments.append(segment_entry)
 
+    timeline = _timeline_from_result(result)
+    if timeline is not None:
+        return attach_lyrics_to_segments(segments, timeline)
+
     return segments
+
+
+def _build_final_cuts(result: Mapping[str, Any]) -> list[Any]:
+    cut_points = list(result.get('cut_points_sec', []))
+    boundary_detection = result.get('boundary_detection')
+    if not isinstance(boundary_detection, Mapping):
+        return cut_points
+
+    planner = boundary_detection.get('planner')
+    final_time_by_raw: Dict[float, float] = {}
+    if isinstance(planner, Mapping):
+        raw_final = planner.get('final_time_by_raw_time', {})
+        if isinstance(raw_final, Mapping):
+            for raw_time, final_time in raw_final.items():
+                try:
+                    final_time_by_raw[round(float(raw_time), 6)] = float(final_time)
+                except Exception:
+                    continue
+
+    selected_by_time: Dict[float, Mapping[str, Any]] = {}
+    for item in boundary_detection.get('selected', []) or []:
+        if not isinstance(item, Mapping):
+            continue
+        try:
+            raw_key = round(float(item.get('t')), 6)
+            final_t = final_time_by_raw.get(raw_key, raw_key)
+            selected_by_time[round(float(final_t), 6)] = item
+        except Exception:
+            continue
+
+    guard_by_time: Dict[float, Any] = {}
+    if isinstance(planner, Mapping):
+        raw_guard = planner.get('guard_shift_ms_by_raw_time', {})
+        if isinstance(raw_guard, Mapping):
+            for key, value in raw_guard.items():
+                try:
+                    raw_key = round(float(key), 6)
+                    final_t = final_time_by_raw.get(raw_key, raw_key)
+                    guard_by_time[round(float(final_t), 6)] = value
+                except Exception:
+                    continue
+
+    if not selected_by_time and not guard_by_time:
+        return cut_points
+
+    final = []
+    for t in cut_points:
+        try:
+            key = round(float(t), 6)
+            entry: Dict[str, Any] = {'t': float(t)}
+        except Exception:
+            final.append(t)
+            continue
+        candidate = selected_by_time.get(key)
+        if candidate is not None:
+            entry['score'] = candidate.get('score')
+            entry['source'] = candidate.get('source')
+            entry['features'] = dict(candidate.get('features', {}) or {})
+            entry['reasons'] = list(candidate.get('reasons', []) or [])
+        if key in guard_by_time:
+            entry['guard_shift_ms'] = guard_by_time[key]
+        final.append(entry)
+    return final
+
+
+def _timeline_from_result(result: Mapping[str, Any]) -> Optional[LyricsTimeline]:
+    lyrics_alignment = result.get('lyrics_alignment')
+    if not isinstance(lyrics_alignment, Mapping):
+        return None
+    timeline_payload = lyrics_alignment.get('timeline')
+    if not isinstance(timeline_payload, Mapping):
+        return None
+    try:
+        return LyricsTimeline.from_dict(dict(timeline_payload), strict=False)
+    except Exception:
+        return None
 
 
 def _collect_artifacts(result: Mapping[str, Any], export_dir: Path) -> Dict[str, Any]:

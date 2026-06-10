@@ -163,3 +163,43 @@ def run_audio_stage(job):
   "timings_ms":{"separation":89700,"detect":1650,"layout_refine":80,"total":93500}
 }
 ```
+
+### 4) `vpbd_asr` Manifest 扩展字段
+
+`mode="vpbd_asr"` 会在旧 Manifest 字段之外追加可选字段；旧模式不携带这些字段，调用方应按 optional 读取。
+
+```python
+manifest = separate_and_segment(
+    input_uri=audio_path,
+    export_dir=export_dir,
+    mode="vpbd_asr",
+    export_manifest=True,
+    runtime_overrides={
+        "lyrics_alignment.enabled": True,
+        "lyrics_alignment.provider": "fake",
+        "lyrics_alignment.fixture_path": "tests/fixtures/lyrics/simple_song_timeline.json",
+    },
+)
+
+full_timeline = manifest.get("lyrics_alignment", {}).get("timeline")
+for segment in manifest.get("segments", []):
+    segment_lyrics = segment.get("lyrics")  # None 或 {text, words, start, end}
+```
+
+新增字段：
+
+```json
+{
+  "lyrics_alignment": {"provider": "fake", "timeline": {"words": []}},
+  "boundary_detection": {"mode": "vpbd_asr", "selected": []},
+  "cuts": {"final": [{"t": 2.0, "features": {}, "guard_shift_ms": 0.0}]},
+  "segments": [{"id": "0001", "lyrics": {"text": "hello world", "words": []}}]
+}
+```
+
+### 5) 打包命令
+
+```bash
+rm -rf dist/ build/ src/*.egg-info
+python setup.py sdist bdist_wheel 2>&1 | tail -20
+```

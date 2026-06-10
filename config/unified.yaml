@@ -235,9 +235,9 @@ v2_mdd:
     enable: true                      # 启用布局精炼
     micro_merge_s: 2.0                # 微碎片合并阈值 (秒)
                                       # < 该时长的片段会与邻段合并
-    soft_min_s: 2.0                   # 软最小时长 (秒)
+    soft_min_s: 5.0                   # 软最小时长 (秒)
                                       # 低于此值尝试温和合并
-    soft_max_s: 8.0                  # 软最大时长 (秒)
+    soft_max_s: 15.0                 # 软最大时长 (秒)
                                       # 超过此值尝试救援切分
     min_gap_s: 1.0                    # 切点最小间隔 (秒)
     beat_snap_ms: 50                  # 节拍吸附窗口 (ms)，0=关闭
@@ -362,6 +362,57 @@ hybrid_mdd:
   labeling:
     lib_suffix: "_lib"                # 节拍卡点片段后缀
 
+
+# =============================================================================
+# VPBD + Lyrics Alignment (v2.6 optional path)
+# 声学候选仍是主控，ASR 歌词时间轴仅作为 soft prior。
+# =============================================================================
+
+vpbd:
+  enabled: true
+  modes: [vpbd_acoustic, vpbd_asr]
+  fallback_mode: vpbd_acoustic
+  candidate_debug_json: true
+
+lyrics_alignment:
+  enabled: false
+  provider: disabled                 # disabled / fake / auto
+  strict: false
+  fixture_path: null                 # fake provider fixture path
+  chunk_s: 35.0
+  overlap_s: 1.0
+  max_chunk_s: 55.0                  # keep below FireRed AED 60s limit
+  cache_enabled: true
+
+fire_red:
+  provider_order: [sidecar, cli, null]
+  endpoint: null
+  health_path: /health
+  analyze_path: /analyze
+  cli:
+    executable: null
+    model_dir: null
+    timeout_s: 120.0
+
+phrase_boundary:
+  min_score: 0.35
+  weights:
+    acoustic_pause: 0.40
+    asr_gap: 0.25
+    sentence_end: 0.15
+    beat_affinity: 0.10
+    mdd_affinity: 0.10
+    inside_word_penalty: 0.60
+    singing_penalty: 0.50
+
+global_planner:
+  enable: true
+  hard_min_s: 2.0
+  hard_max_s: 18.0
+  target_min_s: 5.0
+  target_max_s: 12.0
+  max_candidates_per_second: 2.0
+  rescue_enabled: true
 
 # =============================================================================
 # 输出设置 (Output Settings)
