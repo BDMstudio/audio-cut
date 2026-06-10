@@ -35,6 +35,22 @@ def _derive_strength(low: float, high: float, scale: float) -> float:
         return 0.4
 
 
+def _warn_removed_legacy_keys(legacy: Mapping[str, Any]) -> None:
+    removed_keys = []
+    if "bpm_adaptive_core" in legacy:
+        removed_keys.append("bpm_adaptive_core")
+    vocal_pause = legacy.get("vocal_pause_splitting")
+    if isinstance(vocal_pause, Mapping) and "bpm_adaptive_settings" in vocal_pause:
+        removed_keys.append("vocal_pause_splitting.bpm_adaptive_settings")
+    if removed_keys:
+        warnings.warn(
+            "deprecated legacy config keys are ignored by schema v3 migration: "
+            + ", ".join(removed_keys),
+            DeprecationWarning,
+            stacklevel=2,
+        )
+
+
 def migrate_to_schema_v3(source: Union[str, Path, Mapping[str, Any]]) -> Dict[str, Any]:
     warnings.warn(
         "config schema v2 is deprecated; call migrate_to_schema_v3 and adopt schema v3",
@@ -42,6 +58,7 @@ def migrate_to_schema_v3(source: Union[str, Path, Mapping[str, Any]]) -> Dict[st
         stacklevel=2,
     )
     legacy = _load_mapping(source)
+    _warn_removed_legacy_keys(legacy)
     audio = legacy.get("audio", {})
     pure = legacy.get("pure_vocal_detection", {})
     quality = legacy.get("quality_control", {})

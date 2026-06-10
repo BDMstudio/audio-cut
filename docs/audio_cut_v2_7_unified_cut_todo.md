@@ -191,14 +191,14 @@ python run_splitter.py input/<sample>.mp3 --mode vpbd_asr --profile auto
 
 > 对应方案 §8。目标：513 行 → ≤120 行，删谎言、并叠乘、降细参。
 
-- [ ] 删除死配置：`bpm_adaptive_core.*`、`vocal_pause_splitting.bpm_adaptive_settings`；`phrase_boundary.min_score` 已在 D 节删除，`global_planner.beat_conflict_weight` 已实装不再删除。
-- [ ] 合并叠乘：`pause_stats_adaptation` 乘数体系并入 `relative_threshold_adaptation`，全链路只保留一处 clamp；合并前后阈值等价性单测。
-- [ ] 细参降级：`valley_scoring`、`advanced_vad`、`gpu_pipeline.ort`、`enforce_quiet_cut` 细项迁入 `config/expert.yaml`（缺省自动加载，主文件不再展示）。
-- [ ] 主文件目标结构：`smart_cut` + `audio/output/logging` + `gpu_pipeline` 基础三项 + `lyrics_alignment/fire_red`，行数 ≤120。
-- [ ] 扩展 `migrate_v2_to_v3.py`：旧配置键自动映射 + deprecation warning（v2.8 才移除，两版本缓冲）。
-- [ ] 每个保留参数注释标注"生效模式 + 生效代码位置"，杜绝再次出现死配置。
-- [ ] `VSS__` 环境变量覆盖与 `set_runtime_config` 行为不变（契约测试守住）。
-- [ ] 同步更新 `README.md`、`development.md`、`audio-cut封装为模块.md` 的配置说明。
+- [x] 删除死配置：`bpm_adaptive_core.*`、`vocal_pause_splitting.bpm_adaptive_settings`；`phrase_boundary.min_score` 已在 D 节删除，`global_planner.beat_conflict_weight` 已实装不再删除。（证据：`rg -n "bpm_adaptive_core|bpm_adaptive_settings" config/unified.yaml config/expert.yaml src/audio_cut/config/unified.yaml src/audio_cut/config/expert.yaml` 无匹配；`tests/unit/test_config_migration.py` 覆盖旧键 warning）
+- [x] 合并叠乘：`pause_stats_adaptation` 乘数体系并入 `relative_threshold_adaptation`，全链路只保留一处 clamp；合并前后阈值等价性单测。（证据：`tests/unit/test_pause_stats_adaptation_config.py` -> 1 passed；G 验收合并运行 `3 passed in 1.28s`）
+- [x] 细参降级：`valley_scoring`、`advanced_vad`、`gpu_pipeline.ort`、`enforce_quiet_cut` 细项迁入 `config/expert.yaml`（缺省自动加载，主文件不再展示）。（证据：`tests/contracts/test_config_contracts.py::test_expert_defaults_are_loaded_behind_slim_config`；`rg` 显示这些键仅在 `config/expert.yaml` / `src/audio_cut/config/expert.yaml`）
+- [x] 主文件目标结构：`smart_cut` + `audio/output/logging` + `gpu_pipeline` 基础三项 + `lyrics_alignment/fire_red`，行数 ≤120。（证据：`wc -l config/unified.yaml` -> `62 config/unified.yaml`）
+- [x] 扩展 `migrate_v2_to_v3.py`：旧配置键自动映射 + deprecation warning（v2.8 才移除，两版本缓冲）。（证据：`tests/unit/test_config_migration.py` -> included in `3 passed in 1.28s`）
+- [x] 每个保留参数注释标注"生效模式 + 生效代码位置"，杜绝再次出现死配置。（证据：`config/unified.yaml` 62 行用户面配置逐项包含 modes/code 注释；`tests/contracts/test_config_contracts.py::test_unified_config_is_slim_user_surface`）
+- [x] `VSS__` 环境变量覆盖与 `set_runtime_config` 行为不变（契约测试守住）。（证据：`tests/contracts/test_config_contracts.py` -> `4 passed in 0.81s`，含 `test_vpbd_asr_config_supports_vss_env_override`）
+- [x] 同步更新 `README.md`、`development.md`、`audio-cut封装为模块.md` 的配置说明。（证据：三份文档已说明 `unified.yaml` 用户面、`expert.yaml` 自动加载和废弃键迁移）
 
 验收命令：
 

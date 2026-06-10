@@ -197,7 +197,27 @@ for segment in manifest.get("segments", []):
 }
 ```
 
-### 5) 打包命令
+### 5) v2.7 配置建议
+
+`audio-cut` 现在把用户配置和专家默认值分层：`config/expert.yaml` 自动加载高级默认值，`config/unified.yaml` 只保留常用用户面。外部封装建议优先传递少量稳定入口：
+
+```python
+manifest = separate_and_segment(
+    input_uri=audio_path,
+    export_dir=export_dir,
+    mode="vpbd_asr",
+    runtime_overrides={
+        "smart_cut.profile": "auto",
+        "smart_cut.target_duration_s": [5.0, 12.0],
+        "lyrics_alignment.enabled": True,
+        "lyrics_alignment.provider": "auto",
+    },
+)
+```
+
+需要调细参时仍可覆盖原路径，例如 `quality_control.enforce_quiet_cut.guard_db` 或 `vpbd.candidate_pool=legacy`；不要再写入已废弃的 `bpm_adaptive_core.*` 或 `vocal_pause_splitting.bpm_adaptive_settings`。
+
+### 6) 打包命令
 
 ```bash
 rm -rf dist/ build/ src/*.egg-info

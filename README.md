@@ -95,39 +95,29 @@ Vocal Smart Splitter 支持高保真声部拆分、纯人声检测，以及带 M
 - 其他字段：`cut_points_samples/sec`、`guard_adjustments`、`suppressed_cut_points_sec` 等，用于验证切点一致性。
 
 ## 配置总览
-主配置位于 `config/unified.yaml`（唯一配置入口），可通过 `VSS__...` 或 `AUDIOCUT_*` 环境变量覆盖。常用条目：
-- `audio.*`：采样率（默认 44.1 kHz）、声道等。
-- `gpu_pipeline.*`：Chunk 长度、overlap、halo、CUDA streams、inflight 限流、`strict_gpu` 等。
-- `pure_vocal_detection.*`：
-  - `peak_relative_threshold_ratio` 默认 0.26；
-  - `rms_relative_threshold_ratio` 默认 0.30；
-  - `relative_threshold_adaptation` / `pause_stats_adaptation` 基于 BPM/MDD/VPP 保持阈值稳定。
-- `quality_control.*`：
-  - `min_split_gap`：片段最小间隔；
-  - `segment_vocal_activity_ratio`：阈值上调可减少误判；
-  - `enforce_quiet_cut.*`：静音守卫参数（`guard_db`, `search_right_ms`）。
-- `segment_layout.*`：`micro_merge_s`/`soft_min_s`/`soft_max_s`/`min_gap_s`/`beat_snap_ms` 控制微碎片合并与节拍吸附。
-- `smart_cut.*`：v2.7 用户面配置，`profile: auto` 默认按特征缓存估计风格；手动 `ballad/pop/edm/rap` 优先于 auto；`target_duration_s` 派生 planner/layout/quality 三处时长约束。
-- `lyrics_alignment.*`：控制 `vpbd_asr` 是否启用、provider（disabled/fake/auto/sidecar/cli）、strict、ASR chunk 与 overlap、fake fixture。
-- `fire_red.*`：控制 provider 顺序、sidecar endpoint/path、CLI executable/model_dir/timeout。
-- `vpbd.*` / `phrase_boundary.*` / `global_planner.*`：控制 VPBD 模式开关、候选打分权重和全局切点规划约束；`vpbd.candidate_pool=legacy` 回退到 v2.6 声学候选池，`vpbd.candidate_debug_json=true` 写出候选 JSON；`vpbd.breath_score_scale` 只影响 VPBD 候选池，设为 `0` 可关闭气口候选；`vpbd.beat_candidates` 控制高能量段弱节拍候选；`phrase_boundary.word_edge_tolerance_ms` 软化词边缘惩罚，`global_planner.vocal_risk_weight` / `beat_conflict_weight` 控制风险降权。
-- `vpbd_asr` 的长段二次分割遵循软约束：优先选择声学低谷，并用 ASR 句/唱段边界加权；找不到可信低谷时保留稍长片段，不使用 midpoint 硬切。Hybrid legacy helper 仍保留 midpoint fallback 以兼容原有节拍卡点行为。
-- `hybrid_mdd` 参数：
-  - `lib_alignment`：节拍对齐策略（推荐使用 quick_start.py 交互式选择）：
-    - `beat_only`：强制节拍分割（副歌每小节切割，适合强节奏卡点）
-    - `snap_to_beat`：MDD智能吸附到节拍（平衡方案，推荐）
-  - `density`：卡点密度控制（low/medium/high）
-  - `snap_tolerance_ms`：吸附容差（默认 200ms，仅 snap_to_beat 使用；运行时上限为 0.4 个 beat，避免横跨整拍吸附）
-  - `vad_protection`：是否开启人声轨安静度保护；开启后 snap_to_beat、high 密度插入切点和 beat_only 的高能量小节切点都会避开活跃人声
-  - `chorus_force_snap`：默认 `false`；设为 `true` 时恢复旧版副歌强吸附行为，适合只追求卡点但可能切入人声的回退场景
-  - `energy_percentile`：副歌识别能量百分位（40=高密度，60=中密度，70=低密度）
-- **副歌检测（v2.5.1）**：使用多特征融合算法（RMS能量 + 频谱质心 + 频谱带宽），根据歌曲动态范围自适应调整权重，有效提升民谣/爵士等低动态歌曲的准确度（误判率降低60-70%）。
-- `output.*`：默认 `format: wav`；`wav.subtype`, `mp3.bitrate` 可单独配置；其他格式可在 `audio_export` 注册扩展。
+`config/unified.yaml` 是 v2.7 用户面配置，保持在 120 行以内；`config/expert.yaml` 存放高级默认值并由 `ConfigManager` 自动先加载。优先级从低到高为：`expert.yaml` → `unified.yaml` → `VSS_EXTERNAL_CONFIG_PATH` → 显式配置文件 → `VSS__...` 环境变量。
+
+用户通常只需要改 `unified.yaml`：
+- `smart_cut.*`：`profile=auto` 按 BPM/MDD/能量 CV/人声覆盖率估计风格；手动 `ballad/pop/edm/rap` 优先于 auto；`target_duration_s` 派生 planner/layout/quality 的时长约束。
+- `audio.*`：采样率、声道、默认格式与质量。
+- `gpu_pipeline.enable/prefer_device/strict_gpu`：GPU 开关、首选设备与 strict GPU 行为。
+- `lyrics_alignment.*` / `fire_red.*`：控制 `vpbd_asr` provider、strict 降级、ASR chunk、sidecar/CLI 参数。
+- `output.*` / `logging.*`：导出格式、命名、Manifest 与日志。
+
+高级参数仍然生效，但默认隐藏在 `config/expert.yaml`：
+- `pure_vocal_detection.*`、`quality_control.*`、`segment_layout.*`：声学低谷、静音守卫和布局精炼细参。
+- `hybrid_mdd.*`：节拍吸附、`vad_protection`、`chorus_force_snap` 和密度预设。
+- `vpbd.*` / `phrase_boundary.*` / `global_planner.*`：VPBD 候选池、权重和全局规划；`vpbd.candidate_pool=legacy` 可回退到 v2.6 声学候选池。
+- `gpu_pipeline.ort.*`、`advanced_vad.*`、`enforce_quiet_cut.*`、`valley_scoring.*` 属于 expert 细参；通过 `VSS__...` 或外部配置覆盖时仍按原路径生效。
+
+已废弃默认键：`bpm_adaptive_core.*` 与 `vocal_pause_splitting.bpm_adaptive_settings` 不再出现在默认配置中；迁移旧配置时会发出 deprecation warning。VPP 乘数已并入 `pure_vocal_detection.relative_threshold_adaptation.pause_stats_multipliers`。
+
+`vpbd_asr` 的长段二次分割遵循软约束：优先选择声学低谷，并用 ASR 句/唱段边界加权；找不到可信低谷时保留稍长片段，不使用 midpoint 硬切。Hybrid legacy helper 仍保留 midpoint fallback 以兼容原有节拍卡点行为。
 
 ## 调参指引
-- **切点过少/片段过长**：降低 `pure_vocal_detection.peak_relative_threshold_ratio` 与 `rms_relative_threshold_ratio`；减小 `quality_control.min_split_gap`；调节 `valley_scoring.merge_close_ms`。
-- **切点过多/片段碎化**：提升上述阈值；增大 `min_split_gap`；通过 `segment_min_duration` 限制最短片段。
-- **静音守卫不稳定**：开启 `enforce_quiet_cut` 并逐步调整 `guard_db`/`search_right_ms`；检查输入是否被提前归一化。
+- **切点过少/片段过长**：优先调整 `smart_cut.target_duration_s`；必要时在 `config/expert.yaml` 或 `VSS__...` 中降低 `pure_vocal_detection.peak_relative_threshold_ratio` / `rms_relative_threshold_ratio`、减小 `quality_control.min_split_gap` 或调节 `valley_scoring.merge_close_ms`。
+- **切点过多/片段碎化**：优先收窄 `smart_cut.target_duration_s` 的下限或使用更保守 profile；必要时提升 expert 阈值、增大 `min_split_gap`，通过 `segment_min_duration` 限制最短片段。
+- **静音守卫不稳定**：在 `config/expert.yaml` 中调整 `quality_control.enforce_quiet_cut.guard_db` / `search_right_ms`；检查输入是否被提前归一化。
 - **VPBD ASR 切到歌词内部**：先检查 `boundary_detection.selected[*].source`、`meta.sources`、`features.inside_word_penalty` 与 `planner.final_time_by_raw_time`。自然风格下优先级应来自权重：长停顿最高，气口+句尾次之，节拍只是弱候选；`score=0` 的候选不会进入 rescue fallback；若 guard 把词外 raw cut 推入 ASR word interval，`vpbd_asr` 会恢复到 raw cut。
 - **判定错误（伴奏被标成 human）**：查看 `segment_classification_debug` 中的活跃度；适当提升 `segment_vocal_activity_ratio`。
 
@@ -169,6 +159,7 @@ Vocal Smart Splitter 支持高保真声部拆分、纯人声检测，以及带 M
   - 新增 `vpbd.candidate_pool=legacy` 回退开关和 `vpbd.candidate_debug_json` 候选调试路径；QA report 新增 `breath_cut_ratio`、`beat_aligned_ratio`。
   - 新增 AutoProfile：`smart_cut.profile=auto` 基于 BPM/MDD/能量 CV/人声覆盖率估计风格，插值已有 profile anchor，低置信回退 pop；`--profile auto` 和 quick_start 默认 auto，手动 profile 优先。
   - `smart_cut.target_duration_s` 成为 v2.7 时长单一入口，派生 `global_planner`、`segment_layout` 和 `quality_control.segment_max_duration`。
+  - `config/unified.yaml` 瘦身为用户面配置，`config/expert.yaml` 自动加载高级默认值；删除 `bpm_adaptive_core.*` 与 `vocal_pause_splitting.bpm_adaptive_settings`，VPP 乘数并入 `relative_threshold_adaptation.pause_stats_multipliers`。
   - 删除未生效且会误伤低权重 soft prior 的 `phrase_boundary.min_score`。
   - `boundary_detection.candidate_counts` 新增 `merged` / `lyrics_pooled` 计数，旧字段语义保持不变。
 - **2026-06-10 (v2.6.1 draft)**

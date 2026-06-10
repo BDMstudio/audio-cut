@@ -59,13 +59,13 @@
 - **输出目录策略**：`quick_start.py` 与 `run_splitter.py` 均使用 `<日期>_<时间>_<原音频名>` 创建输出目录，便于批量回归与部署一致。
 
 ## 5. 配置与参数策略
-- `config_manager.get_config` 默认加载 `config/unified.yaml`（唯一配置入口），支持 `VSS__...` 环境变量重写。
-- `pure_vocal_detection` 默认 `peak_relative_threshold_ratio=0.26`、`rms_relative_threshold_ratio=0.30`，BPM/MDD/VPP 自适应缩放范围 0.85–1.15。
-- `quality_control` 提供 `min_split_gap`、`segment_vocal_activity_ratio` 等守护阈值；`enforce_quiet_cut` 注重静音守卫参数（`guard_db`, `search_right_ms`）。
-- `segment_layout` 默认启用，`micro_merge_s` / `soft_min_s` / `soft_max_s` / `min_gap_s` 控制碎片合并策略；若更改需同步 doc/CLI。
-- `hybrid_mdd.snap_tolerance_ms` 默认 200ms，运行时再限制为 ≤0.4 个 beat；`vad_protection=true` 时节拍切点必须通过人声轨安静度检查，`chorus_force_snap=true` 是 v2.6 行为回退开关。
+- `ConfigManager` 默认先加载 `config/expert.yaml`，再加载 `config/unified.yaml`；用户面只保留 `smart_cut`、`audio/output/logging`、`gpu_pipeline` 基础三项、`lyrics_alignment/fire_red`。高级默认值在 expert 层自动生效。
+- 配置优先级：`expert.yaml` < `unified.yaml` < `VSS_EXTERNAL_CONFIG_PATH` < 显式 `config_path` < `VSS__...` 环境变量；`set_runtime_config` 行为保持不变。
 - `smart_cut` 是 v2.7 用户面入口：`profile=auto` 默认自动估计风格，`target_duration_s` 统一派生 `global_planner.*`、`segment_layout.soft_*` 与 `quality_control.segment_max_duration`；手动 profile 仍优先并可回退到既有 profile 行为。
-- `vpbd`、`lyrics_alignment`、`fire_red`、`phrase_boundary`、`global_planner` 控制 VPBD 路径；`vpbd.candidate_pool=legacy` 回退到 v2.6 声学候选，`vpbd.candidate_debug_json=true` 写出 scored candidates，`vpbd.breath_score_scale=0` 可关闭气口候选，`vpbd.beat_candidates` 控制高能量段弱节拍候选，`phrase_boundary.word_edge_tolerance_ms` 控制词边缘软化，`global_planner.vocal_risk_weight` / `beat_conflict_weight` 控制风险降权；`lyrics_alignment.enabled=false` 或 provider 不可用时应降级 `vpbd_acoustic`，strict 模式则 fail loud。
+- `pure_vocal_detection.relative_threshold_adaptation` 是阈值缩放的单一配置入口；VPP 乘数位于 `pause_stats_multipliers`，旧 `pause_stats_adaptation.multipliers/clamp_*` 不再保留。
+- `bpm_adaptive_core.*` 与 `vocal_pause_splitting.bpm_adaptive_settings` 已从默认配置删除；`migrate_v2_to_v3.py` 遇到这些旧键会发出 deprecation warning。
+- `hybrid_mdd.snap_tolerance_ms` 默认 200ms，运行时再限制为 ≤0.4 个 beat；`vad_protection=true` 时节拍切点必须通过人声轨安静度检查，`chorus_force_snap=true` 是 v2.6 行为回退开关。
+- `vpbd`、`phrase_boundary`、`global_planner` 默认在 expert 层；`vpbd.candidate_pool=legacy` 回退到 v2.6 声学候选，`vpbd.breath_score_scale=0` 可关闭气口候选，`vpbd.beat_candidates` 控制高能量段弱节拍候选。
 - `output.format` 默认 `wav`，可通过 `output.mp3.bitrate` 调整 MP3 输出；`audio_export` 模块负责统一写入。
 
 ## 6. 测试矩阵
@@ -95,6 +95,7 @@
   - 已完成 D：`vocal_cut_risk` 打分闭环、MDD affinity、ASR 容差软化、`beat_conflict` 与 `min_score` 死配置收敛
   - 已完成 E 的代码与测试部分：natural 权重归一化、breath 独立计分、`candidate_pool=legacy`、candidate debug JSON、QA 新指标和 fake provider 优先级集成测试；M2 playlist 验收需按本地素材状态单独记录
   - 已完成 F 的 AutoProfile 代码与测试部分：自动风格估计、profile anchor 插值、phrase weights 联动、`smart_cut.target_duration_s` 派生、`--profile auto` 与 quick_start 入口；M3 playlist 准确率验收未完成
+  - 已完成 G 的配置瘦身与迁移主体：`unified.yaml` 降到 62 行，expert 默认自动加载，废弃 BPM 旧键删除并在迁移时 warning；H 门禁仍需按里程碑继续执行
 - **进行中 (v2.6 draft - 2026-06-09)**：
   - 新增 VPBD 数据模型、lyrics timeline、候选生成、边界打分与全局规划骨架
   - `SeamlessSplitter` 已接入 `vpbd_acoustic` / `vpbd_asr` 可选路径

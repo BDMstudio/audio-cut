@@ -124,10 +124,11 @@ class ConfigManager:
         """加载配置文件
 
         加载优先级（从低到高）：
-        1. 统一配置文件 (自动查找多个位置)
-        2. VSS_EXTERNAL_CONFIG_PATH 环境变量指定的配置
-        3. 显式指定的 config_path
-        4. VSS__* 环境变量覆盖
+        1. expert.yaml 默认细参 (与 unified.yaml 同目录，若存在自动加载)
+        2. 统一配置文件 unified.yaml (自动查找多个位置)
+        3. VSS_EXTERNAL_CONFIG_PATH 环境变量指定的配置
+        4. 显式指定的 config_path
+        5. VSS__* 环境变量覆盖
         """
         try:
             # 1. 加载统一配置文件 - 智能查找多个位置
@@ -140,7 +141,14 @@ class ConfigManager:
                     f"  - {Path(__file__).parent.parent.parent.parent / 'config' / 'unified.yaml'}"
                 )
             
-            config = self._load_unified_config(unified_path)
+            config: Dict[str, Any] = {}
+            expert_path = self._find_expert_config(unified_path)
+            if expert_path:
+                config = self._load_unified_config(expert_path)
+                logger.info(f"[ConfigManager] 加载专家默认配置: {expert_path}")
+
+            unified_raw = _load_yaml_file(unified_path)
+            config = self._merge_unified_config(config, unified_raw)
             logger.info(f"[ConfigManager] 加载统一配置: {unified_path}")
 
             # 2. 加载外部配置 (VSS_EXTERNAL_CONFIG_PATH)
@@ -214,6 +222,15 @@ class ConfigManager:
         logger.warning(f"[ConfigManager] 未找到配置文件，尝试了 {len(candidates)} 个位置")
         return None
 
+    def _find_expert_config(self, unified_path: Path) -> Optional[Path]:
+        """Find expert defaults next to the selected unified.yaml."""
+        expert_path = unified_path.with_name('expert.yaml')
+        if expert_path.exists():
+            logger.debug(f"[ConfigManager] 找到专家配置: {expert_path}")
+            return expert_path
+        logger.debug(f"[ConfigManager] 未找到专家配置: {expert_path}")
+        return None
+
     def _load_unified_config(self, path: Path) -> Dict[str, Any]:
         """加载统一配置文件并扁平化 v2_mdd 嵌套结构
 
@@ -241,7 +258,7 @@ class ConfigManager:
         direct_merge_keys = [
             'global', 'audio', 'gpu_pipeline', 'enhanced_separation',
             'output', 'logging', 'analysis', 'vocal_separation',
-            'vocal_pause_splitting', 'bpm_adaptive_core', 'hybrid_mdd',
+            'vocal_pause_splitting', 'hybrid_mdd',
             'vpbd', 'lyrics_alignment', 'fire_red', 'phrase_boundary',
             'global_planner', 'smart_cut',
         ]

@@ -1,0 +1,225 @@
+# File: src/audio_cut/config/expert.yaml
+# AI-SUMMARY: v2.7 expert defaults hidden behind the slim unified user config.
+global:
+  default_mode: v2.2_mdd
+  version: 2.7.0-beta
+gpu_pipeline:
+  chunk_seconds: 10.0
+  overlap_seconds: 2.5
+  halo_seconds: 0.5
+  align_hop: 4096
+  use_cuda_streams: true
+  prefetch_pinned_buffers: 2
+  inflight_chunks_limit: 2
+  ort:
+    graph_optimization_level: basic
+    cudnn_conv_algo_search: HEURISTIC
+    disable_trt: true
+enhanced_separation:
+  backend: mdx23
+  enable_fallback: true
+  mdx23:
+    model_filename: Kim_Vocal_1.onnx
+    output_type: auto
+  demucs:
+    compile: false
+    warmup_seconds: 0.5
+v2_mdd:
+  pure_vocal_detection:
+    enable: true
+    min_pause_duration: 0.5
+    breath_duration_range:
+    - 0.1
+    - 0.3
+    f0_weight: 0.3
+    formant_weight: 0.25
+    spectral_weight: 0.25
+    duration_weight: 0.2
+    enable_relative_energy_mode: true
+    peak_relative_threshold_ratio: 0.26
+    rms_relative_threshold_ratio: 0.3
+    relative_threshold_adaptation:
+      enable: true
+      clamp_min: 0.85
+      clamp_max: 1.15
+      bpm:
+        slow_multiplier: 1.08
+        medium_multiplier: 1.0
+        fast_multiplier: 0.92
+      mdd:
+        base: 1.0
+        gain: 0.2
+      pause_stats_multipliers:
+        slow: 1.08
+        medium: 1.0
+        fast: 0.92
+    pause_stats_adaptation:
+      enable: true
+      delta_db: 3.0
+      morph_close_ms: 150
+      morph_open_ms: 50
+      sing_block_min_s: 2.0
+      interlude_min_s: 4.0
+      classify_thresholds:
+        slow:
+          mpd: 0.6
+          p95: 1.2
+          rr: 0.35
+        fast:
+          mpd: 0.25
+          pr: 18
+          rr: 0.15
+    valley_scoring:
+      w_len: 0.7
+      w_quiet: 0.3
+      w_flat: 0.5
+      use_weighted_nms: true
+      merge_close_ms: 450
+      max_raw_candidates: 1200
+      max_kept_after_nms: 200
+  musical_dynamic_density:
+    energy_weight: 0.5
+    spectral_weight: 0.3
+    onset_weight: 0.2
+    threshold_multiplier: 0.2
+    max_multiplier: 1.4
+    min_multiplier: 0.6
+  advanced_vad:
+    focus_window_pad_s: 0.2
+    focus_window_min_width_s: 0.0
+    silero_merge_gap_ms: 120.0
+    focus_merge_gap_s: 0.12
+    silero_length_bucket: 4096
+  quality_control:
+    validate_split_points: true
+    min_pause_at_split: 1.0
+    min_split_gap: 1.2
+    min_vocal_content_ratio: 0.4
+    max_silence_ratio: 0.3
+    segment_min_duration: 2.0
+    segment_max_duration: 18.0
+    pure_music_min_duration: 6.0
+    segment_vocal_threshold_db: -50.0
+    segment_vocal_activity_ratio: 0.1
+    segment_min_mix_piece: 2.0
+    fade_in_duration: 0.0
+    fade_out_duration: 0.0
+    normalize_audio: false
+    remove_click_noise: false
+    smooth_transitions: false
+    enforce_quiet_cut:
+      enable: true
+      win_ms: 80
+      guard_db: 1.5
+      search_right_ms: 450
+      floor_percentile: 0.5
+      floor_db_override: null
+    local_boundary_refine:
+      enable: true
+      search_radius_ms: 500
+      window_ms: 5
+      min_drop_db: 5.0
+  segment_layout:
+    enable: true
+    micro_merge_s: 2.0
+    soft_min_s: 5.0
+    soft_max_s: 12.0
+    min_gap_s: 1.0
+    beat_snap_ms: 50
+librosa_onset:
+  use_vocal_separation: true
+  silence:
+    threshold_db: -40
+    min_duration: 0.3
+  density: low
+  density_custom:
+    enable: false
+    verse_bars: 4
+    chorus_bars: 2
+  energy_analysis:
+    hop_length: 512
+    chorus_percentile: 60
+    chorus_peak_percentile: 80
+  beat:
+    time_signature: 4
+hybrid_mdd:
+  beat_cut_density: medium
+  lib_alignment: snap_to_beat
+  snap_tolerance_ms: 200
+  vad_protection: true
+  chorus_force_snap: false
+  density_presets:
+    low:
+      enable_beat_cuts: true
+      energy_percentile: 90
+      bars_per_cut: 4
+    medium:
+      enable_beat_cuts: true
+      energy_percentile: 60
+      bars_per_cut: 2
+    high:
+      enable_beat_cuts: true
+      energy_percentile: 40
+      bars_per_cut: 1
+  beat_detection:
+    hop_length: 512
+    time_signature: 4
+    snap_to_pause_ms: 300
+  labeling:
+    lib_suffix: _lib
+vpbd:
+  enabled: true
+  modes:
+  - vpbd_acoustic
+  - vpbd_asr
+  fallback_mode: vpbd_acoustic
+  candidate_pool: unified
+  candidate_debug_json: true
+  breath_score_scale: 0.6
+  beat_candidates:
+    enable: true
+    bars_per_cut: 2
+    base_score: 0.3
+phrase_boundary:
+  word_edge_tolerance_ms: 60.0
+  weights:
+    acoustic_pause: 0.35
+    asr_gap: 0.2
+    sentence_end: 0.15
+    beat_affinity: 0.08
+    mdd_affinity: 0.1
+    breath: 0.12
+    inside_word_penalty: 0.8
+    singing_penalty: 0.5
+global_planner:
+  enable: true
+  hard_min_s: 2.0
+  hard_max_s: 18.0
+  target_min_s: 5.0
+  target_max_s: 12.0
+  vocal_risk_weight: 0.25
+  beat_conflict_weight: 0.15
+  max_candidates_per_second: 2.0
+  rescue_enabled: true
+analysis:
+  features_cache:
+    device: auto
+vocal_pause_splitting:
+  local_rms_window_ms: 25
+  silence_floor_percentile: 5
+  silence_floor_allowance: 0.0
+  lookahead_guard_ms: 120
+  head_offset: 0.0
+  tail_offset: 0.0
+  voice_threshold: 0.5
+vocal_separation:
+  hpss_margin: 2.0
+  hpss_power: 1.5
+  mask_threshold: 0.2
+  mask_smoothing: 1
+  vocal_freq_min: 100
+  vocal_freq_max: 4000
+  vocal_core_min: 200
+  vocal_core_max: 1000
+  min_vocal_ratio: 0.15
+  max_noise_ratio: 0.3

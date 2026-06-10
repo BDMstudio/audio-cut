@@ -203,6 +203,11 @@ def build_legacy_overrides(schema: SchemaV3Config) -> Dict[str, Any]:
                     "medium_multiplier": bpm_mult["medium_multiplier"],
                     "fast_multiplier": bpm_mult["fast_multiplier"],
                 },
+                "pause_stats_multipliers": {
+                    "slow": bpm_mult["slow_multiplier"],
+                    "medium": bpm_mult["medium_multiplier"],
+                    "fast": bpm_mult["fast_multiplier"],
+                },
                 "mdd": {
                     "base": mdd_base,
                     "gain": mdd_gain,

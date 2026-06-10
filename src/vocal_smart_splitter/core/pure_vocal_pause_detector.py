@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 # File: src/vocal_smart_splitter/core/pure_vocal_pause_detector.py
 # AI-SUMMARY: 纯人声停顿检测器 - 基于MDX23/Demucs分离后的纯人声进行多维特征分析，解决高频换气误判问题
@@ -17,6 +17,24 @@ from audio_cut.config.derive import AdaptStats, resolve_threshold, resolve_min_p
 from ..utils.config_manager import get_config
 
 logger = logging.getLogger(__name__)
+
+
+def _resolve_pause_stats_multiplier(pause_class: str) -> float:
+    """Resolve VPP multiplier from the unified threshold adaptation config."""
+    defaults = {"slow": 1.08, "medium": 1.00, "fast": 0.92}
+    adapt_cfg = get_config('pure_vocal_detection.relative_threshold_adaptation', {})
+    multipliers = {}
+    if isinstance(adapt_cfg, dict):
+        multipliers = adapt_cfg.get('pause_stats_multipliers') or {}
+    if not multipliers:
+        multipliers = get_config(
+            'pure_vocal_detection.relative_threshold_adaptation.pause_stats_multipliers',
+            {},
+        )
+    if not isinstance(multipliers, dict):
+        multipliers = {}
+    return float(multipliers.get(pause_class, defaults.get(pause_class, 1.0)))
+
 
 @dataclass
 class VocalFeatures:
@@ -225,9 +243,7 @@ class PureVocalPauseDetector:
             try:
                 if get_config('pure_vocal_detection.pause_stats_adaptation.enable', True):
                     mul_pause, vpp_log = self._estimate_vpp_multiplier(vocal_audio, focus_windows)
-                    clamp_min = get_config('pure_vocal_detection.pause_stats_adaptation.clamp_min', 0.75)
-                    clamp_max = get_config('pure_vocal_detection.pause_stats_adaptation.clamp_max', 1.25)
-                    mul_pause = float(np.clip(mul_pause, clamp_min, clamp_max))
+                    mul_pause = float(np.clip(mul_pause, thresholds.clamp_min, thresholds.clamp_max))
                     peak_ratio *= mul_pause; rms_ratio *= mul_pause
                     logger.info(f"VPP自适应：{vpp_log}, mul_pause={mul_pause:.2f} → peak={peak_ratio:.3f}, rms={rms_ratio:.3f}")
             except Exception as e:
@@ -1511,8 +1527,7 @@ class PureVocalPauseDetector:
         else:
             cls = 'medium'
 
-        mults = get_config('pure_vocal_detection.pause_stats_adaptation.multipliers', {'slow':1.10,'medium':1.00,'fast':0.85})
-        mul_pause = float(mults.get(cls, 1.0))
+        mul_pause = _resolve_pause_stats_multiplier(cls)
         vpp_log = f"VPP{{cls={cls}, mpd={mpd:.2f}, p95={p95:.2f}, pr={pr:.1f}/min, rr={rr:.2f}}}"
         return mul_pause, vpp_log
 
