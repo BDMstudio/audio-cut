@@ -1,0 +1,216 @@
+{
+  "comment": "Full 20-track VPBD ASR manual acceptance template. Replace input paths, titles, reference_boundaries_s, manual_scores and manual_metrics before release sign-off.",
+  "runtime_overrides": {
+    "lyrics_alignment.enabled": true,
+    "lyrics_alignment.provider": "cli",
+    "lyrics_alignment.strict": false,
+    "fire_red.cli.executable": "scripts/fireredasr2s_worker.py",
+    "fire_red.cli.timeout_s": 180.0
+  },
+  "tracks": [
+    {
+      "id": "cn_ballad_01",
+      "title": "TODO Chinese ballad 01",
+      "category": "chinese_ballad",
+      "path": "input/acceptance/chinese_ballad/cn_ballad_01.wav",
+      "reference_boundaries_s": [],
+      "manual_scores": {
+        "subjective_naturalness": null
+      }
+    },
+    {
+      "id": "cn_ballad_02",
+      "title": "TODO Chinese ballad 02",
+      "category": "chinese_ballad",
+      "path": "input/acceptance/chinese_ballad/cn_ballad_02.wav",
+      "reference_boundaries_s": [],
+      "manual_scores": {
+        "subjective_naturalness": null
+      }
+    },
+    {
+      "id": "cn_ballad_03",
+      "title": "TODO Chinese ballad 03",
+      "category": "chinese_ballad",
+      "path": "input/acceptance/chinese_ballad/cn_ballad_03.wav",
+      "reference_boundaries_s": [],
+      "manual_scores": {
+        "subjective_naturalness": null
+      }
+    },
+    {
+      "id": "cn_fast_rap_01",
+      "title": "TODO Chinese fast/rap 01",
+      "category": "chinese_fast_rap",
+      "path": "input/acceptance/chinese_fast_rap/cn_fast_rap_01.wav",
+      "reference_boundaries_s": [],
+      "manual_scores": {
+        "subjective_naturalness": null
+      }
+    },
+    {
+      "id": "cn_fast_rap_02",
+      "title": "TODO Chinese fast/rap 02",
+      "category": "chinese_fast_rap",
+      "path": "input/acceptance/chinese_fast_rap/cn_fast_rap_02.wav",
+      "reference_boundaries_s": [],
+      "manual_scores": {
+        "subjective_naturalness": null
+      }
+    },
+    {
+      "id": "cn_fast_rap_03",
+      "title": "TODO Chinese fast/rap 03",
+      "category": "chinese_fast_rap",
+      "path": "input/acceptance/chinese_fast_rap/cn_fast_rap_03.wav",
+      "reference_boundaries_s": [],
+      "manual_scores": {
+        "subjective_naturalness": null
+      }
+    },
+    {
+      "id": "english_pop_01",
+      "title": "TODO English pop 01",
+      "category": "english_pop",
+      "path": "input/acceptance/english_pop/english_pop_01.wav",
+      "reference_boundaries_s": [],
+      "manual_scores": {
+        "subjective_naturalness": null
+      }
+    },
+    {
+      "id": "english_pop_02",
+      "title": "TODO English pop 02",
+      "category": "english_pop",
+      "path": "input/acceptance/english_pop/english_pop_02.wav",
+      "reference_boundaries_s": [],
+      "manual_scores": {
+        "subjective_naturalness": null
+      }
+    },
+    {
+      "id": "english_pop_03",
+      "title": "TODO English pop 03",
+      "category": "english_pop",
+      "path": "input/acceptance/english_pop/english_pop_03.wav",
+      "reference_boundaries_s": [],
+      "manual_scores": {
+        "subjective_naturalness": null
+      }
+    },
+    {
+      "id": "folk_low_dynamic_01",
+      "title": "TODO folk/low dynamic 01",
+      "category": "folk_low_dynamic",
+      "path": "input/acceptance/folk_low_dynamic/folk_low_dynamic_01.wav",
+      "reference_boundaries_s": [],
+      "manual_scores": {
+        "subjective_naturalness": null
+      }
+    },
+    {
+      "id": "folk_low_dynamic_02",
+      "title": "TODO folk/low dynamic 02",
+      "category": "folk_low_dynamic",
+      "path": "input/acceptance/folk_low_dynamic/folk_low_dynamic_02.wav",
+      "reference_boundaries_s": [],
+      "manual_scores": {
+        "subjective_naturalness": null
+      }
+    },
+    {
+      "id": "folk_low_dynamic_03",
+      "title": "TODO folk/low dynamic 03",
+      "category": "folk_low_dynamic",
+      "path": "input/acceptance/folk_low_dynamic/folk_low_dynamic_03.wav",
+      "reference_boundaries_s": [],
+      "manual_scores": {
+        "subjective_naturalness": null
+      }
+    },
+    {
+      "id": "strong_chorus_01",
+      "title": "TODO strong chorus 01",
+      "category": "strong_chorus",
+      "path": "input/acceptance/strong_chorus/strong_chorus_01.wav",
+      "reference_boundaries_s": [],
+      "manual_scores": {
+        "subjective_naturalness": null
+      }
+    },
+    {
+      "id": "strong_chorus_02",
+      "title": "TODO strong chorus 02",
+      "category": "strong_chorus",
+      "path": "input/acceptance/strong_chorus/strong_chorus_02.wav",
+      "reference_boundaries_s": [],
+      "manual_scores": {
+        "subjective_naturalness": null
+      }
+    },
+    {
+      "id": "strong_chorus_03",
+      "title": "TODO strong chorus 03",
+      "category": "strong_chorus",
+      "path": "input/acceptance/strong_chorus/strong_chorus_03.wav",
+      "reference_boundaries_s": [],
+      "manual_scores": {
+        "subjective_naturalness": null
+      }
+    },
+    {
+      "id": "harmony_adlib_01",
+      "title": "TODO harmony/ad-lib 01",
+      "category": "harmony_adlib",
+      "path": "input/acceptance/harmony_adlib/harmony_adlib_01.wav",
+      "reference_boundaries_s": [],
+      "manual_scores": {
+        "subjective_naturalness": null
+      }
+    },
+    {
+      "id": "harmony_adlib_02",
+      "title": "TODO harmony/ad-lib 02",
+      "category": "harmony_adlib",
+      "path": "input/acceptance/harmony_adlib/harmony_adlib_02.wav",
+      "reference_boundaries_s": [],
+      "manual_scores": {
+        "subjective_naturalness": null
+      }
+    },
+    {
+      "id": "harmony_adlib_03",
+      "title": "TODO harmony/ad-lib 03",
+      "category": "harmony_adlib",
+      "path": "input/acceptance/harmony_adlib/harmony_adlib_03.wav",
+      "reference_boundaries_s": [],
+      "manual_scores": {
+        "subjective_naturalness": null
+      }
+    },
+    {
+      "id": "long_intro_outro_01",
+      "title": "TODO long intro/outro 01",
+      "category": "long_intro_outro",
+      "path": "input/acceptance/long_intro_outro/long_intro_outro_01.wav",
+      "reference_boundaries_s": [],
+      "manual_scores": {
+        "subjective_naturalness": null
+      }
+    },
+    {
+      "id": "long_intro_outro_02",
+      "title": "TODO long intro/outro 02",
+      "category": "long_intro_outro",
+      "path": "input/acceptance/long_intro_outro/long_intro_outro_02.wav",
+      "reference_boundaries_s": [],
+      "manual_scores": {
+        "subjective_naturalness": null
+      },
+      "manual_metrics": {
+        "baseline_manual_recutter_rate": null,
+        "current_manual_recutter_rate": null
+      }
+    }
+  ]
+}

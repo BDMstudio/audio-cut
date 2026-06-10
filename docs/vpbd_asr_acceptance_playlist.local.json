@@ -1,0 +1,42 @@
+{
+  "comment": "Local seed playlist for VPBD ASR acceptance. This is intentionally incomplete: L-stage release acceptance still requires the full 20-track category coverage and manual scores.",
+  "runtime_overrides": {
+    "lyrics_alignment.enabled": true,
+    "lyrics_alignment.provider": "cli",
+    "lyrics_alignment.strict": false,
+    "fire_red.cli.executable": "scripts/fireredasr2s_worker.py",
+    "fire_red.cli.timeout_s": 180.0
+  },
+  "tracks": [
+    {
+      "id": "cn_ballad_dang_ai_zai_hui_tou",
+      "title": "local-smoke-zh-01",
+      "category": "chinese_ballad",
+      "path": "input/local-smoke-zh-01.mp3"
+    },
+    {
+      "id": "english_be_your_love",
+      "title": "local-smoke-en-01",
+      "category": "english_pop",
+      "path": "input/local-smoke-en-01.mp3"
+    },
+    {
+      "id": "english_if_everyone_cared",
+      "title": "If Everyone Cared",
+      "category": "english_pop",
+      "path": "input/If Everyone Cared.mp3"
+    },
+    {
+      "id": "local_forgotten_phase_1",
+      "title": "Forgotten-phase-1",
+      "category": "folk_low_dynamic",
+      "path": "input/Forgotten-phase-1.mp3"
+    },
+    {
+      "id": "local_nuvole_di_luce",
+      "title": "Nuvole di luce(鲜艳的云)",
+      "category": "folk_low_dynamic",
+      "path": "input/Nuvole di luce(鲜艳的云).mp3"
+    }
+  ]
+}
