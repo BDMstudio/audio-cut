@@ -7,7 +7,7 @@
 
 ## 1. 版本演进
 
-- **v2.7 draft（2026-06-10）**: VPBD 候选池开始接收气口、ASR lyrics gap / sentence end / mVAD 与高能量段弱节拍候选；近重复候选先融合再统一打分规划，breath 只在 VPBD 路径通过 `vpbd.breath_score_scale` 降权启用。
+- **v2.7 draft（2026-06-10）**: VPBD 候选池开始接收气口、ASR lyrics gap / sentence end / mVAD 与高能量段弱节拍候选；近重复候选先融合再统一打分规划，breath 只在 VPBD 路径通过 `vpbd.breath_score_scale` 降权启用；`vocal_cut_risk` / `mdd_affinity` / `beat_conflict` 进入真实打分闭环。
 - **v2.6.1 draft（2026-06-10）**: 修复 `hybrid_mdd` 副歌节拍吸附绕过人声保护的问题；节拍切点使用分离后人声轨安静度检查，吸附后统一过 `finalize_cut_points`，并提供 `chorus_force_snap` 回退开关。
 - **v2.6 draft（2026-06-09）**: 新增 `vpbd_acoustic` / `vpbd_asr` 可选路径，FireRedASR/FireRedASR2S 通过 sidecar 或 CLI provider 接入；ASR 只作为歌词边界 soft prior，声学低谷仍是切点主控。
 - **v2.5.1（2026-01-18）**: 多特征副歌检测（能量+频谱融合，自适应权重），移除 `mdd_start` 策略，交互式策略选择，连续性检测增强。
@@ -37,7 +37,7 @@
 2. `EnhancedVocalSeparator.separate_for_detection` 构造 `PipelineContext`，规划 chunk/overlap/halo，GPU 模式记录 `gpu_meta`，失败时回退 CPU。
 3. `SileroChunkVAD.process_chunk` 进行分块 VAD 和 halo 裁剪；`ChunkFeatureBuilder` 在 GPU 缓存 STFT/RMS 供后续复用。
 4. `PureVocalPauseDetector.detect_pure_vocal_pauses` 使用焦点窗口与特征缓存，在相对能量模式下结合 BPM/MDD/VPP 自适应判定停顿。
-4a. `VocalPhraseBoundaryDetector` 在 `vpbd_acoustic` / `vpbd_asr` 中把声学停顿、VPBD 专属气口、高能量段弱节拍、ASR word gap、sentence end、mVAD boundary 统一转换为 `CutCandidate`；±120ms 近重复候选先融合并在 `meta.sources` 留痕，再进入打分与 DP 规划。
+4a. `VocalPhraseBoundaryDetector` 在 `vpbd_acoustic` / `vpbd_asr` 中把声学停顿、VPBD 专属气口、高能量段弱节拍、ASR word gap、sentence end、mVAD boundary 统一转换为 `CutCandidate`；±120ms 近重复候选先融合并在 `meta.sources` 留痕，再进入带 `vocal_cut_risk` / `mdd_affinity` / `beat_conflict` 的打分与 DP 规划。
 4b. `hybrid_mdd` 策略层以 MDD 切点为 raw 边界，节拍吸附前先在分离后人声轨上做安静度检查；`chorus_force_snap=true` 可显式恢复旧版强吸附。
 5. `audio_cut.cutting.finalize_cut_points` 对候选执行加权 NMS、静音守卫、最小间隔，输出守卫位移统计；`hybrid_mdd` 和 `vpbd_asr` 均会在策略/规划后重新进入此守卫链，`vpbd_asr` 会撤销把词外 raw cut 推入 ASR word interval 的 guard 移动。
 6. `SeamlessSplitter._classify_segments_vocal_presence` 根据 RMS 活跃度估计 `_human/_music` 标签并记录调试信息。
@@ -63,7 +63,7 @@
 - `quality_control` 提供 `min_split_gap`、`segment_vocal_activity_ratio` 等守护阈值；`enforce_quiet_cut` 注重静音守卫参数（`guard_db`, `search_right_ms`）。
 - `segment_layout` 默认启用，`micro_merge_s` / `soft_min_s` / `soft_max_s` / `min_gap_s` 控制碎片合并策略；若更改需同步 doc/CLI。
 - `hybrid_mdd.snap_tolerance_ms` 默认 200ms，运行时再限制为 ≤0.4 个 beat；`vad_protection=true` 时节拍切点必须通过人声轨安静度检查，`chorus_force_snap=true` 是 v2.6 行为回退开关。
-- `vpbd`、`lyrics_alignment`、`fire_red`、`phrase_boundary`、`global_planner` 控制 VPBD 路径；`vpbd.breath_score_scale=0` 可关闭气口候选，`vpbd.beat_candidates` 控制高能量段弱节拍候选，`lyrics_alignment.enabled=false` 或 provider 不可用时应降级 `vpbd_acoustic`，strict 模式则 fail loud。
+- `vpbd`、`lyrics_alignment`、`fire_red`、`phrase_boundary`、`global_planner` 控制 VPBD 路径；`vpbd.breath_score_scale=0` 可关闭气口候选，`vpbd.beat_candidates` 控制高能量段弱节拍候选，`phrase_boundary.word_edge_tolerance_ms` 控制词边缘软化，`global_planner.vocal_risk_weight` / `beat_conflict_weight` 控制风险降权；`lyrics_alignment.enabled=false` 或 provider 不可用时应降级 `vpbd_acoustic`，strict 模式则 fail loud。
 - `output.format` 默认 `wav`，可通过 `output.mp3.bitrate` 调整 MP3 输出；`audio_export` 模块负责统一写入。
 
 ## 6. 测试矩阵
@@ -88,7 +88,7 @@
 ## 8. 当前进展与下一步
 - **进行中 (v2.7 draft - 2026-06-10)**：
   - 已完成 C1/C2/C3：气口只进入 VPBD 候选池；ASR lyrics 候选与声学候选合并后统一打分规划；高能量段弱节拍候选入池并携带 `vocal_cut_risk`
-  - 待完成 D：`vocal_cut_risk` 打分闭环、MDD affinity、ASR 容差软化与死配置收敛
+  - 已完成 D：`vocal_cut_risk` 打分闭环、MDD affinity、ASR 容差软化、`beat_conflict` 与 `min_score` 死配置收敛
 - **进行中 (v2.6 draft - 2026-06-09)**：
   - 新增 VPBD 数据模型、lyrics timeline、候选生成、边界打分与全局规划骨架
   - `SeamlessSplitter` 已接入 `vpbd_acoustic` / `vpbd_asr` 可选路径

@@ -301,7 +301,16 @@ class VocalPhraseBoundaryDetector:
         feature_cache: Optional[Any],
     ) -> List[CutCandidate]:
         beat_times = getattr(feature_cache, "beat_times", []) if feature_cache is not None else []
-        extractor = BoundaryFeatureExtractor(timeline=timeline, beat_times=beat_times)
+        rms_series = getattr(feature_cache, "rms_series", []) if feature_cache is not None else []
+        hop_s = float(getattr(feature_cache, "hop_s", 0.0) or 0.0) if feature_cache is not None else 0.0
+        extractor = BoundaryFeatureExtractor(
+            timeline=timeline,
+            beat_times=beat_times,
+            mdd_times=self._mdd_valley_times(feature_cache),
+            rms_series=rms_series,
+            hop_s=hop_s,
+            word_edge_tolerance_ms=float(_config_section("phrase_boundary").get("word_edge_tolerance_ms", 60.0)),
+        )
         scorer = PhraseBoundaryScorer.from_config(_config_section("phrase_boundary"))
         scored: List[CutCandidate] = []
         for candidate in candidates:
@@ -331,6 +340,23 @@ class VocalPhraseBoundaryDetector:
                 except (TypeError, ValueError):
                     continue
         return score
+
+    def _mdd_valley_times(self, feature_cache: Optional[Any]) -> List[float]:
+        if feature_cache is None:
+            return []
+        mdd_series = np.asarray(getattr(feature_cache, "mdd_series", []), dtype=np.float32)
+        hop_s = float(getattr(feature_cache, "hop_s", 0.0) or 0.0)
+        if mdd_series.size < 3 or hop_s <= 0.0:
+            return []
+        threshold = float(np.percentile(mdd_series, 35))
+        valleys: List[float] = []
+        for idx in range(1, mdd_series.size - 1):
+            current = float(mdd_series[idx])
+            left = float(mdd_series[idx - 1])
+            right = float(mdd_series[idx + 1])
+            if current <= threshold and (current < left or current < right):
+                valleys.append(idx * hop_s)
+        return valleys
 
 
 def _write_asr_vocal_copy(

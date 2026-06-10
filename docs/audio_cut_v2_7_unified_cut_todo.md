@@ -117,14 +117,14 @@ pytest tests/contracts/test_config_contracts.py
 
 > 对应方案 §6.2（C4–C7）。原则：每个配置项要么生效、要么删除。
 
-- [ ] C4：`BoundaryFeatures` 新增 `vocal_cut_risk` 字段；提取器用 `TrackFeatureCache.rms` 计算候选时刻 ±80ms 人声能量分位数归一化值；`global_planner.vocal_risk_weight` 从此真实生效。
-- [ ] C5：从 MDD 序列提取谷值时刻，`vocal_phrase_boundary_detector.py:202` 传入 `mdd_times`，`mdd_affinity` 复活。
-- [ ] C6a：`sentence_tolerance_s` 0.08 → 0.25，命中分按距离线性衰减。
-- [ ] C6b：`inside_word_penalty` 词边缘软化——距词边界 < 60ms 按距离比例衰减，消除悬崖；新增 `word_edge_tolerance_ms` 配置。
-- [ ] C7：`phrase_boundary.min_score` 二选一——在规划器预过滤中实装，或从 `unified.yaml` 删除；契约测试同步。
-- [ ] `beat_conflict` 特征实装（rhythmic 风格用：高能量段内远离节拍的候选记冲突分）或删除 `beat_conflict_weight` 配置——同样二选一。
-- [ ] 新增 `tests/unit/test_boundary_features_tolerance.py`：时间戳抖动 ±150ms 场景下句尾仍得分；词尾 20ms 处惩罚显著低于词中心。
-- [ ] 扩展 `tests/unit/test_global_cut_planner.py`：`vocal_cut_risk` 高的候选在同分情况下被避开。
+- [x] C4：`BoundaryFeatures` 新增 `vocal_cut_risk` 字段；提取器用 `TrackFeatureCache.rms` 计算候选时刻 ±80ms 人声能量分位数归一化值；`global_planner.vocal_risk_weight` 从此真实生效。（证据：`tests/unit/test_boundary_features_tolerance.py::test_vocal_cut_risk_uses_rms_percentile_window`；`tests/unit/test_vpbd_feature_wiring.py::test_vpbd_score_candidates_uses_cached_rms_for_vocal_risk`；`tests/unit/test_global_cut_planner.py` -> passed）
+- [x] C5：从 MDD 序列提取谷值时刻，`vocal_phrase_boundary_detector.py` 传入 `mdd_times`，`mdd_affinity` 复活。（证据：`tests/unit/test_vpbd_feature_wiring.py::test_vpbd_score_candidates_uses_cached_mdd_valleys`）
+- [x] C6a：`sentence_tolerance_s` 0.08 → 0.25，命中分按距离线性衰减。（证据：`tests/unit/test_boundary_features_tolerance.py::test_sentence_end_tolerance_survives_asr_timestamp_jitter`）
+- [x] C6b：`inside_word_penalty` 词边缘软化——距词边界 < 60ms 按距离比例衰减，消除悬崖；新增 `word_edge_tolerance_ms` 配置。（证据：`tests/unit/test_boundary_features_tolerance.py::test_inside_word_penalty_softens_near_word_edges`；`tests/contracts/test_config_contracts.py` -> passed）
+- [x] C7：`phrase_boundary.min_score` 二选一——选择从 `unified.yaml` 删除，避免误伤 ASR/beat 低权重 soft prior；契约测试同步。（证据：`tests/contracts/test_config_contracts.py` 断言 `min_score` 不在 `phrase_boundary`）
+- [x] `beat_conflict` 特征实装（远离最近节拍的候选记冲突分），`global_planner.beat_conflict_weight` 显式配置并进入契约测试。（证据：`tests/unit/test_boundary_features_tolerance.py::test_beat_conflict_marks_boundaries_far_from_beats`；`tests/unit/test_global_cut_planner.py` -> passed）
+- [x] 新增 `tests/unit/test_boundary_features_tolerance.py`：时间戳抖动 ±150ms 场景下句尾仍得分；词尾 20ms 处惩罚显著低于词中心。（证据：`venv/bin/python -m pytest -s tests/unit/test_boundary_features_tolerance.py -q` -> passed）
+- [x] 扩展/保留 `tests/unit/test_global_cut_planner.py`：`vocal_cut_risk` 高的候选在同分情况下被避开。（证据：`test_global_cut_planner_penalizes_vocal_risk_and_beat_conflict`）
 
 验收命令：
 
@@ -191,7 +191,7 @@ python run_splitter.py input/<sample>.mp3 --mode vpbd_asr --profile auto
 
 > 对应方案 §8。目标：513 行 → ≤120 行，删谎言、并叠乘、降细参。
 
-- [ ] 删除死配置：`bpm_adaptive_core.*`、`vocal_pause_splitting.bpm_adaptive_settings`、（若 D 节选择删除）`phrase_boundary.min_score`、`global_planner.beat_conflict_weight`。
+- [ ] 删除死配置：`bpm_adaptive_core.*`、`vocal_pause_splitting.bpm_adaptive_settings`；`phrase_boundary.min_score` 已在 D 节删除，`global_planner.beat_conflict_weight` 已实装不再删除。
 - [ ] 合并叠乘：`pause_stats_adaptation` 乘数体系并入 `relative_threshold_adaptation`，全链路只保留一处 clamp；合并前后阈值等价性单测。
 - [ ] 细参降级：`valley_scoring`、`advanced_vad`、`gpu_pipeline.ort`、`enforce_quiet_cut` 细项迁入 `config/expert.yaml`（缺省自动加载，主文件不再展示）。
 - [ ] 主文件目标结构：`smart_cut` + `audio/output/logging` + `gpu_pipeline` 基础三项 + `lyrics_alignment/fire_red`，行数 ≤120。

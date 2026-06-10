@@ -109,7 +109,7 @@ Vocal Smart Splitter 支持高保真声部拆分、纯人声检测，以及带 M
 - `segment_layout.*`：`micro_merge_s`/`soft_min_s`/`soft_max_s`/`min_gap_s`/`beat_snap_ms` 控制微碎片合并与节拍吸附。
 - `lyrics_alignment.*`：控制 `vpbd_asr` 是否启用、provider（disabled/fake/auto/sidecar/cli）、strict、ASR chunk 与 overlap、fake fixture。
 - `fire_red.*`：控制 provider 顺序、sidecar endpoint/path、CLI executable/model_dir/timeout。
-- `vpbd.*` / `phrase_boundary.*` / `global_planner.*`：控制 VPBD 模式开关、候选打分权重和全局切点规划约束；`vpbd.breath_score_scale` 只影响 VPBD 候选池，设为 `0` 可关闭气口候选；`vpbd.beat_candidates` 控制高能量段弱节拍候选。
+- `vpbd.*` / `phrase_boundary.*` / `global_planner.*`：控制 VPBD 模式开关、候选打分权重和全局切点规划约束；`vpbd.breath_score_scale` 只影响 VPBD 候选池，设为 `0` 可关闭气口候选；`vpbd.beat_candidates` 控制高能量段弱节拍候选；`phrase_boundary.word_edge_tolerance_ms` 软化词边缘惩罚，`global_planner.vocal_risk_weight` / `beat_conflict_weight` 控制风险降权。
 - `vpbd_asr` 的长段二次分割遵循软约束：优先选择声学低谷，并用 ASR 句/唱段边界加权；找不到可信低谷时保留稍长片段，不使用 midpoint 硬切。Hybrid legacy helper 仍保留 midpoint fallback 以兼容原有节拍卡点行为。
 - `hybrid_mdd` 参数：
   - `lib_alignment`：节拍对齐策略（推荐使用 quick_start.py 交互式选择）：
@@ -163,6 +163,8 @@ Vocal Smart Splitter 支持高保真声部拆分、纯人声检测，以及带 M
   - VPBD 候选池开始接收气口候选，默认按 `vpbd.breath_score_scale=0.6` 降权；旧模式仍按原逻辑过滤 breath。
   - `vpbd_asr` 的 lyrics gap / sentence end / mVAD 边界与声学候选合并后统一打分规划，近重复候选在 ±120ms 内融合并在 `meta.sources` 留痕。
   - VPBD 新增高能量段弱节拍候选，默认每 2 小节生成一次，候选携带 `vocal_cut_risk` 供后续规划降权。
+  - 修复 VPBD 死特征：`vocal_cut_risk`、`mdd_affinity`、`beat_conflict` 现在进入打分/规划链；句尾容差放宽到 250ms，词边缘惩罚按距离软化。
+  - 删除未生效且会误伤低权重 soft prior 的 `phrase_boundary.min_score`。
   - `boundary_detection.candidate_counts` 新增 `merged` 计数，旧字段语义保持不变。
 - **2026-06-10 (v2.6.1 draft)**
   - 修复 `hybrid_mdd.vad_protection` 过去未真正参与副歌吸附决策的问题：策略层现在使用分离后人声轨判断目标节拍是否安静。
