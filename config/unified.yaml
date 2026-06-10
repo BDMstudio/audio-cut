@@ -195,7 +195,7 @@ v2_mdd:
 
     # 片段时长控制
     segment_min_duration: 2.0         # 最小片段时长 (秒)
-    segment_max_duration: 8.0        # 最大片段时长 (秒)
+    segment_max_duration: 18.0        # 最大片段时长 (秒)
     pure_music_min_duration: 6.0      # 纯音乐段最小时长 (秒)
 
     # 人声活跃度判定
@@ -237,7 +237,7 @@ v2_mdd:
                                       # < 该时长的片段会与邻段合并
     soft_min_s: 5.0                   # 软最小时长 (秒)
                                       # 低于此值尝试温和合并
-    soft_max_s: 15.0                 # 软最大时长 (秒)
+    soft_max_s: 12.0                 # 软最大时长 (秒)
                                       # 超过此值尝试救援切分
     min_gap_s: 1.0                    # 切点最小间隔 (秒)
     beat_snap_ms: 50                  # 节拍吸附窗口 (ms)，0=关闭
@@ -362,6 +362,18 @@ hybrid_mdd:
   # ---------------------------------------------------------------------------
   labeling:
     lib_suffix: "_lib"                # 节拍卡点片段后缀
+
+
+# =============================================================================
+# Smart Cut User Surface (v2.7)
+# 单一用户面配置：profile/风格/目标时长/歌词策略。
+# =============================================================================
+
+smart_cut:
+  profile: auto                       # auto / ballad / pop / edm / rap
+  cut_style: natural                  # natural / rhythmic / dense
+  target_duration_s: [5.0, 12.0]      # derives planner/layout/quality duration knobs
+  lyrics: auto                        # auto / off / strict
 
 
 # =============================================================================

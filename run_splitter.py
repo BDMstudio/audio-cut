@@ -109,8 +109,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         '--profile',
-        choices=['ballad', 'pop', 'edm', 'rap'],
-        help='应用预设配置 Profile（ballad/pop/edm/rap）',
+        choices=['auto', 'ballad', 'pop', 'edm', 'rap'],
+        help='应用预设配置 Profile（auto/ballad/pop/edm/rap，默认由 smart_cut.profile 控制）',
     )
     parser.add_argument(
         '--compat-config',
@@ -207,14 +207,19 @@ def main() -> None:
     active_profile = None
     compat_flag = None
     if args.profile:
-        try:
-            _, profile_overrides = apply_profile_overrides(args.profile)
-        except FileNotFoundError as exc:
-            logger.error(str(exc))
-            sys.exit(1)
-        runtime_overrides.update(profile_overrides)
-        active_profile = args.profile
-        logger.info("应用配置 Profile: %s", args.profile)
+        runtime_overrides['smart_cut.profile'] = args.profile
+        if args.profile == 'auto':
+            active_profile = 'auto'
+            logger.info("应用配置 Profile: auto")
+        else:
+            try:
+                _, profile_overrides = apply_profile_overrides(args.profile)
+            except FileNotFoundError as exc:
+                logger.error(str(exc))
+                sys.exit(1)
+            runtime_overrides.update(profile_overrides)
+            active_profile = args.profile
+            logger.info("应用配置 Profile: %s", args.profile)
     if args.compat_config == 'v2':
         legacy_path = project_root / 'config' / 'default.yaml'
         if not legacy_path.exists():

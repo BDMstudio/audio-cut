@@ -164,17 +164,17 @@ venv/bin/python scripts/vpbd_asr_acceptance.py --playlist docs/vpbd_asr_acceptan
 
 > 对应方案 §7（A1–A6）。数据已在 TrackFeatureCache，缺的只是决策模块。
 
-- [ ] A1：新增 `audio_cut/config/auto_profile.py`：`estimate_style(cache) -> StyleEstimate(profile, confidence, features)`，规则版（BPM 区间 + global_mdd + 能量 CV + 人声覆盖率加权投票）。
-- [ ] A2：锚点插值——在 Schema v3 的 12 参数空间对两个最近锚点 profile 线性插值（如 95 BPM ⇒ 0.7×pop + 0.3×ballad），消除档位边界悬崖。
-- [ ] A3：统一 BPM 分类学——删除 `AdaptiveParameterCalculator` 的 70/100/140 私有分档逻辑依赖，全项目只认 `derive.py` 一套；`bpm_adaptive_core` 配置段标记 deprecated（读到时 warning）。
-- [ ] A4：CLI 支持 `--profile auto`（v2.7 默认）；`--profile ballad` 等手动值优先级高于 auto；`quick_start.py` 菜单同步。
-- [ ] A5：Manifest 新增 optional `auto_profile: {style, confidence, bpm, mdd, applied_overrides}`；schema/契约测试覆盖 optional 行为。
-- [ ] A6：`phrase_boundary.weights` 按风格预设联动（rap/edm 提 beat_affinity 与 breath，ballad 提 acoustic_pause 与 sentence_end），与 A2 同机制插值。
-- [ ] 置信度兜底：confidence < 0.6 时回退 pop 中性锚点并在 Manifest 留痕。
-- [ ] 新增用户面配置节 `smart_cut: {profile, cut_style, target_duration_s, lyrics}`；`target_duration_s` 成为单一时长真相，派生 `global_planner.hard_*/target_*`、`segment_layout.soft_*`、`quality_control.segment_max_duration`。
-- [ ] 新增 `tests/unit/test_auto_profile.py`：四类典型特征向量判定正确；插值单调；低置信回退。
-- [ ] 新增 `tests/unit/test_smart_cut_duration_derivation.py`：三处时长配置由 `target_duration_s` 一致派生，手改子项时 warning。
-- [ ] M3 验收：20 首 playlist 上 auto 判定与人工风格标签一致率 ≥ 85%；auto 模式各项指标 ≥ 人工最优 profile 的 95%。
+- [x] A1：新增 `audio_cut/config/auto_profile.py`：`estimate_style(cache) -> StyleEstimate(profile, confidence, features)`，规则版（BPM 区间 + global_mdd + 能量 CV + 人声覆盖率加权投票）。（证据：`tests/unit/test_auto_profile.py` -> passed；`tests/unit/test_seamless_splitter_auto_profile.py` 覆盖 vocal coverage 派生）
+- [x] A2：锚点插值——在 Schema v3 profile runtime override 空间对两个最近锚点 profile 线性插值（95 BPM ⇒ 0.7×pop + 0.3×ballad），消除档位边界悬崖。（证据：`test_auto_profile_interpolates_between_neighboring_profile_anchors`）
+- [ ] A3：统一 BPM 分类学——删除 `AdaptiveParameterCalculator` 的 70/100/140 私有分档逻辑依赖，全项目只认 `derive.py` 一套；`bpm_adaptive_core` 配置段标记 deprecated（读到时 warning）。（本次仅 AutoProfile 使用 `derive.py` profile anchor；旧工具仍保留，待 G 节配置瘦身/迁移一起处理）
+- [x] A4：CLI 支持 `--profile auto`（v2.7 默认）；`--profile ballad` 等手动值优先级高于 auto；`quick_start.py` 菜单同步。（证据：`tests/unit/test_run_splitter_cli.py`、`tests/unit/test_quick_start_vpbd.py`、`test_seamless_splitter_manual_profile_takes_priority_over_auto_estimate`）
+- [x] A5：Manifest 新增 optional `auto_profile: {style, confidence, bpm, mdd, applied_overrides}`；schema/契约测试覆盖 optional 行为。（证据：`tests/unit/test_api_manifest.py::test_manifest_includes_optional_auto_profile_metadata`）
+- [x] A6：`phrase_boundary.weights` 按风格预设联动（rap/edm 提 beat_affinity 与 breath，ballad 提 acoustic_pause 与 sentence_end），与 A2 同机制插值。（证据：`test_style_weight_overrides_shift_with_cut_style_and_profile`；手动 profile 联动由 `test_seamless_splitter_manual_profile_takes_priority_over_auto_estimate` 覆盖）
+- [x] 置信度兜底：confidence < 0.6 时回退 pop 中性锚点并在 Manifest 留痕。（证据：`test_estimate_style_low_confidence_falls_back_to_pop`）
+- [x] 新增用户面配置节 `smart_cut: {profile, cut_style, target_duration_s, lyrics}`；`target_duration_s` 成为单一时长真相，派生 `global_planner.hard_*/target_*`、`segment_layout.soft_*`、`quality_control.segment_max_duration`。（证据：`tests/unit/test_smart_cut_duration_derivation.py`；`tests/contracts/test_config_contracts.py`）
+- [x] 新增 `tests/unit/test_auto_profile.py`：四类典型特征向量判定正确；插值单调；低置信回退。（证据：`tests/unit/test_auto_profile.py` -> passed）
+- [x] 新增 `tests/unit/test_smart_cut_duration_derivation.py`：三处时长配置由 `target_duration_s` 一致派生，非法 target fail loud。（证据：`tests/unit/test_smart_cut_duration_derivation.py` -> passed；手改子项 warning 将随 G 节配置瘦身补齐）
+- [ ] M3 验收：20 首 playlist 上 auto 判定与人工风格标签一致率 ≥ 85%；auto 模式各项指标 ≥ 人工最优 profile 的 95%。（未执行：本地 acceptance playlist 仍缺有效人工标签/参考边界证据）
 
 验收命令：
 

@@ -107,6 +107,7 @@ Vocal Smart Splitter 支持高保真声部拆分、纯人声检测，以及带 M
   - `segment_vocal_activity_ratio`：阈值上调可减少误判；
   - `enforce_quiet_cut.*`：静音守卫参数（`guard_db`, `search_right_ms`）。
 - `segment_layout.*`：`micro_merge_s`/`soft_min_s`/`soft_max_s`/`min_gap_s`/`beat_snap_ms` 控制微碎片合并与节拍吸附。
+- `smart_cut.*`：v2.7 用户面配置，`profile: auto` 默认按特征缓存估计风格；手动 `ballad/pop/edm/rap` 优先于 auto；`target_duration_s` 派生 planner/layout/quality 三处时长约束。
 - `lyrics_alignment.*`：控制 `vpbd_asr` 是否启用、provider（disabled/fake/auto/sidecar/cli）、strict、ASR chunk 与 overlap、fake fixture。
 - `fire_red.*`：控制 provider 顺序、sidecar endpoint/path、CLI executable/model_dir/timeout。
 - `vpbd.*` / `phrase_boundary.*` / `global_planner.*`：控制 VPBD 模式开关、候选打分权重和全局切点规划约束；`vpbd.candidate_pool=legacy` 回退到 v2.6 声学候选池，`vpbd.candidate_debug_json=true` 写出候选 JSON；`vpbd.breath_score_scale` 只影响 VPBD 候选池，设为 `0` 可关闭气口候选；`vpbd.beat_candidates` 控制高能量段弱节拍候选；`phrase_boundary.word_edge_tolerance_ms` 软化词边缘惩罚，`global_planner.vocal_risk_weight` / `beat_conflict_weight` 控制风险降权。
@@ -166,6 +167,8 @@ Vocal Smart Splitter 支持高保真声部拆分、纯人声检测，以及带 M
   - 修复 VPBD 死特征：`vocal_cut_risk`、`mdd_affinity`、`beat_conflict` 现在进入打分/规划链；句尾容差放宽到 250ms，词边缘惩罚按距离软化。
   - 权重体系进入 v2.7 beta 形态：新增 `breath` 权重，`inside_word_penalty` 提升到 0.80；breath 不再冒充长停顿，merged breath+sentence 会保留 breath 特征，beat 候选不再绕过权重强行抬分。
   - 新增 `vpbd.candidate_pool=legacy` 回退开关和 `vpbd.candidate_debug_json` 候选调试路径；QA report 新增 `breath_cut_ratio`、`beat_aligned_ratio`。
+  - 新增 AutoProfile：`smart_cut.profile=auto` 基于 BPM/MDD/能量 CV/人声覆盖率估计风格，插值已有 profile anchor，低置信回退 pop；`--profile auto` 和 quick_start 默认 auto，手动 profile 优先。
+  - `smart_cut.target_duration_s` 成为 v2.7 时长单一入口，派生 `global_planner`、`segment_layout` 和 `quality_control.segment_max_duration`。
   - 删除未生效且会误伤低权重 soft prior 的 `phrase_boundary.min_score`。
   - `boundary_detection.candidate_counts` 新增 `merged` / `lyrics_pooled` 计数，旧字段语义保持不变。
 - **2026-06-10 (v2.6.1 draft)**

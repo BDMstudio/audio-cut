@@ -12,6 +12,13 @@ from .derive import (
     build_legacy_overrides,
     apply_profile_overrides,
 )
+from .auto_profile import (
+    StyleEstimate,
+    build_auto_profile_overrides,
+    build_style_weight_overrides,
+    derive_smart_cut_overrides,
+    estimate_style,
+)
 
 __all__ = [
     "is_v3_schema",
@@ -19,4 +26,9 @@ __all__ = [
     "schema_from_mapping",
     "build_legacy_overrides",
     "apply_profile_overrides",
+    "StyleEstimate",
+    "build_auto_profile_overrides",
+    "build_style_weight_overrides",
+    "derive_smart_cut_overrides",
+    "estimate_style",
 ]

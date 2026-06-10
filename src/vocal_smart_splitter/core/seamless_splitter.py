@@ -14,6 +14,13 @@ import time
 import tempfile
 
 from audio_cut.analysis import BeatAnalyzer, TrackFeatureCache, build_feature_cache
+from audio_cut.config.auto_profile import (
+    build_auto_profile_overrides,
+    build_style_weight_overrides,
+    derive_smart_cut_overrides,
+    estimate_style,
+)
+from audio_cut.config.derive import apply_profile_overrides
 from audio_cut.utils.gpu_pipeline import PipelineConfig, PipelineContext, build_pipeline_context
 from audio_cut.cutting.refine import (
     CutAdjustment,
@@ -29,7 +36,13 @@ from audio_cut.cutting.segment_layout_refiner import (
     refine_layout,
 )
 
-from ..utils.config_manager import get_config, get_librosa_onset_config, get_hybrid_mdd_config
+from ..utils.config_manager import (
+    get_config,
+    get_hybrid_mdd_config,
+    get_librosa_onset_config,
+    get_runtime_override_keys,
+    set_runtime_config,
+)
 from ..utils.audio_export import (
     build_export_options,
     ensure_supported_format,
@@ -77,6 +90,7 @@ class SeamlessSplitter:
         self._last_guard_adjustments_raw: List[CutAdjustment] = []
         self._last_suppressed_cut_points: List[CutPoint] = []
         self._precision_guard_ok: bool = True
+        self._last_auto_profile_meta: Optional[Dict[str, Any]] = None
         default_export_format = ensure_supported_format(get_config('output.format', 'wav'))
         self._export_format = default_export_format
         self._export_options = build_export_options(
@@ -323,6 +337,8 @@ class SeamlessSplitter:
             except Exception as exc:
                 logger.warning("Failed to build feature cache: %s", exc)
                 feature_cache = None
+
+        smart_profile_meta = self._apply_smart_cut_runtime(feature_cache, vocal_track=vocal_track)
 
         # 3. Detect boundary candidates
         is_vpbd_mode = mode in {'vpbd_acoustic', 'vpbd_asr'}
@@ -708,11 +724,88 @@ class SeamlessSplitter:
         if vpbd_detection is not None:
             result['boundary_detection'] = vpbd_detection.boundary_detection
             result['lyrics_alignment'] = vpbd_detection.lyrics_alignment
+        if smart_profile_meta is not None:
+            result['auto_profile'] = smart_profile_meta
         result['segment_layout_applied'] = bool(layout_applied)
         result['lyrics_cut_protection_applied'] = bool(lyrics_protection_applied)
         result['suppressed_cut_points_sec'] = [float(cut.t) for cut in self._last_suppressed_cut_points]
         result.update(gpu_meta)
         return result
+
+    def _apply_smart_cut_runtime(
+        self,
+        feature_cache: Optional[TrackFeatureCache],
+        *,
+        vocal_track: Optional[np.ndarray] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Apply smart_cut profile and duration overrides before boundary detection."""
+
+        try:
+            smart_cut = get_config('smart_cut', {}) or {}
+        except Exception:
+            smart_cut = {}
+        if not isinstance(smart_cut, dict):
+            smart_cut = {}
+
+        profile = str(smart_cut.get('profile', 'auto') or 'auto').strip().lower()
+        cut_style = str(smart_cut.get('cut_style', 'natural') or 'natural').strip().lower()
+        runtime_keys = get_runtime_override_keys()
+        overrides: Dict[str, Any] = (
+            derive_smart_cut_overrides(smart_cut)
+            if 'smart_cut.target_duration_s' in runtime_keys
+            else {}
+        )
+        auto_profile_meta: Optional[Dict[str, Any]] = None
+
+        if profile == 'auto':
+            self._attach_vocal_coverage(feature_cache, vocal_track)
+            estimate = estimate_style(feature_cache)
+            profile_overrides = build_auto_profile_overrides(estimate, cut_style=cut_style)
+            auto_profile_meta = dict(profile_overrides.get('meta.auto_profile', {}))
+            overrides.update(profile_overrides)
+            logger.info(
+                "[AutoProfile] style=%s confidence=%.3f bpm=%s",
+                auto_profile_meta.get('style'),
+                float(auto_profile_meta.get('confidence') or 0.0),
+                auto_profile_meta.get('bpm'),
+            )
+        elif profile in {'ballad', 'pop', 'edm', 'rap'}:
+            _, profile_overrides = apply_profile_overrides(profile)
+            overrides.update(profile_overrides)
+            overrides.update(build_style_weight_overrides(profile, cut_style=cut_style))
+            overrides['meta.profile'] = profile
+            logger.info("[AutoProfile] manual profile=%s", profile)
+        else:
+            logger.warning("[AutoProfile] unknown smart_cut.profile=%s; falling back to pop", profile)
+            _, profile_overrides = apply_profile_overrides('pop')
+            overrides.update(profile_overrides)
+            overrides['meta.profile'] = 'pop'
+
+        set_runtime_config(overrides)
+        self._last_auto_profile_meta = auto_profile_meta
+        return auto_profile_meta
+
+    def _attach_vocal_coverage(
+        self,
+        feature_cache: Optional[TrackFeatureCache],
+        vocal_track: Optional[np.ndarray],
+    ) -> None:
+        if feature_cache is None or vocal_track is None or hasattr(feature_cache, 'vocal_coverage_ratio'):
+            return
+        audio = np.asarray(vocal_track, dtype=np.float32)
+        if audio.size == 0:
+            return
+        mono = audio if audio.ndim == 1 else np.mean(audio, axis=-1)
+        peak = float(np.max(np.abs(mono))) if mono.size else 0.0
+        if peak <= 1e-9:
+            coverage = 0.0
+        else:
+            threshold = max(peak * 0.03, 1e-5)
+            coverage = float(np.mean(np.abs(mono) >= threshold))
+        try:
+            setattr(feature_cache, 'vocal_coverage_ratio', max(0.0, min(1.0, coverage)))
+        except Exception:
+            return
 
     def _get_gpu_pipeline_config(self) -> PipelineConfig:
         try:
@@ -2352,6 +2445,9 @@ class SeamlessSplitter:
             },
             'note': reason, 'input_file': input_path, 'output_dir': output_dir
         }
+        auto_profile_meta = getattr(self, '_last_auto_profile_meta', None)
+        if auto_profile_meta is not None:
+            result['auto_profile'] = auto_profile_meta
         if gpu_meta:
             result.update(gpu_meta)
         return result

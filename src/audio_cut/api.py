@@ -206,6 +206,9 @@ def _build_manifest(
     if result.get('boundary_detection') is not None:
         manifest['boundary_detection'] = result.get('boundary_detection')
 
+    if result.get('auto_profile') is not None:
+        manifest['auto_profile'] = result.get('auto_profile')
+
     gpu_meta = {k: result[k] for k in result.keys() if k.startswith('gpu_pipeline_')}
     if gpu_meta:
         manifest['gpu'] = gpu_meta

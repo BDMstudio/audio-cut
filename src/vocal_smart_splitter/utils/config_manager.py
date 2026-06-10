@@ -6,7 +6,7 @@
 import os
 import yaml
 import logging
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, Set
 
 from audio_cut.config.derive import (
     build_legacy_overrides,
@@ -243,7 +243,7 @@ class ConfigManager:
             'output', 'logging', 'analysis', 'vocal_separation',
             'vocal_pause_splitting', 'bpm_adaptive_core', 'hybrid_mdd',
             'vpbd', 'lyrics_alignment', 'fire_red', 'phrase_boundary',
-            'global_planner',
+            'global_planner', 'smart_cut',
         ]
 
         for key in direct_merge_keys:
@@ -447,6 +447,7 @@ class ConfigManager:
 
 # 全局配置管理器实例
 _config_manager = None
+_runtime_override_keys = set()
 
 def get_config_manager(config_path: Optional[str] = None) -> ConfigManager:
     """获取全局配置管理器实例
@@ -486,12 +487,20 @@ def set_runtime_config(config_overrides: Dict[str, Any]):
     
     for key_path, value in config_overrides.items():
         config_manager.set(key_path, value)
+        _runtime_override_keys.add(str(key_path))
     
     logger.info(f"已设置 {len(config_overrides)} 个运行时配置覆盖")
 
+
+def get_runtime_override_keys() -> Set[str]:
+    """Return dotted keys explicitly set through set_runtime_config."""
+
+    return set(_runtime_override_keys)
+
 def reset_runtime_config():
     """重置运行时配置（重新加载原始配置文件）"""
-    global _config_manager
+    global _config_manager, _runtime_override_keys
+    _runtime_override_keys = set()
     if _config_manager:
         original_path = _config_manager.config_path
         _config_manager = ConfigManager(str(original_path))

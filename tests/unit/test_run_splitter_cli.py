@@ -53,3 +53,11 @@ def test_run_splitter_endpoint_defaults_provider_to_sidecar() -> None:
     assert overrides["lyrics_alignment.enabled"] is True
     assert overrides["lyrics_alignment.provider"] == "sidecar"
     assert overrides["fire_red.endpoint"] == "http://127.0.0.1:8765"
+
+
+def test_run_splitter_accepts_profile_auto() -> None:
+    parser = build_parser()
+
+    args = parser.parse_args(["input/song.mp3", "--mode", "vpbd_asr", "--profile", "auto"])
+
+    assert args.profile == "auto"

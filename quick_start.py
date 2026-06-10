@@ -95,6 +95,27 @@ def select_processing_mode():
         return 'v2.2_mdd'
 
 
+def select_smart_profile():
+    """让用户选择 smart_cut profile；默认 auto。"""
+    print("\n" + "=" * 60)
+    print("选择智能 Profile")
+    print("=" * 60)
+    print("  1. Auto - 自动识别风格 (默认)")
+    print("  2. Ballad - 抒情慢歌")
+    print("  3. Pop - 流行")
+    print("  4. EDM - 强节奏")
+    print("  5. Rap - 密集人声")
+    print()
+    try:
+        choice = int(input("请选择 (1-5，默认1): ").strip() or "1")
+    except ValueError:
+        choice = 1
+    profiles = {1: 'auto', 2: 'ballad', 3: 'pop', 4: 'edm', 5: 'rap'}
+    profile = profiles.get(choice, 'auto')
+    print(f"[SELECT] 已选择 Profile: {profile}")
+    return profile
+
+
 def select_hybrid_density():
     """让用户选择 hybrid_mdd 模式的卡点密度"""
     print("\n" + "=" * 60)
@@ -362,6 +383,8 @@ def main():
             target_files = [selected_file]
 
     processing_mode = select_processing_mode()
+    smart_profile = select_smart_profile()
+    set_runtime_config({'smart_cut.profile': smart_profile})
 
     # 如果选择了 hybrid_mdd 模式，询问卡点密度和对齐策略
     hybrid_density = None

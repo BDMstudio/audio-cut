@@ -15,6 +15,10 @@ def test_vpbd_asr_config_defaults_are_loaded() -> None:
     assert cfg.get("vpbd.beat_candidates.bars_per_cut") == 2
     assert cfg.get("vpbd.beat_candidates.base_score") == 0.3
     assert cfg.get("vpbd.candidate_pool") == "unified"
+    assert cfg.get("smart_cut.profile") == "auto"
+    assert cfg.get("smart_cut.cut_style") == "natural"
+    assert cfg.get("smart_cut.target_duration_s") == [5.0, 12.0]
+    assert cfg.get("smart_cut.lyrics") == "auto"
     assert cfg.get("lyrics_alignment.provider") == "disabled"
     assert cfg.get("fire_red.cli.timeout_s") == 120.0
     assert "min_score" not in cfg.config["phrase_boundary"]
@@ -39,6 +43,7 @@ def test_vpbd_asr_config_supports_vss_env_override(monkeypatch) -> None:
     monkeypatch.setenv("VSS__VPBD__BEAT_CANDIDATES__ENABLE", "false")
     monkeypatch.setenv("VSS__VPBD__BEAT_CANDIDATES__BARS_PER_CUT", "4")
     monkeypatch.setenv("VSS__VPBD__CANDIDATE_POOL", "legacy")
+    monkeypatch.setenv("VSS__SMART_CUT__PROFILE", "ballad")
     monkeypatch.setenv("VSS__PHRASE_BOUNDARY__WORD_EDGE_TOLERANCE_MS", "45")
     monkeypatch.setenv("VSS__GLOBAL_PLANNER__VOCAL_RISK_WEIGHT", "0.4")
 
@@ -51,5 +56,6 @@ def test_vpbd_asr_config_supports_vss_env_override(monkeypatch) -> None:
     assert cfg.get("vpbd.beat_candidates.enable") is False
     assert cfg.get("vpbd.beat_candidates.bars_per_cut") == 4
     assert cfg.get("vpbd.candidate_pool") == "legacy"
+    assert cfg.get("smart_cut.profile") == "ballad"
     assert cfg.get("phrase_boundary.word_edge_tolerance_ms") == 45
     assert cfg.get("global_planner.vocal_risk_weight") == 0.4
