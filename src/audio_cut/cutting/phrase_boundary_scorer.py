@@ -14,12 +14,13 @@ from audio_cut.analysis.boundary_features import BoundaryFeatures
 from audio_cut.cutting.cut_candidate import CutCandidate
 
 DEFAULT_BOUNDARY_WEIGHTS: Dict[str, float] = {
-    "acoustic_pause": 0.40,
-    "asr_gap": 0.25,
+    "acoustic_pause": 0.35,
+    "asr_gap": 0.20,
     "sentence_end": 0.15,
-    "beat_affinity": 0.10,
+    "beat_affinity": 0.08,
     "mdd_affinity": 0.10,
-    "inside_word_penalty": 0.60,
+    "breath": 0.12,
+    "inside_word_penalty": 0.80,
     "singing_penalty": 0.50,
 }
 _PENALTY_KEYS = {"inside_word_penalty", "singing_penalty"}

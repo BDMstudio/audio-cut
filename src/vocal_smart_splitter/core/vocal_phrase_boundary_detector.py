@@ -22,7 +22,7 @@ from audio_cut.cutting.global_cut_planner import (
     GlobalCutPlanner,
     GlobalCutPlannerConfig,
 )
-from audio_cut.cutting.phrase_boundary_scorer import PhraseBoundaryScorer
+from audio_cut.cutting.phrase_boundary_scorer import PhraseBoundaryScorer, write_candidate_debug_json
 from audio_cut.exceptions import LyricsAlignmentUnavailable
 from audio_cut.lyrics.candidates import LyricsBoundaryCandidateGenerator
 from audio_cut.lyrics.models import LyricsTimeline
@@ -63,6 +63,12 @@ class VocalPhraseBoundaryDetector:
         fallback_reason: Optional[str] = None
         timeline = LyricsTimeline(duration_s=duration_s, source="none")
         lyrics_candidates: List[CutCandidate] = []
+
+        vpbd_cfg = _config_section("vpbd")
+        candidate_pool = str(vpbd_cfg.get("candidate_pool", "unified")).strip().lower()
+        if candidate_pool not in {"unified", "legacy"}:
+            candidate_pool = "unified"
+        use_unified_pool = candidate_pool == "unified"
 
         lyrics_cfg = _config_section("lyrics_alignment")
         strict = bool(lyrics_cfg.get("strict", False))
@@ -116,18 +122,25 @@ class VocalPhraseBoundaryDetector:
             feature_cache=feature_cache,
             vad_segments=vad_segments,
             enable_mdd=True,
+            include_breath_candidates=use_unified_pool,
         )
         beat_candidates = self._build_beat_candidates(
             vocal_track=vocal_track,
             feature_cache=feature_cache,
             duration_s=duration_s,
-        )
-        merged_candidates = self._merge_candidate_pool(acoustic_candidates, lyrics_candidates, beat_candidates)
+        ) if use_unified_pool else []
+        pooled_lyrics_candidates = lyrics_candidates if use_unified_pool else []
+        merged_candidates = self._merge_candidate_pool(acoustic_candidates, pooled_lyrics_candidates, beat_candidates)
         scored_candidates = self._score_candidates(
             candidates=merged_candidates,
             timeline=timeline,
             feature_cache=feature_cache,
         )
+        candidate_debug_path: Optional[str] = None
+        if bool(vpbd_cfg.get("candidate_debug_json", False)):
+            candidate_debug_path = str(Path(output_dir) / "vpbd_candidate_debug.json")
+            write_candidate_debug_json(scored_candidates, candidate_debug_path)
+
         planner = GlobalCutPlanner(_planner_config())
         planner_result = planner.plan(scored_candidates, duration_s=duration_s)
 
@@ -145,9 +158,12 @@ class VocalPhraseBoundaryDetector:
         boundary_meta = {
             "mode": mode,
             "actual_mode": actual_mode,
+            "candidate_pool": candidate_pool,
+            "candidate_debug_path": candidate_debug_path,
             "candidate_counts": {
                 "acoustic": len(acoustic_candidates),
                 "lyrics": len(lyrics_candidates),
+                "lyrics_pooled": len(pooled_lyrics_candidates),
                 "beat": len(beat_candidates),
                 "merged": len(merged_candidates),
                 "total": len(scored_candidates),
@@ -175,6 +191,7 @@ class VocalPhraseBoundaryDetector:
         feature_cache: Optional[Any],
         vad_segments: Optional[List[Dict[str, float]]],
         enable_mdd: bool,
+        include_breath_candidates: bool = True,
     ) -> List[CutCandidate]:
         pauses = pure_vocal_detector.detect_pure_vocal_pauses(
             vocal_track,
@@ -182,10 +199,10 @@ class VocalPhraseBoundaryDetector:
             original_audio=original_audio,
             feature_cache=feature_cache,
             vad_segments=vad_segments,
-            include_breath_candidates=True,
+            include_breath_candidates=include_breath_candidates,
         )
         vpbd_cfg = _config_section("vpbd")
-        breath_score_scale = float(vpbd_cfg.get("breath_score_scale", 0.6))
+        breath_score_scale = float(vpbd_cfg.get("breath_score_scale", 0.6)) if include_breath_candidates else 0.0
         raw = []
         for pause in pauses or []:
             t = float(getattr(pause, "cut_point", (pause.start_time + pause.end_time) / 2.0))
@@ -316,19 +333,19 @@ class VocalPhraseBoundaryDetector:
         for candidate in candidates:
             acoustic_pause = self._acoustic_pause_score(candidate)
             features = extractor.extract(candidate.t, acoustic_pause=acoustic_pause)
+            breath_score = self._breath_score(candidate)
+            if breath_score > 0.0:
+                features = replace(features, breath=breath_score)
             scored_candidate = scorer.score_candidate(candidate, features)
             merged_features = dict(candidate.features)
             merged_features.update(scored_candidate.features)
             scored_candidate = replace(scored_candidate, features=merged_features)
-            if candidate.source == CandidateSource.BEAT:
-                scored_candidate = replace(scored_candidate, score=max(scored_candidate.score, candidate.score))
             scored.append(scored_candidate)
         return scored
 
     def _acoustic_pause_score(self, candidate: CutCandidate) -> float:
         acoustic_sources = {
             CandidateSource.ACOUSTIC_PAUSE.value,
-            CandidateSource.BREATH.value,
             CandidateSource.MDD_VALLEY.value,
         }
         score = candidate.score if candidate.source.value in acoustic_sources else 0.0
@@ -339,6 +356,16 @@ class VocalPhraseBoundaryDetector:
                     score = max(score, float(source_scores.get(source, 0.0)))
                 except (TypeError, ValueError):
                     continue
+        return score
+
+    def _breath_score(self, candidate: CutCandidate) -> float:
+        score = candidate.score if candidate.source == CandidateSource.BREATH else 0.0
+        source_scores = candidate.meta.get("source_scores", {})
+        if isinstance(source_scores, dict):
+            try:
+                score = max(score, float(source_scores.get(CandidateSource.BREATH.value, 0.0)))
+            except (TypeError, ValueError):
+                pass
         return score
 
     def _mdd_valley_times(self, feature_cache: Optional[Any]) -> List[float]:

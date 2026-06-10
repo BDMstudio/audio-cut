@@ -141,13 +141,13 @@ pytest tests/unit/test_global_cut_planner.py
 
 > 对应方案 §6.3–6.4。切点优先级 = 权重，不是 if/else。
 
-- [ ] `unified.yaml` 更新 `phrase_boundary.weights`：新增 `breath`，`inside_word_penalty` 0.60 → 0.80，按方案 §6.3 natural 风格示例配齐。
-- [ ] 权重和校验：正向权重合计与惩罚上限写入配置契约测试（防止后续改出 >1 的失衡）。
-- [ ] QA report 新增指标：`breath_cut_ratio`、`beat_aligned_ratio`（扩展 `audio_cut/qa_report.py` 与 `tests/unit/test_qa_report.py`）。
-- [ ] 候选调试 JSON 确认包含新 source 与新特征（`vpbd.candidate_debug_json: true` 路径）。
-- [ ] 新增回退开关 `vpbd.candidate_pool: unified | legacy`（默认 unified；legacy = 仅声学候选，行为等价 v2.6）。
-- [ ] 集成测试：`tests/integration/test_pipeline_vpbd_asr_fake_provider.py` 扩展——fake timeline 含句尾/气口场景，断言选点优先级"长停顿 > 气口+句尾 > 节拍"。
-- [ ] 用 v2.6 验收器跑 M2 门槛：`cut_inside_word_rate ≤ 1%`、`segment_5_15_pass_rate ≥ 90%`、`boundary_f1_500ms ≥ 0.82` 不回退。
+- [x] `unified.yaml` 更新 `phrase_boundary.weights`：新增 `breath`，`inside_word_penalty` 0.60 → 0.80，按方案 §6.3 natural 风格归一化配置。（证据：`tests/contracts/test_config_contracts.py` -> passed；`tests/unit/test_phrase_boundary_scorer.py` -> passed）
+- [x] 权重和校验：正向权重合计与惩罚上限写入配置契约测试（防止后续改出 >1 的失衡）。（证据：`test_vpbd_asr_config_defaults_are_loaded` 断言正向权重合计 ≤ 1.0、惩罚合计 ≤ 1.5）
+- [x] QA report 新增指标：`breath_cut_ratio`、`beat_aligned_ratio`（扩展 `audio_cut/qa_report.py` 与 `tests/unit/test_qa_report.py`）。（证据：`tests/unit/test_qa_report.py` -> passed）
+- [x] 候选调试 JSON 确认包含新 source 与新特征（`vpbd.candidate_debug_json: true` 路径）。（证据：`test_candidate_debug_json_records_sources_and_features` 断言 `sentence_end` / `breath` / `beat` 来源与 `breath` / `vocal_cut_risk` 特征）
+- [x] 新增回退开关 `vpbd.candidate_pool: unified | legacy`（默认 unified；legacy = 仅声学候选，行为等价 v2.6）。（证据：`test_legacy_candidate_pool_keeps_lyrics_out_of_planner`；`VSS__VPBD__CANDIDATE_POOL=legacy` 契约覆盖）
+- [x] 集成测试：`tests/integration/test_pipeline_vpbd_asr_fake_provider.py` 扩展——fake timeline 含句尾/气口场景，断言选点优先级"长停顿 > 气口+句尾 > 节拍"。（证据：`test_vpbd_asr_fake_provider_prioritizes_pause_breath_sentence_then_beat` -> passed）
+- [ ] 用 v2.6 验收器跑 M2 门槛：`cut_inside_word_rate ≤ 1%`、`segment_5_15_pass_rate ≥ 90%`、`boundary_f1_500ms ≥ 0.82` 不回退。（已执行：`output/v2_7_m2_acceptance/acceptance_report.json` -> `status=incomplete`，本地 playlist 未提供有效 cuts/words/segments/reference boundaries 证据，不能作为通过验收）
 
 验收命令：
 

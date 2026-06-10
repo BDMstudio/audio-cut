@@ -24,6 +24,7 @@ class BoundaryFeatures:
     singing_penalty: float = 0.0
     beat_affinity: float = 0.0
     mdd_affinity: float = 0.0
+    breath: float = 0.0
     vocal_cut_risk: float = 0.0
     beat_conflict: float = 0.0
 
@@ -40,6 +41,7 @@ class BoundaryFeatures:
             "singing_penalty": self.singing_penalty,
             "beat_affinity": self.beat_affinity,
             "mdd_affinity": self.mdd_affinity,
+            "breath": self.breath,
             "vocal_cut_risk": self.vocal_cut_risk,
             "beat_conflict": self.beat_conflict,
         }

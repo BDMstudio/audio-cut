@@ -43,8 +43,56 @@ def build_qa_report(manifest: Mapping[str, Any]) -> Dict[str, Any]:
         "asr_avg_confidence": _average(_confidences(words)),
         "guard_shift_p50_ms": _round_or_none(_percentile(guard_shifts, 0.50)),
         "guard_shift_p95_ms": _round_or_none(_percentile(guard_shifts, 0.95)),
+        "breath_cut_ratio": _source_rate(manifest, cuts, "breath"),
+        "beat_aligned_ratio": _beat_aligned_rate(manifest, cuts),
         "fallback_reason": _fallback_reason(manifest),
     }
+
+
+def _source_rate(manifest: Mapping[str, Any], cuts: List[float], source: str) -> float:
+    if not cuts:
+        return 0.0
+    matched = 0
+    for item in _internal_cut_items(manifest):
+        if _candidate_has_source(item, source):
+            matched += 1
+    return _rate(matched, len(cuts))
+
+
+def _beat_aligned_rate(manifest: Mapping[str, Any], cuts: List[float]) -> float:
+    if not cuts:
+        return 0.0
+    matched = 0
+    for item in _internal_cut_items(manifest):
+        features = item.get("features") if isinstance(item, Mapping) else {}
+        beat_affinity = _float_or_none(features.get("beat_affinity") if isinstance(features, Mapping) else None)
+        if _candidate_has_source(item, "beat") or (beat_affinity is not None and beat_affinity >= 0.8):
+            matched += 1
+    return _rate(matched, len(cuts))
+
+
+def _internal_cut_items(manifest: Mapping[str, Any]) -> List[Mapping[str, Any]]:
+    duration_s = _duration_s(manifest)
+    items = []
+    for item in _final_cut_items(manifest):
+        t = _float_or_none(item.get("t"))
+        if t is None or t <= _EPS:
+            continue
+        if duration_s is not None and t >= duration_s - _EPS:
+            continue
+        items.append(item)
+    return items
+
+
+def _candidate_has_source(item: Mapping[str, Any], source: str) -> bool:
+    if str(item.get("source", "")) == source:
+        return True
+    meta = item.get("meta")
+    if isinstance(meta, Mapping):
+        sources = meta.get("sources")
+        if isinstance(sources, Iterable) and not isinstance(sources, (str, bytes)):
+            return source in {str(value) for value in sources}
+    return False
 
 
 def _duration_s(manifest: Mapping[str, Any]) -> Optional[float]:

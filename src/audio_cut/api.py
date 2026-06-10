@@ -324,6 +324,7 @@ def _build_final_cuts(result: Mapping[str, Any]) -> list[Any]:
             entry['source'] = candidate.get('source')
             entry['features'] = dict(candidate.get('features', {}) or {})
             entry['reasons'] = list(candidate.get('reasons', []) or [])
+            entry['meta'] = dict(candidate.get('meta', {}) or {})
         if key in guard_by_time:
             entry['guard_shift_ms'] = guard_by_time[key]
         final.append(entry)

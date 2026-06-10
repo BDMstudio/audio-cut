@@ -24,8 +24,8 @@ def test_qa_report_derives_segment_lyrics_boundary_and_guard_metrics() -> None:
         "cuts": {
             "final": [
                 {"t": 0.0},
-                {"t": 1.2, "score": 0.4, "guard_shift_ms": 10.0},
-                {"t": 8.0, "score": 0.8, "guard_shift_ms": 30.0},
+                {"t": 1.2, "score": 0.4, "guard_shift_ms": 10.0, "source": "breath"},
+                {"t": 8.0, "score": 0.8, "guard_shift_ms": 30.0, "source": "beat", "features": {"beat_affinity": 1.0}},
                 {"t": 20.0},
             ]
         },
@@ -57,6 +57,8 @@ def test_qa_report_derives_segment_lyrics_boundary_and_guard_metrics() -> None:
     assert report["guard_shift_p50_ms"] == 20.0
     assert report["guard_shift_p95_ms"] == 29.0
     assert report["fallback_reason"] == "timeout"
+    assert report["breath_cut_ratio"] == 0.5
+    assert report["beat_aligned_ratio"] == 0.5
 
 
 def test_manifest_includes_qa_report(tmp_path: Path) -> None:

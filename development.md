@@ -51,7 +51,7 @@
 - **SileroChunkVAD**：分块推理 + halo 裁剪 + 焦点窗口构造，仅在关键区间运行昂贵特征。
 - **ChunkFeatureBuilder/TrackFeatureCache**：集中管理 STFT/RMS/MDD 等特征，支持 GPU 批量计算与跨块拼接。
 - **SegmentExporter/ResultBuilder**：统一导出与结果字典构建，减少重复逻辑与手工拼接字段；v2.6 Manifest 可选暴露 `lyrics_alignment`、`boundary_detection` 与 `segments[*].lyrics`。
-- **VocalPhraseBoundaryDetector**：VPBD 编排层，统一融合声学停顿、气口、弱节拍和 ASR lyrics 候选；ASR/节拍通过权重加分而不是后置硬改切点，rescue fallback 只复用 `score > 0` 的 suppressed candidate。
+- **VocalPhraseBoundaryDetector**：VPBD 编排层，统一融合声学停顿、气口、弱节拍和 ASR lyrics 候选；ASR/节拍通过权重加分而不是后置硬改切点，`candidate_pool=legacy` 可回退到 v2.6 声学候选池，rescue fallback 只复用 `score > 0` 的 suppressed candidate。
 - **FireRed provider seam**：`FireRedSidecarProvider` 调用本地 HTTP worker，`FireRedCliProvider` 调用外部 CLI worker；FireRed 依赖保持在外部环境，不进入 base requirements。
 - **segment_layout_refiner**：微碎片合并、软最小合并、软最大救援，复用 NMS 被抑制的 cut point；VPBD 路径禁用 midpoint fallback，Hybrid legacy helper 显式启用以保持旧节拍卡点契约。
 - **Hybrid strategies**：`snap_to_beat` / `beat_only` 共享人声轨安静度检查；默认不再为了副歌卡点强制切入活跃人声，旧行为通过 `chorus_force_snap` 显式开启。
@@ -63,7 +63,7 @@
 - `quality_control` 提供 `min_split_gap`、`segment_vocal_activity_ratio` 等守护阈值；`enforce_quiet_cut` 注重静音守卫参数（`guard_db`, `search_right_ms`）。
 - `segment_layout` 默认启用，`micro_merge_s` / `soft_min_s` / `soft_max_s` / `min_gap_s` 控制碎片合并策略；若更改需同步 doc/CLI。
 - `hybrid_mdd.snap_tolerance_ms` 默认 200ms，运行时再限制为 ≤0.4 个 beat；`vad_protection=true` 时节拍切点必须通过人声轨安静度检查，`chorus_force_snap=true` 是 v2.6 行为回退开关。
-- `vpbd`、`lyrics_alignment`、`fire_red`、`phrase_boundary`、`global_planner` 控制 VPBD 路径；`vpbd.breath_score_scale=0` 可关闭气口候选，`vpbd.beat_candidates` 控制高能量段弱节拍候选，`phrase_boundary.word_edge_tolerance_ms` 控制词边缘软化，`global_planner.vocal_risk_weight` / `beat_conflict_weight` 控制风险降权；`lyrics_alignment.enabled=false` 或 provider 不可用时应降级 `vpbd_acoustic`，strict 模式则 fail loud。
+- `vpbd`、`lyrics_alignment`、`fire_red`、`phrase_boundary`、`global_planner` 控制 VPBD 路径；`vpbd.candidate_pool=legacy` 回退到 v2.6 声学候选，`vpbd.candidate_debug_json=true` 写出 scored candidates，`vpbd.breath_score_scale=0` 可关闭气口候选，`vpbd.beat_candidates` 控制高能量段弱节拍候选，`phrase_boundary.word_edge_tolerance_ms` 控制词边缘软化，`global_planner.vocal_risk_weight` / `beat_conflict_weight` 控制风险降权；`lyrics_alignment.enabled=false` 或 provider 不可用时应降级 `vpbd_acoustic`，strict 模式则 fail loud。
 - `output.format` 默认 `wav`，可通过 `output.mp3.bitrate` 调整 MP3 输出；`audio_export` 模块负责统一写入。
 
 ## 6. 测试矩阵
@@ -72,7 +72,8 @@
 - **Integration**：`tests/integration/test_pipeline_v2_valley.py` 验证 MDD 主路径；`test_pipeline_vpbd_*` 覆盖 VPBD acoustic/fake/strict/fallback 路径；真实 FireRed smoke 由 `firered` + `gpu` marker 保护。
 - **Contracts**：`tests/contracts/test_config_contracts.py` 保证配置兼容；`test_run_splitter_cli.py`、`test_quick_start_vpbd.py` 锁定用户入口参数契约。
 - **Hybrid guard**：`tests/unit/test_snap_to_beat_vad_guard.py` 覆盖 snap_to_beat/beat_only 的人声保护、`chorus_force_snap` 回退、snap tolerance clamp 与 `_lib` 标记重映射。
-- **VPBD candidate pool**：`tests/unit/test_breath_candidates.py` 覆盖 breath 只进 VPBD 候选池与 scale=0 回退；`tests/unit/test_candidate_pool_fusion.py` 覆盖 ASR 候选入池、±120ms 去重和 `meta.sources` 来源追踪；`tests/unit/test_beat_candidates.py` 覆盖弱节拍候选、高能量段过滤和 `vocal_cut_risk`。
+- **VPBD candidate pool**：`tests/unit/test_breath_candidates.py` 覆盖 breath 只进 VPBD 候选池与 scale=0 回退；`tests/unit/test_candidate_pool_fusion.py` 覆盖 ASR 候选入池、±120ms 去重、`candidate_pool=legacy`、候选 debug JSON 和 `meta.sources` 来源追踪；`tests/unit/test_beat_candidates.py` 覆盖弱节拍候选、高能量段过滤和 `vocal_cut_risk`；`tests/integration/test_pipeline_vpbd_asr_fake_provider.py` 覆盖 fake timeline 下“长停顿 > 气口+句尾 > 节拍”的权重优先级。
+- **QA report**：`tests/unit/test_qa_report.py` 覆盖 `breath_cut_ratio` 与 `beat_aligned_ratio`，用于人工验收时观察气口自然度和卡点比例。
 - **Performance**：`tests/performance/test_valley_perf.py` 监控检测+守卫耗时。
 - **Benchmarks**：`tests/benchmarks/test_chunk_vs_full_equivalence.py` 分析 chunk vs full 误差。
 - **Sanity**：`tests/sanity/ort_mdx23_cuda_sanity.py` 自检 GPU Provider。
@@ -89,6 +90,7 @@
 - **进行中 (v2.7 draft - 2026-06-10)**：
   - 已完成 C1/C2/C3：气口只进入 VPBD 候选池；ASR lyrics 候选与声学候选合并后统一打分规划；高能量段弱节拍候选入池并携带 `vocal_cut_risk`
   - 已完成 D：`vocal_cut_risk` 打分闭环、MDD affinity、ASR 容差软化、`beat_conflict` 与 `min_score` 死配置收敛
+  - 已完成 E 的代码与测试部分：natural 权重归一化、breath 独立计分、`candidate_pool=legacy`、candidate debug JSON、QA 新指标和 fake provider 优先级集成测试；M2 playlist 验收需按本地素材状态单独记录
 - **进行中 (v2.6 draft - 2026-06-09)**：
   - 新增 VPBD 数据模型、lyrics timeline、候选生成、边界打分与全局规划骨架
   - `SeamlessSplitter` 已接入 `vpbd_acoustic` / `vpbd_asr` 可选路径

@@ -373,6 +373,7 @@ vpbd:
   enabled: true
   modes: [vpbd_acoustic, vpbd_asr]
   fallback_mode: vpbd_acoustic
+  candidate_pool: unified              # unified / legacy; legacy keeps only v2.6 acoustic candidates
   candidate_debug_json: true
   breath_score_scale: 0.6              # VPBD only: breath candidates are weak fallback cuts; 0 disables them
   beat_candidates:
@@ -403,12 +404,13 @@ fire_red:
 phrase_boundary:
   word_edge_tolerance_ms: 60.0
   weights:
-    acoustic_pause: 0.40
-    asr_gap: 0.25
+    acoustic_pause: 0.35
+    asr_gap: 0.20
     sentence_end: 0.15
-    beat_affinity: 0.10
+    beat_affinity: 0.08
     mdd_affinity: 0.10
-    inside_word_penalty: 0.60
+    breath: 0.12
+    inside_word_penalty: 0.80
     singing_penalty: 0.50
 
 global_planner:

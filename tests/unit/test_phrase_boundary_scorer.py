@@ -56,6 +56,12 @@ def test_score_candidate_attaches_features_and_reasons() -> None:
     assert "vpbd_score" in scored.reasons
 
 
+def test_phrase_boundary_scorer_applies_breath_weight() -> None:
+    scorer = PhraseBoundaryScorer(weights={"breath": 0.2})
+
+    assert scorer.score(BoundaryFeatures(breath=1.0)) == 0.2
+
+
 def test_write_candidate_debug_json(tmp_path) -> None:
     candidate = CutCandidate(
         1.2,
