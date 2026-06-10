@@ -15,6 +15,7 @@ class CandidateSource(str, Enum):
 
     ACOUSTIC_PAUSE = "acoustic_pause"
     MDD_VALLEY = "mdd_valley"
+    BREATH = "breath"
     LYRICS_GAP = "lyrics_gap"
     SENTENCE_END = "sentence_end"
     MVAD_BOUNDARY = "mvad_boundary"

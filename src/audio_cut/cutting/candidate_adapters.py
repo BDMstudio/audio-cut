@@ -15,6 +15,7 @@ def adapt_legacy_acoustic_candidates(
     raw_candidates: Iterable[CutPoint | Tuple[float, float] | Tuple[float, float, Dict[str, Any]]],
     *,
     source: CandidateSource = CandidateSource.ACOUSTIC_PAUSE,
+    breath_score_scale: float = 0.6,
 ) -> List[CutCandidate]:
     """Convert legacy `(time, score, meta)` style candidates to `CutCandidate`."""
 
@@ -28,11 +29,18 @@ def adapt_legacy_acoustic_candidates(
             t = float(raw[0])
             score = float(raw[1])
             meta = dict(raw[2]) if len(raw) > 2 and isinstance(raw[2], dict) else {}
+        candidate_source = source
+        if str(meta.get("pause_type", "")).startswith("breath"):
+            if breath_score_scale <= 0.0:
+                continue
+            candidate_source = CandidateSource.BREATH
+            score *= float(breath_score_scale)
+
         candidates.append(
             CutCandidate(
                 t=t,
                 score=score,
-                source=source,
+                source=candidate_source,
                 reasons=["legacy_acoustic"],
                 meta=meta,
             )

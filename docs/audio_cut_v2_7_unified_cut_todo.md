@@ -82,18 +82,18 @@ python run_splitter.py input/<sample>.mp3 --mode hybrid_mdd   # 人工抽听
 
 ### C1. 气口入池
 
-- [ ] `cut_candidate.py`：`CandidateSource` 新增 `BREATH`。
-- [ ] `pure_vocal_pause_detector.py:_classify_and_filter`：breath 不再丢弃，保留 `pause_type='breath'` 标签随结果输出（true_pause 行为不变）。
-- [ ] `candidate_adapters.py`：breath 停顿映射为 `CandidateSource.BREATH`，基础分 = 置信度 × `vpbd.breath_score_scale`（新增配置，默认 0.6；设 0 时等价旧行为）。
-- [ ] 确认旧模式（v2.2_mdd/hybrid_mdd）路径仍按旧逻辑过滤 breath——只有 VPBD 候选池消费 breath，旧输出零变化。
-- [ ] 新增 `tests/unit/test_breath_candidates.py`：密集唱段无长停顿时，规划器选中气口候选；`breath_score_scale=0` 时不选。
+- [x] `cut_candidate.py`：`CandidateSource` 新增 `BREATH`。（证据：`tests/unit/test_breath_candidates.py` -> passed）
+- [x] `pure_vocal_pause_detector.py:_classify_and_filter`：breath 不再丢弃，保留 `pause_type='breath'` 标签随结果输出（true_pause 行为不变）。（证据：`test_legacy_pause_filter_still_drops_breath_by_default` 与 `test_vpbd_pause_filter_can_keep_breath_candidates`）
+- [x] `candidate_adapters.py`：breath 停顿映射为 `CandidateSource.BREATH`，基础分 = 置信度 × `vpbd.breath_score_scale`（新增配置，默认 0.6；设 0 时等价旧行为）。（证据：`test_breath_pause_maps_to_breath_source_with_score_scale`、`test_breath_score_scale_zero_drops_breath_candidates`、`tests/contracts/test_config_contracts.py` -> passed）
+- [x] 确认旧模式（v2.2_mdd/hybrid_mdd）路径仍按旧逻辑过滤 breath——只有 VPBD 候选池消费 breath，旧输出零变化。（证据：默认 `_classify_and_filter` 仍过滤 breath；只有 VPBD 调用传入 `include_breath_candidates=True`；`test_legacy_pause_filter_still_drops_breath_by_default`）
+- [x] 新增 `tests/unit/test_breath_candidates.py`：密集唱段无长停顿时，规划器选中气口候选；`breath_score_scale=0` 时不选。（证据：`test_vpbd_planner_can_select_breath_candidate_when_no_long_pause_exists`、`test_vpbd_breath_scale_zero_restores_no_breath_candidate_path`）
 
 ### C2. ASR 候选入池
 
-- [ ] `vocal_phrase_boundary_detector.py:detect`：`lyrics_candidates` 与声学候选合并后一起进 `_score_candidates`（修掉 119-123 行只送声学的问题）。
-- [ ] 近重复去重：±120ms 内保留最高分候选，`meta.sources` 记录全部融合来源。
-- [ ] `boundary_detection.candidate_counts` 维持旧字段语义，新增 `merged` 计数（只增不改）。
-- [ ] 新增 `tests/unit/test_candidate_pool_fusion.py`：声学漏检 + ASR 句尾存在时，句尾候选可被选中；去重与来源追踪断言。
+- [x] `vocal_phrase_boundary_detector.py:detect`：`lyrics_candidates` 与声学候选合并后一起进 `_score_candidates`（修掉 119-123 行只送声学的问题）。（证据：`tests/unit/test_candidate_pool_fusion.py` -> passed；`tests/integration/test_pipeline_vpbd_asr_fake_provider.py` -> passed）
+- [x] 近重复去重：±120ms 内保留最高分候选，`meta.sources` 记录全部融合来源。（证据：`test_candidate_pool_merge_dedupes_nearby_candidates_and_tracks_sources`）
+- [x] `boundary_detection.candidate_counts` 维持旧字段语义，新增 `merged` 计数（只增不改）。（证据：`test_asr_sentence_end_candidate_is_selected_when_acoustic_misses` 与 fake provider 集成测试断言 `merged`）
+- [x] 新增 `tests/unit/test_candidate_pool_fusion.py`：声学漏检 + ASR 句尾存在时，句尾候选可被选中；去重与来源追踪断言。（证据：`venv/bin/python -m pytest -s tests/unit/test_candidate_pool_fusion.py -q` -> passed）
 
 ### C3. 节拍弱候选入池
 

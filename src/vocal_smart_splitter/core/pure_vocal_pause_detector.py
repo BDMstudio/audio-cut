@@ -114,7 +114,8 @@ class PureVocalPauseDetector:
                                 enable_mdd_enhancement: bool = False,
                                 original_audio: Optional[np.ndarray] = None,
                                 feature_cache: Optional[TrackFeatureCache] = None,
-                                vad_segments: Optional[List[Dict[str, float]]] = None) -> List[PureVocalPause]:
+                                vad_segments: Optional[List[Dict[str, float]]] = None,
+                                include_breath_candidates: bool = False) -> List[PureVocalPause]:
         """检测纯人声中的停顿
         
         Args:
@@ -255,7 +256,10 @@ class PureVocalPauseDetector:
             analyzed_pauses = self._analyze_pause_features(candidate_pauses, features, vocal_audio)
             
             # 4. 分类过滤
-            filtered_pauses = self._classify_and_filter(analyzed_pauses)
+            filtered_pauses = self._classify_and_filter(
+                analyzed_pauses,
+                include_breath_candidates=include_breath_candidates,
+            )
             
         # 5. MDD增强处理
         if enable_mdd_enhancement and (original_audio is not None or feature_cache is not None):
@@ -823,7 +827,12 @@ class PureVocalPauseDetector:
         
         return min(1.0, confidence)
     
-    def _classify_and_filter(self, pauses: List[PureVocalPause]) -> List[PureVocalPause]:
+    def _classify_and_filter(
+        self,
+        pauses: List[PureVocalPause],
+        *,
+        include_breath_candidates: bool = False,
+    ) -> List[PureVocalPause]:
         """分类并过滤停顿
         
         Args:
@@ -843,9 +852,13 @@ class PureVocalPauseDetector:
                            f"置信度: {pause.confidence:.3f}")
             elif pause.confidence <= self.breath_confidence_threshold:
                 pause.pause_type = 'breath'
-                # 过滤掉换气
-                logger.debug(f"过滤换气: {pause.start_time:.2f}-{pause.end_time:.2f}s, "
-                           f"置信度: {pause.confidence:.3f}")
+                if include_breath_candidates:
+                    filtered.append(pause)
+                    logger.debug(f"保留 VPBD 换气候选: {pause.start_time:.2f}-{pause.end_time:.2f}s, "
+                               f"置信度: {pause.confidence:.3f}")
+                else:
+                    logger.debug(f"过滤换气: {pause.start_time:.2f}-{pause.end_time:.2f}s, "
+                               f"置信度: {pause.confidence:.3f}")
             else:
                 # 不确定的情况，根据时长决定
                 if pause.duration >= self.min_pause_duration:

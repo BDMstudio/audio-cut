@@ -5,7 +5,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -116,8 +116,9 @@ class VocalPhraseBoundaryDetector:
             vad_segments=vad_segments,
             enable_mdd=True,
         )
+        merged_candidates = self._merge_candidate_pool(acoustic_candidates, lyrics_candidates)
         scored_candidates = self._score_candidates(
-            candidates=acoustic_candidates,
+            candidates=merged_candidates,
             timeline=timeline,
             feature_cache=feature_cache,
         )
@@ -141,6 +142,7 @@ class VocalPhraseBoundaryDetector:
             "candidate_counts": {
                 "acoustic": len(acoustic_candidates),
                 "lyrics": len(lyrics_candidates),
+                "merged": len(merged_candidates),
                 "total": len(scored_candidates),
                 "selected": len(planner_result.selected_candidates),
                 "suppressed": len(planner_result.suppressed_candidates),
@@ -173,7 +175,10 @@ class VocalPhraseBoundaryDetector:
             original_audio=original_audio,
             feature_cache=feature_cache,
             vad_segments=vad_segments,
+            include_breath_candidates=True,
         )
+        vpbd_cfg = _config_section("vpbd")
+        breath_score_scale = float(vpbd_cfg.get("breath_score_scale", 0.6))
         raw = []
         for pause in pauses or []:
             t = float(getattr(pause, "cut_point", (pause.start_time + pause.end_time) / 2.0))
@@ -186,10 +191,75 @@ class VocalPhraseBoundaryDetector:
                         "pause_start_s": float(getattr(pause, "start_time", t)),
                         "pause_end_s": float(getattr(pause, "end_time", t)),
                         "pause_duration_s": float(getattr(pause, "duration", 0.0)),
+                        "pause_type": str(getattr(pause, "pause_type", "")),
                     },
                 )
             )
-        return adapt_legacy_acoustic_candidates(raw, source=CandidateSource.ACOUSTIC_PAUSE)
+        return adapt_legacy_acoustic_candidates(
+            raw,
+            source=CandidateSource.ACOUSTIC_PAUSE,
+            breath_score_scale=breath_score_scale,
+        )
+
+    def _merge_candidate_pool(
+        self,
+        acoustic_candidates: List[CutCandidate],
+        lyrics_candidates: List[CutCandidate],
+        *,
+        tolerance_s: float = 0.12,
+    ) -> List[CutCandidate]:
+        """Merge near-duplicate acoustic and lyrics candidates before scoring."""
+
+        ordered = sorted(
+            list(acoustic_candidates) + list(lyrics_candidates),
+            key=lambda candidate: (candidate.t, candidate.source.value),
+        )
+        if not ordered:
+            return []
+
+        clusters: List[List[CutCandidate]] = []
+        current: List[CutCandidate] = [ordered[0]]
+        for candidate in ordered[1:]:
+            if candidate.t - current[-1].t <= tolerance_s:
+                current.append(candidate)
+            else:
+                clusters.append(current)
+                current = [candidate]
+        clusters.append(current)
+
+        return [self._merge_candidate_cluster(cluster) for cluster in clusters]
+
+    def _merge_candidate_cluster(self, cluster: List[CutCandidate]) -> CutCandidate:
+        best = max(cluster, key=lambda candidate: candidate.score)
+        reasons: List[str] = []
+        sources: List[str] = []
+        source_scores: Dict[str, float] = {}
+        merged_candidates: List[Dict[str, Any]] = []
+
+        for candidate in cluster:
+            for reason in candidate.reasons:
+                if reason not in reasons:
+                    reasons.append(reason)
+            source = candidate.source.value
+            if source not in sources:
+                sources.append(source)
+            source_scores[source] = max(float(candidate.score), source_scores.get(source, 0.0))
+            merged_candidates.append(
+                {
+                    "t": candidate.t,
+                    "score": candidate.score,
+                    "source": source,
+                    "reasons": list(candidate.reasons),
+                }
+            )
+
+        meta = dict(best.meta)
+        meta["sources"] = sources
+        meta["source_count"] = len(sources)
+        meta["source_scores"] = source_scores
+        if len(cluster) > 1:
+            meta["merged_candidates"] = merged_candidates
+        return replace(best, reasons=reasons, meta=meta)
 
     def _score_candidates(
         self,
@@ -203,10 +273,26 @@ class VocalPhraseBoundaryDetector:
         scorer = PhraseBoundaryScorer.from_config(_config_section("phrase_boundary"))
         scored: List[CutCandidate] = []
         for candidate in candidates:
-            acoustic_pause = candidate.score if candidate.source == CandidateSource.ACOUSTIC_PAUSE else 0.0
+            acoustic_pause = self._acoustic_pause_score(candidate)
             features = extractor.extract(candidate.t, acoustic_pause=acoustic_pause)
             scored.append(scorer.score_candidate(candidate, features))
         return scored
+
+    def _acoustic_pause_score(self, candidate: CutCandidate) -> float:
+        acoustic_sources = {
+            CandidateSource.ACOUSTIC_PAUSE.value,
+            CandidateSource.BREATH.value,
+            CandidateSource.MDD_VALLEY.value,
+        }
+        score = candidate.score if candidate.source.value in acoustic_sources else 0.0
+        source_scores = candidate.meta.get("source_scores", {})
+        if isinstance(source_scores, dict):
+            for source in acoustic_sources:
+                try:
+                    score = max(score, float(source_scores.get(source, 0.0)))
+                except (TypeError, ValueError):
+                    continue
+        return score
 
 
 def _write_asr_vocal_copy(

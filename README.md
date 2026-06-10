@@ -3,13 +3,13 @@
 
 # 智能人声分割器（Vocal Smart Splitter）
 
-Vocal Smart Splitter 支持高保真声部拆分、纯人声检测，以及带 MDD（Musical Dynamic Density）守卫的一站式处理能力。自 v2.5 起新增 `hybrid_mdd` 模式，支持 MDD 人声分割 + librosa 节拍卡点增强，片段带 `_lib` 后缀标记，适合 MV 剪辑场景。v2.6.1 起 `hybrid_mdd` 的节拍吸附会使用分离后人声轨做安静度保护，并在吸附后重新进入统一守卫链；`vpbd_asr` 模式会把 FireRedASR/FireRedASR2S 歌词时间轴作为 soft prior，用于减少切在歌词内部的情况。
+Vocal Smart Splitter 支持高保真声部拆分、纯人声检测，以及带 MDD（Musical Dynamic Density）守卫的一站式处理能力。自 v2.5 起新增 `hybrid_mdd` 模式，支持 MDD 人声分割 + librosa 节拍卡点增强，片段带 `_lib` 后缀标记，适合 MV 剪辑场景。v2.6.1 起 `hybrid_mdd` 的节拍吸附会使用分离后人声轨做安静度保护，并在吸附后重新进入统一守卫链；v2.7 draft 起 `vpbd_asr` 会把 FireRedASR/FireRedASR2S 歌词时间轴、声学低谷与气口统一放入候选池，仍由权重和规划器决定最终切点。
 
 ## 核心能力
 - **双通道分离**：默认使用 MDX23 ONNX 输出人声/伴奏，失败时自动回退 Demucs v4（可配置关闭）。
 - **GPU 多流分块流水线**：`audio_cut.utils.gpu_pipeline` 负责 chunk 规划、CUDA streams、pinned 缓冲与背压；`EnhancedVocalSeparator` 会记录 `gpu_meta`，并在 GPU 失败时安全回退 CPU。
 - **纯人声检测**：`PureVocalPauseDetector` 结合 F0、共振峰、RMS 能量、MDD/BPM 自适应完成停顿判定，仅执行一次检测。
-- **VPBD + ASR soft prior**：`vpbd_acoustic` 只使用声学候选；`vpbd_asr` 可接入 fake、FireRed sidecar 或 FireRed CLI provider。声学停顿仍是主控候选，ASR 只提供 word gap、sentence end、mVAD 边界等 soft prior；词区间用于降权和 guard 避让，不会把 ASR 边界硬塞成切点。
+- **VPBD 统一候选池**：`vpbd_acoustic` 使用声学停顿与 VPBD 专属气口候选；`vpbd_asr` 可接入 fake、FireRed sidecar 或 FireRed CLI provider，并把 word gap、sentence end、mVAD 边界作为候选入池。ASR 边界只按权重加分，词区间仍用于降权和 guard 避让，不会绕过声学安全检查硬切。
 - **守卫与补刀**：`audio_cut.cutting.finalize_cut_points` 在人声/混音轨执行过零吸附与静音守卫，同时统计守卫位移（`guard_shift_stats`）。
 - **段落布局精炼**：`segment_layout_refiner` 负责微碎片合并、软最小合并与软最大救援，`segment_layout_applied` 字段可用于调试。
 - **片段标注**：生成 `segment_{###}_{human|music}` 文件，并在 `segment_classification_debug` 中记录活跃度、能量阈值等判定依据。
@@ -109,7 +109,7 @@ Vocal Smart Splitter 支持高保真声部拆分、纯人声检测，以及带 M
 - `segment_layout.*`：`micro_merge_s`/`soft_min_s`/`soft_max_s`/`min_gap_s`/`beat_snap_ms` 控制微碎片合并与节拍吸附。
 - `lyrics_alignment.*`：控制 `vpbd_asr` 是否启用、provider（disabled/fake/auto/sidecar/cli）、strict、ASR chunk 与 overlap、fake fixture。
 - `fire_red.*`：控制 provider 顺序、sidecar endpoint/path、CLI executable/model_dir/timeout。
-- `vpbd.*` / `phrase_boundary.*` / `global_planner.*`：控制 VPBD 模式开关、候选打分权重和全局切点规划约束。
+- `vpbd.*` / `phrase_boundary.*` / `global_planner.*`：控制 VPBD 模式开关、候选打分权重和全局切点规划约束；`vpbd.breath_score_scale` 只影响 VPBD 候选池，设为 `0` 可关闭气口候选。
 - `vpbd_asr` 的长段二次分割遵循软约束：优先选择声学低谷，并用 ASR 句/唱段边界加权；找不到可信低谷时保留稍长片段，不使用 midpoint 硬切。Hybrid legacy helper 仍保留 midpoint fallback 以兼容原有节拍卡点行为。
 - `hybrid_mdd` 参数：
   - `lib_alignment`：节拍对齐策略（推荐使用 quick_start.py 交互式选择）：
@@ -127,7 +127,7 @@ Vocal Smart Splitter 支持高保真声部拆分、纯人声检测，以及带 M
 - **切点过少/片段过长**：降低 `pure_vocal_detection.peak_relative_threshold_ratio` 与 `rms_relative_threshold_ratio`；减小 `quality_control.min_split_gap`；调节 `valley_scoring.merge_close_ms`。
 - **切点过多/片段碎化**：提升上述阈值；增大 `min_split_gap`；通过 `segment_min_duration` 限制最短片段。
 - **静音守卫不稳定**：开启 `enforce_quiet_cut` 并逐步调整 `guard_db`/`search_right_ms`；检查输入是否被提前归一化。
-- **VPBD ASR 切到歌词内部**：先检查 `boundary_detection.suppressed[*].features.inside_word_penalty` 与 `planner.final_time_by_raw_time`。`score=0` 的候选不会进入 rescue fallback；若 guard 把词外 raw cut 推入 ASR word interval，`vpbd_asr` 会恢复到 raw cut。
+- **VPBD ASR 切到歌词内部**：先检查 `boundary_detection.selected[*].source`、`meta.sources`、`features.inside_word_penalty` 与 `planner.final_time_by_raw_time`。`score=0` 的候选不会进入 rescue fallback；若 guard 把词外 raw cut 推入 ASR word interval，`vpbd_asr` 会恢复到 raw cut。
 - **判定错误（伴奏被标成 human）**：查看 `segment_classification_debug` 中的活跃度；适当提升 `segment_vocal_activity_ratio`。
 
 ## 测试
@@ -159,6 +159,10 @@ Vocal Smart Splitter 支持高保真声部拆分、纯人声检测，以及带 M
   ```
 
 ## 更新记录
+- **2026-06-10 (v2.7 draft)**
+  - VPBD 候选池开始接收气口候选，默认按 `vpbd.breath_score_scale=0.6` 降权；旧模式仍按原逻辑过滤 breath。
+  - `vpbd_asr` 的 lyrics gap / sentence end / mVAD 边界与声学候选合并后统一打分规划，近重复候选在 ±120ms 内融合并在 `meta.sources` 留痕。
+  - `boundary_detection.candidate_counts` 新增 `merged` 计数，旧字段语义保持不变。
 - **2026-06-10 (v2.6.1 draft)**
   - 修复 `hybrid_mdd.vad_protection` 过去未真正参与副歌吸附决策的问题：策略层现在使用分离后人声轨判断目标节拍是否安静。
   - `snap_to_beat` 默认容差收紧为 200ms，并按 BPM clamp 到 ≤0.4 个 beat；新增 `hybrid_mdd.chorus_force_snap` 作为旧版强吸附回退开关。

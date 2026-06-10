@@ -374,6 +374,7 @@ vpbd:
   modes: [vpbd_acoustic, vpbd_asr]
   fallback_mode: vpbd_acoustic
   candidate_debug_json: true
+  breath_score_scale: 0.6              # VPBD only: breath candidates are weak fallback cuts; 0 disables them
 
 lyrics_alignment:
   enabled: false

@@ -88,13 +88,17 @@ def test_vpbd_asr_fake_provider_adds_lyrics_metadata(tmp_path) -> None:
     assert result["boundary_detection"]["actual_mode"] == "vpbd_asr"
     assert result["lyrics_alignment"]["provider"] == "fake"
     assert result["lyrics_alignment"]["word_count"] == 3
-    assert result["boundary_detection"]["candidate_counts"]["lyrics"] > 0
+    counts = result["boundary_detection"]["candidate_counts"]
+    assert counts["acoustic"] > 0
+    assert counts["lyrics"] > 0
+    assert counts["merged"] <= counts["acoustic"] + counts["lyrics"]
     assert result["lyrics_cut_protection_applied"] is False
 
     words = result["lyrics_alignment"]["timeline"]["words"]
     selected = result["boundary_detection"]["selected"]
     assert selected
-    assert {cut["source"] for cut in selected} == {"acoustic_pause"}
+    selected_sources = {cut["source"] for cut in selected}
+    assert selected_sources & {"lyrics_gap", "sentence_end", "mvad_boundary"}
     for cut in selected:
         t = float(cut["t"])
         assert not any(
