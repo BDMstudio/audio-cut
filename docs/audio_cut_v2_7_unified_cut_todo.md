@@ -14,14 +14,16 @@
 
 > 对应方案 §4。目标：固定 v2.6 行为基线，先用纯配置降低切人声概率，不动代码。
 
-- [ ] 运行并记录快速回归基线：`pytest -m "not slow and not gpu and not firered"`，记录通过数与耗时。
-- [ ] 运行配置契约基线：`pytest tests/contracts/test_config_contracts.py`。
-- [ ] 运行拼接精度基线：`pytest tests/unit/test_cpu_baseline_perfect_reconstruction.py`。
-- [ ] 选 2–3 首副歌密集的样本歌曲，跑 `--mode hybrid_mdd` 留存输出与 Manifest，作为 B 节修复前后的对照组。
-- [ ] 应用止血配置并人工抽听对比：`hybrid_mdd.beat_cut_density: low`、`snap_tolerance_ms: 150`。
-- [ ] 验证 vpbd_asr 替代路径可用：`python run_splitter.py <样本> --mode vpbd_asr --lyrics-provider sidecar --firered-endpoint http://127.0.0.1:8765`，确认 Manifest 含 `segments[*].lyrics`。
+- [x] 运行并记录快速回归基线：`pytest -m "not slow and not gpu and not firered"`，记录通过数与耗时。（证据：`venv/bin/python -m pytest -s -m "not slow and not gpu and not firered"` -> 108 passed, 1 deselected in 11.54s）
+- [x] 运行配置契约基线：`pytest tests/contracts/test_config_contracts.py`。（证据：`venv/bin/python -m pytest -s tests/contracts/test_config_contracts.py` -> 2 passed in 0.83s）
+- [x] 运行拼接精度基线：`pytest tests/unit/test_cpu_baseline_perfect_reconstruction.py`。（证据：`venv/bin/python -m pytest -s tests/unit/test_cpu_baseline_perfect_reconstruction.py` -> 1 passed in 2.39s）
+- [x] 选 2–3 首副歌密集的样本歌曲，跑 `--mode hybrid_mdd` 留存输出与 Manifest，作为 B 节修复前后的对照组。（证据：`output/v2_7_a4_before/sample_01_hybrid_mdd/SegmentManifest.json` -> 29 segments, max 15.16s；`sample_02_hybrid_mdd/SegmentManifest.json` -> 12 segments, max 21.10s；`sample_03_hybrid_mdd/SegmentManifest.json` -> 15 segments, max 54.53s）
+- [ ] 应用止血配置并人工抽听对比：`hybrid_mdd.beat_cut_density: low`、`snap_tolerance_ms: 150`。（已生成匿名对比输出：`output/v2_7_a5_stopgap/sample_01_hybrid_mdd_stopgap`、`sample_02_hybrid_mdd_stopgap`、`sample_03_hybrid_mdd_stopgap`；待人工抽听。自动汇总显示 stopgap 对超长段改善有限：max 15.16s / 20.95s / 54.53s）
+- [x] 验证 vpbd_asr 替代路径可用：`python run_splitter.py <样本> --mode vpbd_asr --lyrics-provider sidecar --firered-endpoint http://127.0.0.1:8765`，确认 Manifest 含 `segments[*].lyrics`。（证据：sidecar health `curl -fsS http://127.0.0.1:8765/health` -> connection refused；改用 FireRed CLI strict 路径验证，`output/v2_7_a6_vpbd_asr_cli/sample_02_vpbd_asr_cli/SegmentManifest.json` -> provider `firered_cli`, fallback_reason null, 12 segments, 9 segments with lyrics）
 - [ ] 通知 mvagent 侧改读 `SegmentManifest.json` 的 `segments[*].lyrics`，停止逐片段重复 ASR。
-- [ ] 新建开发分支：`codex/v2.7-unified-cut` 或用户指定分支。
+- [x] 新建开发分支：`codex/v2.7-unified-cut` 或用户指定分支。（证据：`git switch -c codex/v2.7-unified-cut` 成功，当前分支 `codex/v2.7-unified-cut`）
+
+当前缺口：A4 before 已用匿名输出目录留存；A5 与 B 节对照组仍需人工抽听；A6 的 sidecar 未启动，但 CLI strict 替代路径已验证。
 
 验收命令：
 
@@ -39,28 +41,28 @@ pytest tests/unit/test_cpu_baseline_perfect_reconstruction.py
 
 ### B1. F1 让 `vad_protection` 真的生效
 
-- [ ] `strategies/base.py`：`SegmentationContext` 新增 `vocal_track: Optional[np.ndarray]` 字段（默认 None，旧调用不破坏）。
-- [ ] `seamless_splitter.py:_process_hybrid_mdd_split`：构造 context 时传入已有的 `vocal_track`（当前 1218 行只传了 `original_audio`）。
-- [ ] `snap_to_beat_strategy.py`：新增 `_is_quiet_at(t)` 安静检查——目标时刻 ±80ms 窗口内**人声轨** RMS 低于地板 + guard_db 才允许落点。
-- [ ] 吸附决策接入安静检查：目标节拍不安静 → 在容差内找下一个安静节拍 → 找不到则保留 MDD 原点；`snap_stats['vad_blocked']` 真实计数。
-- [ ] 删除或接通死代码 `_would_cut_active_vocal` / `_compute_vad_active_regions`（二选一，不留僵尸）。
-- [ ] 新增 `tests/unit/test_snap_to_beat_vad_guard.py`：构造"节拍落在人声活跃区"场景，断言不吸附且 `vad_blocked > 0`。
+- [x] `strategies/base.py`：`SegmentationContext` 新增 `vocal_track: Optional[np.ndarray]` 字段（默认 None，旧调用不破坏）。（证据：`tests/unit/test_snap_to_beat_vad_guard.py` -> 6 passed）
+- [x] `seamless_splitter.py:_process_hybrid_mdd_split`：构造 context 时传入已有的 `vocal_track`。（证据：同上；after Manifest guard_count 非 0）
+- [x] `snap_to_beat_strategy.py`：新增 `_is_quiet_at(t)` 安静检查——目标时刻 ±80ms 窗口内**人声轨** RMS 低于地板 + guard_db 才允许落点。（证据：`test_snap_to_beat_keeps_mdd_cut_when_nearest_beat_has_active_vocal`）
+- [x] 吸附决策接入安静检查：目标节拍不安静 → 在容差内找下一个安静节拍 → 找不到则保留 MDD 原点；`snap_stats['vad_blocked']` 真实计数。（证据：新增单测断言 `vad_blocked == 1`）
+- [x] 删除或接通死代码 `_would_cut_active_vocal` / `_compute_vad_active_regions`（二选一，不留僵尸）。（证据：旧 helper 已移除，策略共用 `is_quiet_vocal_window`）
+- [x] 新增 `tests/unit/test_snap_to_beat_vad_guard.py`：构造"节拍落在人声活跃区"场景，断言不吸附且 `vad_blocked > 0`。（证据：`venv/bin/python -m pytest -s tests/unit/test_snap_to_beat_vad_guard.py -q` -> 6 passed）
 
 ### B2. F2 吸附后强制守卫
 
-- [ ] `_process_hybrid_mdd_split`：策略输出后调用与 v2.2_mdd 相同的 `finalize_cut_points`（人声轨守卫，复用 `seamless_splitter.py:1575-1604` 的配置读取）。
-- [ ] lib 标记按最近邻映射回守卫后的切点，映射逻辑带单测。
-- [ ] 确认守卫后拼接精度不回退：`pytest tests/unit/test_cpu_baseline_perfect_reconstruction.py`。
+- [x] `_process_hybrid_mdd_split`：策略输出后调用与 v2.2_mdd 相同的 `finalize_cut_points`（人声轨守卫，复用 `seamless_splitter.py:1575-1604` 的配置读取）。（证据：after 输出 `output/v2_7_b_after_fix/sample_01_hybrid_mdd/SegmentManifest.json` guard_count=28；sample_02 guard_count=11；sample_03 guard_count=14）
+- [x] lib 标记按最近邻映射回守卫后的切点，映射逻辑带单测。（证据：`test_hybrid_lib_flags_remap_to_guarded_cut_boundaries`）
+- [x] 确认守卫后拼接精度不回退：`pytest tests/unit/test_cpu_baseline_perfect_reconstruction.py`。（证据：`venv/bin/python -m pytest -s tests/unit/test_cpu_baseline_perfect_reconstruction.py -q` -> passed）
 
 ### B3. F3–F5 其余修复
 
-- [ ] F3：high 密度小节起始拍切点（`snap_to_beat_strategy.py:160-179`）过同一安静检查。
-- [ ] F4：新增 `hybrid_mdd.chorus_force_snap`（默认 false）；true 时还原"副歌强吸附"旧行为，配置契约测试覆盖。
-- [ ] F5：`unified.yaml` 默认 `snap_tolerance_ms: 500 → 200`；策略内按 BPM clamp（≤ 0.4 × 节拍间隔）。
-- [ ] `beat_only_strategy.py` 同步接入 B1 的安静检查（该策略文档已承认"可能切断人声"，同样要兑现保护）。
-- [ ] 对照组复测：A 节留存的 2–3 首样本重跑，人工确认副歌切字消失、卡点感仍在。
-- [ ] 更新 `README.md` / `development.md` 中 hybrid_mdd 行为描述与新配置项。
-- [ ] release notes：`docs/release_notes_v2_6_1.md`，显式声明行为变化与还原开关。
+- [x] F3：high 密度小节起始拍切点（`snap_to_beat_strategy.py:160-179`）过同一安静检查。（证据：`test_high_density_inserted_beat_cuts_respect_vocal_guard`）
+- [x] F4：新增 `hybrid_mdd.chorus_force_snap`（默认 false）；true 时还原"副歌强吸附"旧行为，配置契约测试覆盖。（证据：`test_chorus_force_snap_restores_legacy_snap_even_when_vocal_is_active`；`tests/contracts/test_config_contracts.py` -> passed）
+- [x] F5：`unified.yaml` 默认 `snap_tolerance_ms: 500 → 200`；策略内按 BPM clamp（≤ 0.4 × 节拍间隔）。（证据：`test_snap_tolerance_is_clamped_to_fraction_of_beat_interval`）
+- [x] `beat_only_strategy.py` 同步接入 B1 的安静检查（该策略文档已承认"可能切断人声"，同样要兑现保护）。（证据：`test_beat_only_bar_cuts_respect_vocal_guard`）
+- [ ] 对照组复测：A 节留存的 2–3 首样本重跑，人工确认副歌切字消失、卡点感仍在。（已生成自动 after 输出：`output/v2_7_b_after_fix/sample_01_hybrid_mdd`、`sample_02_hybrid_mdd`、`sample_03_hybrid_mdd`；待人工抽听。自动指标显示 guard 已生效，但 sample_03 仍存在超长段，需后续 v2.7 候选池/布局阶段继续处理。）
+- [x] 更新 `README.md` / `development.md` 中 hybrid_mdd 行为描述与新配置项。（证据：README/development 已描述 `vad_protection`、`chorus_force_snap`、200ms clamp 与 guard 链）
+- [x] release notes：`docs/release_notes_v2_6_1.md`，显式声明行为变化与还原开关。（证据：`docs/release_notes_v2_6_1.md`）
 
 验收命令：
 

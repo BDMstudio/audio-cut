@@ -14,6 +14,7 @@ from .base import (
     SegmentationStrategy,
     deduplicate_and_convert_cuts,
     identify_high_energy_bars,
+    is_quiet_vocal_window,
 )
 
 logger = logging.getLogger(__name__)
@@ -57,6 +58,10 @@ class BeatOnlyStrategy(SegmentationStrategy):
         bars_per_cut = int(config.get('bars_per_cut', 2))
         min_segment_s = float(config.get('min_segment_s', 2.0))
         energy_percentile = float(config.get('energy_percentile', 70))
+        vad_protection = bool(config.get('vad_protection', True))
+        chorus_force_snap = bool(config.get('chorus_force_snap', False))
+        guard_db = float(config.get('guard_db', 2.5))
+        guard_win_ms = float(config.get('guard_win_ms', 80.0))
         sample_rate = context.sample_rate
         audio_len = len(context.audio)
         audio_duration = audio_len / float(sample_rate)
@@ -64,6 +69,7 @@ class BeatOnlyStrategy(SegmentationStrategy):
         bar_times = context.bar_times
         bar_energies = context.bar_energies
         mdd_cut_samples = context.mdd_cut_points_samples
+        guard_audio = context.vocal_track if context.vocal_track is not None else context.audio
         
         # Calculate energy threshold
         if bar_energies:
@@ -87,6 +93,7 @@ class BeatOnlyStrategy(SegmentationStrategy):
         # Generate cut points
         cut_times: List[float] = [0.0]
         cut_is_lib: List[bool] = []  # Track which cuts are from beat alignment
+        vad_blocked = 0
         
         # Convert MDD cuts to times for reference
         mdd_cut_times = [s / float(sample_rate) for s in mdd_cut_samples]
@@ -108,6 +115,15 @@ class BeatOnlyStrategy(SegmentationStrategy):
                 if bars_since_last_cut >= bars_per_cut:
                     cut_time = float(bar_end)
                     if cut_time <= audio_duration and cut_time - last_cut_time >= min_segment_s:
+                        if vad_protection and not chorus_force_snap and not is_quiet_vocal_window(
+                            guard_audio,
+                            sample_rate,
+                            cut_time,
+                            guard_win_ms=guard_win_ms,
+                            guard_db=guard_db,
+                        ):
+                            vad_blocked += 1
+                            continue
                         cut_times.append(cut_time)
                         cut_is_lib.append(True)  # This is a beat-aligned cut
                         last_cut_time = cut_time
@@ -178,6 +194,7 @@ class BeatOnlyStrategy(SegmentationStrategy):
                 'num_bars': len(bar_times),
                 'high_energy_bars': len(high_energy_bars),
                 'lib_segment_count': lib_count,
+                'vad_blocked': vad_blocked,
                 'segment_durations': segment_durations,
             },
         )

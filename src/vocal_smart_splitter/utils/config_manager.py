@@ -625,6 +625,11 @@ def get_hybrid_mdd_config(density_override: Optional[str] = None) -> Dict[str, A
             'AUDIOCUT_VAD_PROTECTION',
             lambda x: str(x).lower() in ('true', '1', 'yes')
         ),
+        'chorus_force_snap': _get_with_env_override(
+            base_config.get('chorus_force_snap', False),
+            'AUDIOCUT_CHORUS_FORCE_SNAP',
+            lambda x: str(x).lower() in ('true', '1', 'yes')
+        ),
         'beat_detection': {
             'hop_length': base_config.get('beat_detection', {}).get('hop_length', 512),
             'time_signature': base_config.get('beat_detection', {}).get('time_signature', 4),

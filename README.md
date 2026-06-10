@@ -3,7 +3,7 @@
 
 # 智能人声分割器（Vocal Smart Splitter）
 
-Vocal Smart Splitter 支持高保真声部拆分、纯人声检测，以及带 MDD（Musical Dynamic Density）守卫的一站式处理能力。自 v2.5 起新增 `hybrid_mdd` 模式，支持 MDD 人声分割 + librosa 节拍卡点增强，片段带 `_lib` 后缀标记，适合 MV 剪辑场景。v2.6 规划中的 `vpbd_asr` 模式会把 FireRedASR/FireRedASR2S 歌词时间轴作为 soft prior，用于减少切在歌词内部的情况。
+Vocal Smart Splitter 支持高保真声部拆分、纯人声检测，以及带 MDD（Musical Dynamic Density）守卫的一站式处理能力。自 v2.5 起新增 `hybrid_mdd` 模式，支持 MDD 人声分割 + librosa 节拍卡点增强，片段带 `_lib` 后缀标记，适合 MV 剪辑场景。v2.6.1 起 `hybrid_mdd` 的节拍吸附会使用分离后人声轨做安静度保护，并在吸附后重新进入统一守卫链；`vpbd_asr` 模式会把 FireRedASR/FireRedASR2S 歌词时间轴作为 soft prior，用于减少切在歌词内部的情况。
 
 ## 核心能力
 - **双通道分离**：默认使用 MDX23 ONNX 输出人声/伴奏，失败时自动回退 Demucs v4（可配置关闭）。
@@ -116,8 +116,9 @@ Vocal Smart Splitter 支持高保真声部拆分、纯人声检测，以及带 M
     - `beat_only`：强制节拍分割（副歌每小节切割，适合强节奏卡点）
     - `snap_to_beat`：MDD智能吸附到节拍（平衡方案，推荐）
   - `density`：卡点密度控制（low/medium/high）
-  - `snap_tolerance_ms`：吸附容差（默认 500ms，仅 snap_to_beat 使用）
-  - `vad_protection`：是否开启 VAD 保护（snap_to_beat 策略中副歌高能量段会自动放宽以确保卡点）
+  - `snap_tolerance_ms`：吸附容差（默认 200ms，仅 snap_to_beat 使用；运行时上限为 0.4 个 beat，避免横跨整拍吸附）
+  - `vad_protection`：是否开启人声轨安静度保护；开启后 snap_to_beat、high 密度插入切点和 beat_only 的高能量小节切点都会避开活跃人声
+  - `chorus_force_snap`：默认 `false`；设为 `true` 时恢复旧版副歌强吸附行为，适合只追求卡点但可能切入人声的回退场景
   - `energy_percentile`：副歌识别能量百分位（40=高密度，60=中密度，70=低密度）
 - **副歌检测（v2.5.1）**：使用多特征融合算法（RMS能量 + 频谱质心 + 频谱带宽），根据歌曲动态范围自适应调整权重，有效提升民谣/爵士等低动态歌曲的准确度（误判率降低60-70%）。
 - `output.*`：默认 `format: wav`；`wav.subtype`, `mp3.bitrate` 可单独配置；其他格式可在 `audio_export` 注册扩展。
@@ -158,6 +159,10 @@ Vocal Smart Splitter 支持高保真声部拆分、纯人声检测，以及带 M
   ```
 
 ## 更新记录
+- **2026-06-10 (v2.6.1 draft)**
+  - 修复 `hybrid_mdd.vad_protection` 过去未真正参与副歌吸附决策的问题：策略层现在使用分离后人声轨判断目标节拍是否安静。
+  - `snap_to_beat` 默认容差收紧为 200ms，并按 BPM clamp 到 ≤0.4 个 beat；新增 `hybrid_mdd.chorus_force_snap` 作为旧版强吸附回退开关。
+  - `hybrid_mdd` 策略输出后重新进入统一 guard/refine 链，Manifest 暴露 `guard_shift_stats`/`guard_adjustments`，`_lib` 标记按最近原始切点映射到守卫后的边界。
 - **2026-06-09 (v2.6 draft)**
   - 新增 `vpbd_acoustic` / `vpbd_asr` 规划路径：声学候选仍为主控，ASR 歌词时间轴仅作为 soft prior。
   - 修正 VPBD ASR 切点职责边界：rescue fallback 过滤 `score=0` 候选，布局救援使用声学低谷 + ASR 句/唱段边界，词区间仅用于降权与 guard/local refine 避让。

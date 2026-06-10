@@ -14,6 +14,7 @@ from .base import (
     SegmentationStrategy,
     deduplicate_and_convert_cuts,
     identify_high_energy_bars,
+    is_quiet_vocal_window,
 )
 
 logger = logging.getLogger(__name__)
@@ -59,8 +60,11 @@ class SnapToBeatStrategy(SegmentationStrategy):
         snap_tolerance_ms = float(config.get('snap_tolerance_ms', 300))
         snap_tolerance_s = snap_tolerance_ms / 1000.0
         vad_protection = bool(config.get('vad_protection', True))
+        chorus_force_snap = bool(config.get('chorus_force_snap', False))
         min_segment_s = float(config.get('min_segment_s', 2.0))
         energy_percentile = float(config.get('energy_percentile', 70))
+        guard_db = float(config.get('guard_db', 2.5))
+        guard_win_ms = float(config.get('guard_win_ms', 80.0))
         
         sample_rate = context.sample_rate
         audio_len = len(context.audio)
@@ -94,6 +98,11 @@ class SnapToBeatStrategy(SegmentationStrategy):
             avg_beat_interval = float(np.mean(np.diff(beat_times)))
         else:
             avg_beat_interval = context.bar_duration / 4 if context.bar_duration else 0.5
+        if avg_beat_interval > 0:
+            max_snap_tolerance_s = 0.4 * avg_beat_interval
+            if snap_tolerance_s > max_snap_tolerance_s:
+                snap_tolerance_s = max_snap_tolerance_s
+                snap_tolerance_ms = snap_tolerance_s * 1000.0
         
         logger.info(
             "[SNAP_TO_BEAT] Config: snap_tolerance=%.0fms (%.1f%% of beat), vad_protection=%s, "
@@ -105,13 +114,7 @@ class SnapToBeatStrategy(SegmentationStrategy):
             len(mdd_cut_times)
         )
         
-        # Build VAD mask from context audio if VAD protection is enabled
-        vad_active_times: List[Tuple[float, float]] = []
-        if vad_protection:
-            vad_active_times = self._compute_vad_active_regions(
-                context.audio, sample_rate
-            )
-            logger.info("[SNAP_TO_BEAT] VAD detected %d active vocal regions", len(vad_active_times))
+        guard_audio = context.vocal_track if context.vocal_track is not None else context.audio
         
         # Process each MDD cut and decide whether to snap
         snapped_cuts: List[float] = [0.0]  # Start
@@ -138,12 +141,23 @@ class SnapToBeatStrategy(SegmentationStrategy):
                 # Low energy region (verse/intro) - keep MDD cut, no _lib
                 snap_stats['low_energy'] += 1
             elif distance_to_beat <= snap_tolerance_s:
-                # High energy + within tolerance - ALWAYS snap for beat alignment
-                # In chorus, we want beat-aligned cuts ("卡点感") even if cutting through vocals
-                # VAD protection is disabled in high-energy regions
-                should_snap = True
-                final_cut_time = nearest_beat_time
-                snap_stats['snapped'] += 1
+                quiet_beat_time = nearest_beat_time
+                if vad_protection and not chorus_force_snap:
+                    quiet_beat_time = self._find_quiet_beat_within_tolerance(
+                        mdd_time,
+                        beat_times,
+                        guard_audio,
+                        sample_rate,
+                        snap_tolerance_s,
+                        guard_win_ms=guard_win_ms,
+                        guard_db=guard_db,
+                    )
+                if quiet_beat_time is None:
+                    snap_stats['vad_blocked'] += 1
+                else:
+                    should_snap = True
+                    final_cut_time = quiet_beat_time
+                    snap_stats['snapped'] += 1
             else:
                 snap_stats['too_far'] += 1
             
@@ -175,6 +189,15 @@ class SnapToBeatStrategy(SegmentationStrategy):
                     min_distance = min(abs(beat_cut - c) for c in snapped_cuts) if snapped_cuts else float('inf')
                     
                     if min_distance > min_segment_s * 0.5:  # At least half segment duration away
+                        if vad_protection and not chorus_force_snap and not is_quiet_vocal_window(
+                            guard_audio,
+                            sample_rate,
+                            beat_cut,
+                            guard_win_ms=guard_win_ms,
+                            guard_db=guard_db,
+                        ):
+                            snap_stats['vad_blocked'] += 1
+                            continue
                         snapped_cuts.append(beat_cut)
                         cut_is_lib.append(True)  # Mark as _lib
         
@@ -226,6 +249,7 @@ class SnapToBeatStrategy(SegmentationStrategy):
                 'strategy': self.name,
                 'snap_tolerance_ms': snap_tolerance_ms,
                 'vad_protection': vad_protection,
+                'chorus_force_snap': chorus_force_snap,
                 'snapped_count': lib_count,
                 'kept_mdd_count': num_segments - lib_count,
                 'snap_stats': snap_stats,
@@ -266,57 +290,38 @@ class SnapToBeatStrategy(SegmentationStrategy):
         idx = np.abs(bar_times - time).argmin()
         return float(bar_times[idx])
     
-    def _compute_vad_active_regions(
-        self, audio: np.ndarray, sample_rate: int
-    ) -> List[Tuple[float, float]]:
-        """Compute active vocal regions using simple energy-based VAD.
-        
-        Returns list of (start, end) tuples in seconds for active regions.
-        """
-        import librosa
-        
-        # Compute RMS energy
-        hop_length = 512
-        rms = librosa.feature.rms(y=audio, hop_length=hop_length)[0]
-        times = librosa.frames_to_time(np.arange(len(rms)), sr=sample_rate, hop_length=hop_length)
-        
-        # Use 20th percentile as noise floor, 60th as voice threshold
-        noise_floor = np.percentile(rms, 20)
-        voice_threshold = noise_floor + (np.percentile(rms, 60) - noise_floor) * 0.5
-        
-        # Find active regions
-        is_active = rms > voice_threshold
-        regions: List[Tuple[float, float]] = []
-        
-        in_region = False
-        region_start = 0.0
-        
-        for i, active in enumerate(is_active):
-            t = float(times[i]) if i < len(times) else float(len(audio) / sample_rate)
-            if active and not in_region:
-                in_region = True
-                region_start = t
-            elif not active and in_region:
-                in_region = False
-                if t - region_start > 0.1:  # Min 100ms region
-                    regions.append((region_start, t))
-        
-        # Handle end case
-        if in_region:
-            regions.append((region_start, float(len(audio) / sample_rate)))
-        
-        return regions
-    
-    def _would_cut_active_vocal(
-        self, cut_time: float, vad_regions: List[Tuple[float, float]]
-    ) -> bool:
-        """Check if cutting at cut_time would cut through an active vocal region."""
-        margin = 0.1  # 100ms margin
-        for start, end in vad_regions:
-            if start + margin < cut_time < end - margin:
-                return True
-        return False
-    
+    def _find_quiet_beat_within_tolerance(
+        self,
+        time: float,
+        beat_times: np.ndarray,
+        vocal_audio: np.ndarray,
+        sample_rate: int,
+        tolerance_s: float,
+        *,
+        guard_win_ms: float,
+        guard_db: float,
+    ) -> Optional[float]:
+        """Return the nearest beat within tolerance that is quiet on the vocal track."""
+        if len(beat_times) == 0:
+            return None
+
+        candidates = [
+            float(beat)
+            for beat in beat_times
+            if abs(float(beat) - time) <= tolerance_s
+        ]
+        candidates.sort(key=lambda beat: abs(beat - time))
+        for beat in candidates:
+            if is_quiet_vocal_window(
+                vocal_audio,
+                sample_rate,
+                beat,
+                guard_win_ms=guard_win_ms,
+                guard_db=guard_db,
+            ):
+                return beat
+        return None
+
     def _detect_chorus_regions(
         self, bar_energies: np.ndarray, energy_threshold: float, min_consecutive_bars: int = 4,
         bar_centroids: list = None, bar_bandwidths: list = None

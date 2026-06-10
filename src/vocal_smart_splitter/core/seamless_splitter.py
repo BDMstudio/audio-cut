@@ -1159,6 +1159,9 @@ class SeamlessSplitter:
         snap_to_pause_ms = hybrid_config['beat_detection']['snap_to_pause_ms']
         snap_tolerance_ms = hybrid_config['snap_tolerance_ms']
         vad_protection = hybrid_config['vad_protection']
+        chorus_force_snap = bool(hybrid_config.get('chorus_force_snap', False))
+        guard_db = float(get_config('quality_control.enforce_quiet_cut.guard_db', 2.5))
+        guard_win_ms = float(get_config('quality_control.enforce_quiet_cut.win_ms', 80))
         lib_suffix = hybrid_config['labeling']['lib_suffix']
         lib_alignment = hybrid_config.get('lib_alignment', 'snap_to_beat')
 
@@ -1226,6 +1229,7 @@ class SeamlessSplitter:
             bar_energies=beat_result.bar_energies,
             bar_spectral_centroids=beat_result.bar_spectral_centroids,
             bar_spectral_bandwidths=beat_result.bar_spectral_bandwidths,
+            vocal_track=vocal_track,
             config={
                 'density': hybrid_config['density'],  # NEW: pass density to strategy
                 'enable_beat_cuts': enable_beat_cuts,
@@ -1235,6 +1239,9 @@ class SeamlessSplitter:
                 'snap_to_pause_ms': snap_to_pause_ms,
                 'snap_tolerance_ms': snap_tolerance_ms,
                 'vad_protection': vad_protection,
+                'chorus_force_snap': chorus_force_snap,
+                'guard_db': guard_db,
+                'guard_win_ms': guard_win_ms,
             },
         )
 
@@ -1248,6 +1255,27 @@ class SeamlessSplitter:
         seg_result = strategy.generate_cut_points(context)
         final_cut_points = list(seg_result.cut_points_samples)
         lib_cut_flags = list(seg_result.lib_flags)
+
+        raw_strategy_cut_points = list(final_cut_points)
+        raw_strategy_lib_flags = list(lib_cut_flags)
+        if len(raw_strategy_cut_points) > 2:
+            refine_candidates = [
+                (sample / float(self.sample_rate), 1.0)
+                for sample in raw_strategy_cut_points[1:-1]
+            ]
+            refined = self._finalize_and_filter_cuts_v2(
+                refine_candidates,
+                original_audio,
+                pure_vocal_audio=vocal_track,
+            )
+            guarded_cut_points = list(refined.sample_boundaries)
+            if len(guarded_cut_points) >= 2:
+                final_cut_points = guarded_cut_points
+                lib_cut_flags = self._remap_lib_flags_to_refined_cuts(
+                    raw_strategy_cut_points,
+                    raw_strategy_lib_flags,
+                    final_cut_points,
+                )
 
         segment_vocal_flags = self._classify_segments_vocal_presence(
             vocal_track if vocal_track is not None else original_audio,
@@ -1430,7 +1458,10 @@ class SeamlessSplitter:
             cut_points_sec=cuts_seconds,
             segment_durations=segment_durations,
             segment_vocal_flags=returned_flags if returned_flags else segment_vocal_flags,
-            precision_guard_ok=True,
+            precision_guard_ok=bool(self._precision_guard_ok),
+            include_precision_guard_threshold=True,
+            guard_shift_stats=self._get_guard_shift_stats(),
+            guard_adjustments=self._get_guard_adjustments(),
         )
         result = self.result_builder.add_hybrid_metadata(
             result,
@@ -2094,6 +2125,37 @@ class SeamlessSplitter:
         if not stats:
             return self._blank_guard_stats()
         return dict(stats)
+
+    @staticmethod
+    def _remap_lib_flags_to_refined_cuts(
+        raw_cut_points: Sequence[int],
+        raw_lib_flags: Sequence[bool],
+        refined_cut_points: Sequence[int],
+    ) -> List[bool]:
+        """Map hybrid _lib segment markers to guard-refined cut boundaries."""
+        raw_points = list(raw_cut_points)
+        refined_points = list(refined_cut_points)
+        if len(refined_points) < 2:
+            return []
+        if len(raw_points) < 2:
+            return [False] * (len(refined_points) - 1)
+
+        raw_end_flags = []
+        for idx, raw_end in enumerate(raw_points[1:]):
+            flag = bool(raw_lib_flags[idx]) if idx < len(raw_lib_flags) else False
+            raw_end_flags.append((int(raw_end), flag))
+
+        remapped: List[bool] = []
+        for refined_end in refined_points[1:]:
+            nearest_raw_end, nearest_flag = min(
+                raw_end_flags,
+                key=lambda item: abs(int(refined_end) - item[0]),
+            )
+            if int(refined_end) == raw_points[-1] or nearest_raw_end == raw_points[-1]:
+                remapped.append(False)
+            else:
+                remapped.append(nearest_flag)
+        return remapped
 
     @staticmethod
     def _select_hybrid_cut_points(

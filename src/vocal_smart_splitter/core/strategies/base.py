@@ -26,6 +26,7 @@ class SegmentationContext:
         bar_energies: List of average RMS energy per bar
         bar_spectral_centroids: List of average spectral centroid per bar
         bar_spectral_bandwidths: List of average spectral bandwidth per bar
+        vocal_track: Optional separated vocal track for vocal-safe cut guards
         config: Strategy-specific configuration dict
     """
     audio: np.ndarray
@@ -39,6 +40,7 @@ class SegmentationContext:
     bar_energies: List[float]
     bar_spectral_centroids: List[float] = field(default_factory=list)
     bar_spectral_bandwidths: List[float] = field(default_factory=list)
+    vocal_track: Optional[np.ndarray] = None
     config: Dict[str, Any] = field(default_factory=dict)
 
 
@@ -154,3 +156,45 @@ def deduplicate_and_convert_cuts(
             lib_flags.append(is_lib)
 
     return cut_points_samples, lib_flags
+
+def is_quiet_vocal_window(
+    audio: np.ndarray,
+    sample_rate: int,
+    time: float,
+    *,
+    guard_win_ms: float,
+    guard_db: float,
+) -> bool:
+    """Return True when a vocal-track window is within guard_db of its RMS floor."""
+    if sample_rate <= 0 or audio.size == 0:
+        return True
+
+    mono = audio if audio.ndim == 1 else np.mean(audio, axis=-1)
+    center = int(round(time * sample_rate))
+    half_win = max(1, int(round(sample_rate * guard_win_ms / 1000.0)))
+    start = max(0, center - half_win)
+    end = min(len(mono), center + half_win)
+    if start >= end:
+        return True
+
+    point_db = _rms_db(mono[start:end])
+    floor_db = _vocal_floor_db(mono, half_win)
+    return point_db <= floor_db + guard_db
+
+
+def _vocal_floor_db(audio: np.ndarray, window_samples: int) -> float:
+    window_samples = max(1, int(window_samples))
+    hop = max(1, window_samples)
+    rms_values = []
+    for start in range(0, len(audio), hop):
+        frame = audio[start:start + window_samples]
+        if frame.size:
+            rms_values.append(np.sqrt(float(np.mean(np.square(frame, dtype=np.float64)))) + 1e-12)
+    if not rms_values:
+        return -120.0
+    return float(20.0 * np.log10(np.percentile(rms_values, 5)))
+
+
+def _rms_db(audio: np.ndarray) -> float:
+    rms = np.sqrt(float(np.mean(np.square(audio, dtype=np.float64)))) if audio.size else 0.0
+    return float(20.0 * np.log10(rms + 1e-12))
