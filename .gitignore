@@ -68,6 +68,7 @@ test_*.py
 !tests/unit/test_legacy_mode_regression.py
 !tests/unit/test_cpu_baseline_perfect_reconstruction.py
 !tests/unit/test_pause_stats_adaptation_config.py
+!tests/unit/test_module_contract_audit.py
 !tests/unit/test_config_migration.py
 !tests/unit/test_vpbd_asr_acceptance.py
 !tests/unit/test_lyrics_cut_protection.py

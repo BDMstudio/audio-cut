@@ -241,7 +241,7 @@ wc -l config/unified.yaml                    # ≤ 120
 
 ## J. 文档与发布
 
-- [ ] 所有新增模块含 `# File:` 与 `# AI-SUMMARY:` 头注释，公开类/函数有 docstring。
+- [x] 所有新增模块含 `# File:` 与 `# AI-SUMMARY:` 头注释，公开类/函数有 docstring。（证据：新增 `scripts/audit_new_module_contracts.py`；`venv/bin/python -m pytest -s tests/unit/test_module_contract_audit.py` -> 2 passed；`venv/bin/python scripts/audit_new_module_contracts.py --base-ref main` 退出 0，无违规输出）
 - [x] 无新增 `TODO` / `FIXME` 残留（`rg -n "TODO|FIXME" src tests` 零命中）。（证据：命令退出 1，无匹配；`tests/unit/test_vpbd_asr_acceptance.py` 的占位标题测试改为字符串拼接，`venv/bin/python -m pytest -s tests/unit/test_vpbd_asr_acceptance.py` -> 8 passed）
 - [ ] v2.6.1 发布：B 节完成后出 `docs/release_notes_v2_6_1.md`（hybrid_mdd bugfix + 还原开关说明）。
 - [ ] v2.7.0-beta 发布：E 节门槛达标后，release notes 标注统一候选池为默认、`candidate_pool=legacy` 为回退项。（草稿已创建：`docs/release_notes_v2_7_draft.md`；当前仍不能发布，因 M2 acceptance report 对关键指标为 `insufficient_data`）
