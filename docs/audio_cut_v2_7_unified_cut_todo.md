@@ -244,8 +244,8 @@ wc -l config/unified.yaml                    # ≤ 120
 - [ ] 所有新增模块含 `# File:` 与 `# AI-SUMMARY:` 头注释，公开类/函数有 docstring。
 - [x] 无新增 `TODO` / `FIXME` 残留（`rg -n "TODO|FIXME" src tests` 零命中）。（证据：命令退出 1，无匹配；`tests/unit/test_vpbd_asr_acceptance.py` 的占位标题测试改为字符串拼接，`venv/bin/python -m pytest -s tests/unit/test_vpbd_asr_acceptance.py` -> 8 passed）
 - [ ] v2.6.1 发布：B 节完成后出 `docs/release_notes_v2_6_1.md`（hybrid_mdd bugfix + 还原开关说明）。
-- [ ] v2.7.0-beta 发布：E 节门槛达标后，release notes 标注统一候选池为默认、`candidate_pool=legacy` 为回退项。
-- [ ] v2.7.0 发布：F+G+I 全部达标后，release notes 含 AutoProfile 说明与配置迁移指引。
-- [ ] `development.md` 更新 v2.7 架构 SSOT（统一引擎数据流图、模式=预设的映射表）。
+- [ ] v2.7.0-beta 发布：E 节门槛达标后，release notes 标注统一候选池为默认、`candidate_pool=legacy` 为回退项。（草稿已创建：`docs/release_notes_v2_7_draft.md`；当前仍不能发布，因 M2 acceptance report 对关键指标为 `insufficient_data`）
+- [ ] v2.7.0 发布：F+G+I 全部达标后，release notes 含 AutoProfile 说明与配置迁移指引。（草稿已创建：`docs/release_notes_v2_7_draft.md`；当前仍不能发布，因 I 节 20 首人工验收与 AutoProfile 人工标签准确率未完成）
+- [x] `development.md` 更新 v2.7 架构 SSOT（统一引擎数据流图、模式=预设的映射表）。（证据：`development.md` 新增 “v2.7 统一引擎 SSOT” Mermaid 数据流与模式映射表）
 - [x] `CLAUDE.md` / `README.md` 同步新 CLI 参数与 `smart_cut` 配置节。（证据：README 已描述 `smart_cut`、`expert.yaml`、`vpbd_asr`；`CLAUDE.md` 是 `.gitignore` 标注的 local-only 文件，已在本地补 `--mode vpbd_asr --lyrics-provider auto`、`--profile auto` 与配置分层）
 - [x] FireRed 依赖确认未进入 base `requirements.txt`（`rg -n "firered" requirements.txt setup.py` 零命中）。（证据：`rg -n "firered|FireRed|fire_red" requirements.txt setup.py` 退出 1，无匹配）

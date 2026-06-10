@@ -31,7 +31,39 @@
 - `tests/`：分层测试（unit / integration / contracts / performance / sanity）。
 - `config/`：默认配置与 schema；严禁提交个人实验参数。
 
-## 3. 核心流程
+## 3. v2.7 统一引擎 SSOT
+
+### 统一切点数据流
+
+```mermaid
+flowchart TD
+    A["Input audio"] --> B["EnhancedVocalSeparator"]
+    B --> C["TrackFeatureCache: BPM / MDD / RMS"]
+    B --> D["PureVocalPauseDetector: acoustic valleys"]
+    D --> E["Candidate pool"]
+    C --> E
+    F["Lyrics timeline / FireRed provider"] --> E
+    G["Beat candidates / chorus regions"] --> E
+    E --> H["PhraseBoundaryScorer: weighted features"]
+    H --> I["GlobalCutPlanner: duration + risk planning"]
+    I --> J["finalize_cut_points: NMS / quiet guard / zero crossing"]
+    J --> K["segment_layout_refiner: merge + rescue"]
+    K --> L["SegmentExporter + SegmentManifest"]
+```
+
+### 模式 = 引擎预设映射
+
+| Mode | Primary candidate sources | ASR/lyrics | Beat handling | Rollback / compatibility switch |
+| --- | --- | --- | --- | --- |
+| `v2.2_mdd` | Pure vocal pause valleys + MDD context | Ignored with warning if configured | No new VPBD beat candidates | Legacy mode stays available |
+| `hybrid_mdd` | MDD cut points from the legacy path | No lyrics soft prior | `snap_to_beat` / `beat_only` with vocal quiet guard | `hybrid_mdd.chorus_force_snap=true`; `vad_protection=false` restores aggressive legacy snapping |
+| `librosa_onset` | Silence / energy / beat segmentation | No lyrics soft prior | Native librosa beat/grid behavior | Legacy mode stays available |
+| `vpbd_acoustic` | Acoustic valleys + breath + MDD affinity + weak beat candidates | Disabled | Weak beat candidates are scored, not forced | `vpbd.candidate_pool=legacy` uses acoustic-only pool |
+| `vpbd_asr` | `vpbd_acoustic` sources + lyrics gap / sentence end / mVAD boundary | Optional sidecar/CLI/fake providers; strict mode fail-loud, non-strict falls back | Beat affinity and weak beat candidates remain soft priors | Provider fallback to `vpbd_acoustic`; `vpbd.candidate_pool=legacy` |
+
+`smart_cut.profile=auto` and manual profile values are presets over the same engine knobs, not separate algorithms. `smart_cut.target_duration_s` derives duration constraints for planner/layout/quality, while expert-only knobs remain overrideable through `config/expert.yaml`, external config, or `VSS__...`.
+
+## 4. 核心流程
 0. `audio_cut.api.separate_and_segment` 在上层项目中聚合资源配置、调用 `SeamlessSplitter` 并生成 Manifest。
 1. `AudioProcessor.load_audio` 读取音频并默认归一化至 [-1, 1]，必要时重采样至 44.1 kHz。
 2. `EnhancedVocalSeparator.separate_for_detection` 构造 `PipelineContext`，规划 chunk/overlap/halo，GPU 模式记录 `gpu_meta`，失败时回退 CPU。
@@ -44,7 +76,7 @@
 7. `segment_layout_refiner.refine_layout` 执行微碎片合并、软最小合并、软最大救援；`vpbd_asr` 的软最大救援优先声学低谷 + ASR 句/唱段边界，词区间用于降权，找不到可信低谷时不做 midpoint 硬切。
 8. `SegmentExporter` 统一调用 `audio_export` 模块导出文件，默认追加 `_X.X`（秒，保留一位小数）后缀；落盘目录按 `<日期>_<时间>_<原音频名>` 命名。
 
-## 4. 核心模块要点
+## 5. 核心模块要点
 - **SeamlessSplitter**：统一调度入口，缓存 `segment_classification_debug`、`guard_shift_stats`、守卫调整明细，确保 GPU chunk 与整段流程可追踪。
 - **EnhancedVocalSeparator**：封装 MDX23/Demucs 后端，记录 `h2d_ms/dtoh_ms/compute_ms/peak_mem_bytes`，提供 `fallback_reason`。
 - **GPU Pipeline**：`PipelineConfig`/`PipelineContext` 管理 chunk 规划、CUDA stream、pinned buffer 与背压。
@@ -58,7 +90,7 @@
 - **Hybrid strategies**：`snap_to_beat` / `beat_only` 共享人声轨安静度检查；默认不再为了副歌卡点强制切入活跃人声，旧行为通过 `chorus_force_snap` 显式开启。
 - **输出目录策略**：`quick_start.py` 与 `run_splitter.py` 均使用 `<日期>_<时间>_<原音频名>` 创建输出目录，便于批量回归与部署一致。
 
-## 5. 配置与参数策略
+## 6. 配置与参数策略
 - `ConfigManager` 默认先加载 `config/expert.yaml`，再加载 `config/unified.yaml`；用户面只保留 `smart_cut`、`audio/output/logging`、`gpu_pipeline` 基础三项、`lyrics_alignment/fire_red`。高级默认值在 expert 层自动生效。
 - 配置优先级：`expert.yaml` < `unified.yaml` < `VSS_EXTERNAL_CONFIG_PATH` < 显式 `config_path` < `VSS__...` 环境变量；`set_runtime_config` 行为保持不变。
 - `smart_cut` 是 v2.7 用户面入口：`profile=auto` 默认自动估计风格，`target_duration_s` 统一派生 `global_planner.*`、`segment_layout.soft_*` 与 `quality_control.segment_max_duration`；手动 profile 仍优先并可回退到既有 profile 行为。
@@ -68,7 +100,7 @@
 - `vpbd`、`phrase_boundary`、`global_planner` 默认在 expert 层；`vpbd.candidate_pool=legacy` 回退到 v2.6 声学候选，`vpbd.breath_score_scale=0` 可关闭气口候选，`vpbd.beat_candidates` 控制高能量段弱节拍候选。
 - `output.format` 默认 `wav`，可通过 `output.mp3.bitrate` 调整 MP3 输出；`audio_export` 模块负责统一写入。
 
-## 6. 测试矩阵
+## 7. 测试矩阵
 - **Unit**：`test_cpu_baseline_perfect_reconstruction`、`test_cutting_consistency`、`test_segment_labeling`、`test_gpu_pipeline`、`test_chunk_feature_builder_gpu/stft_equivalence` 等覆盖核心算法。
 - `tests/unit/test_api_manifest.py`：校验模块化 API 的 Manifest 输出与导出计划控制。
 - **Integration**：`tests/integration/test_pipeline_v2_valley.py` 验证 MDD 主路径；`test_pipeline_vpbd_*` 覆盖 VPBD acoustic/fake/strict/fallback 路径；真实 FireRed smoke 由 `firered` + `gpu` marker 保护。
@@ -82,14 +114,14 @@
 - **Sanity**：`tests/sanity/ort_mdx23_cuda_sanity.py` 自检 GPU Provider。
 - 标准要求：新增能力必须补齐相应测试层；`quick_start` 批处理逻辑需结合集成测试验证。
 
-## 7. 性能与复杂度基线
+## 8. 性能与复杂度基线
 - 分离阶段：MDX23 GPU 目标 ≥0.7x 实时，记录 `h2d_ms/dtoh_ms/compute_ms/peak_mem_bytes`；CPU 回退约 3.5x 实时。
 - 检测 + 守卫：处理 10 分钟素材约 12s；启用静音守卫额外增加 ~8%。
 - Chunk vs Full：dummy 模型误差 <1e-6，真实模型断言 `L∞<5e-3`、`SNR>60dB`。
 - 拼接误差：`test_cpu_baseline_perfect_reconstruction` 要求最大绝对误差 ≤1e-12。
 - 性能脚本：`python scripts/bench/run_gpu_cpu_baseline.py`、`python scripts/bench/run_multi_gpu_probe.py` 输出性能报告。
 
-## 8. 当前进展与下一步
+## 9. 当前进展与下一步
 - **进行中 (v2.7 draft - 2026-06-10)**：
   - 已完成 C1/C2/C3：气口只进入 VPBD 候选池；ASR lyrics 候选与声学候选合并后统一打分规划；高能量段弱节拍候选入池并携带 `vocal_cut_risk`
   - 已完成 D：`vocal_cut_risk` 打分闭环、MDD affinity、ASR 容差软化、`beat_conflict` 与 `min_score` 死配置收敛
@@ -130,7 +162,7 @@
   - IO Binding / TensorRT / FP16 支持
   - `tests/test_seamless_reconstruction.py` 适配 v2.5 结果结构
 
-## 9. 环境与工具
+## 10. 环境与工具
 - Python 3.10+；核心依赖：PyTorch、librosa、numpy/scipy/soundfile、pydub（MP3 导出需 FFmpeg）。
 - `pip install -e .[dev]` 安装开发依赖（pytest/black/flake8 等）。
 - Windows + PowerShell 为默认环境，WSL / Linux 同样支持。
