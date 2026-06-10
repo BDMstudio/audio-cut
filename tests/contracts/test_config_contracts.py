@@ -11,6 +11,9 @@ def test_vpbd_asr_config_defaults_are_loaded() -> None:
 
     assert cfg.get("vpbd.enabled") is True
     assert cfg.get("vpbd.breath_score_scale") == 0.6
+    assert cfg.get("vpbd.beat_candidates.enable") is True
+    assert cfg.get("vpbd.beat_candidates.bars_per_cut") == 2
+    assert cfg.get("vpbd.beat_candidates.base_score") == 0.3
     assert cfg.get("lyrics_alignment.provider") == "disabled"
     assert cfg.get("fire_red.cli.timeout_s") == 120.0
     assert cfg.get("phrase_boundary.weights.asr_gap") > 0.0
@@ -22,6 +25,8 @@ def test_vpbd_asr_config_supports_vss_env_override(monkeypatch) -> None:
     monkeypatch.setenv("VSS__FIRE_RED__CLI__TIMEOUT_S", "9.5")
     monkeypatch.setenv("VSS__GLOBAL_PLANNER__HARD_MIN_S", "1.25")
     monkeypatch.setenv("VSS__VPBD__BREATH_SCORE_SCALE", "0.0")
+    monkeypatch.setenv("VSS__VPBD__BEAT_CANDIDATES__ENABLE", "false")
+    monkeypatch.setenv("VSS__VPBD__BEAT_CANDIDATES__BARS_PER_CUT", "4")
 
     cfg = ConfigManager()
 
@@ -29,3 +34,5 @@ def test_vpbd_asr_config_supports_vss_env_override(monkeypatch) -> None:
     assert cfg.get("fire_red.cli.timeout_s") == 9.5
     assert cfg.get("global_planner.hard_min_s") == 1.25
     assert cfg.get("vpbd.breath_score_scale") == 0.0
+    assert cfg.get("vpbd.beat_candidates.enable") is False
+    assert cfg.get("vpbd.beat_candidates.bars_per_cut") == 4

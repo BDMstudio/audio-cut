@@ -14,6 +14,7 @@ import numpy as np
 import soundfile as sf
 
 from audio_cut.analysis.boundary_features import BoundaryFeatureExtractor
+from audio_cut.cutting.beat_candidates import generate_beat_candidates
 from audio_cut.cutting.candidate_adapters import adapt_legacy_acoustic_candidates
 from audio_cut.cutting.cut_candidate import CandidateSource, CutCandidate
 from audio_cut.cutting.global_cut_planner import (
@@ -116,7 +117,12 @@ class VocalPhraseBoundaryDetector:
             vad_segments=vad_segments,
             enable_mdd=True,
         )
-        merged_candidates = self._merge_candidate_pool(acoustic_candidates, lyrics_candidates)
+        beat_candidates = self._build_beat_candidates(
+            vocal_track=vocal_track,
+            feature_cache=feature_cache,
+            duration_s=duration_s,
+        )
+        merged_candidates = self._merge_candidate_pool(acoustic_candidates, lyrics_candidates, beat_candidates)
         scored_candidates = self._score_candidates(
             candidates=merged_candidates,
             timeline=timeline,
@@ -142,6 +148,7 @@ class VocalPhraseBoundaryDetector:
             "candidate_counts": {
                 "acoustic": len(acoustic_candidates),
                 "lyrics": len(lyrics_candidates),
+                "beat": len(beat_candidates),
                 "merged": len(merged_candidates),
                 "total": len(scored_candidates),
                 "selected": len(planner_result.selected_candidates),
@@ -201,17 +208,42 @@ class VocalPhraseBoundaryDetector:
             breath_score_scale=breath_score_scale,
         )
 
+    def _build_beat_candidates(
+        self,
+        *,
+        vocal_track: np.ndarray,
+        feature_cache: Optional[Any],
+        duration_s: float,
+    ) -> List[CutCandidate]:
+        vpbd_cfg = _config_section("vpbd")
+        beat_cfg = vpbd_cfg.get("beat_candidates", {})
+        if not isinstance(beat_cfg, dict) or not bool(beat_cfg.get("enable", False)):
+            return []
+        if feature_cache is None:
+            return []
+        beat_times = getattr(feature_cache, "beat_times", [])
+        rms_series = getattr(feature_cache, "rms_series", [])
+        hop_s = float(getattr(feature_cache, "hop_s", 0.0) or 0.0)
+        return generate_beat_candidates(
+            beat_times=beat_times,
+            rms_series=rms_series,
+            hop_s=hop_s,
+            duration_s=duration_s,
+            sample_rate=self.sample_rate,
+            vocal_track=vocal_track,
+            bars_per_cut=int(beat_cfg.get("bars_per_cut", 2)),
+            base_score=float(beat_cfg.get("base_score", 0.3)),
+        )
+
     def _merge_candidate_pool(
         self,
-        acoustic_candidates: List[CutCandidate],
-        lyrics_candidates: List[CutCandidate],
-        *,
+        *candidate_groups: List[CutCandidate],
         tolerance_s: float = 0.12,
     ) -> List[CutCandidate]:
-        """Merge near-duplicate acoustic and lyrics candidates before scoring."""
+        """Merge near-duplicate acoustic, lyrics and beat candidates before scoring."""
 
         ordered = sorted(
-            list(acoustic_candidates) + list(lyrics_candidates),
+            [candidate for group in candidate_groups for candidate in group],
             key=lambda candidate: (candidate.t, candidate.source.value),
         )
         if not ordered:
@@ -275,7 +307,13 @@ class VocalPhraseBoundaryDetector:
         for candidate in candidates:
             acoustic_pause = self._acoustic_pause_score(candidate)
             features = extractor.extract(candidate.t, acoustic_pause=acoustic_pause)
-            scored.append(scorer.score_candidate(candidate, features))
+            scored_candidate = scorer.score_candidate(candidate, features)
+            merged_features = dict(candidate.features)
+            merged_features.update(scored_candidate.features)
+            scored_candidate = replace(scored_candidate, features=merged_features)
+            if candidate.source == CandidateSource.BEAT:
+                scored_candidate = replace(scored_candidate, score=max(scored_candidate.score, candidate.score))
+            scored.append(scored_candidate)
         return scored
 
     def _acoustic_pause_score(self, candidate: CutCandidate) -> float:

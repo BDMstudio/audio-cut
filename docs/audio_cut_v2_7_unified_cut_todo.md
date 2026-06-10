@@ -97,10 +97,10 @@ python run_splitter.py input/<sample>.mp3 --mode hybrid_mdd   # 人工抽听
 
 ### C3. 节拍弱候选入池
 
-- [ ] 将 `_detect_chorus_regions` 多特征副歌判定从 `snap_to_beat_strategy.py` 迁移到 `audio_cut/analysis/chorus_regions.py`（策略侧改为引用，行为等价单测保护）。
-- [ ] 新增 `audio_cut/cutting/beat_candidates.py`：高能量段内每 N 小节的小节起始拍生成 `CandidateSource.BEAT` 候选，基础分 0.3，强制携带 `vocal_cut_risk` 特征。
-- [ ] 新增配置 `vpbd.beat_candidates: {enable, bars_per_cut, base_score}` 并进配置契约测试。
-- [ ] 新增 `tests/unit/test_beat_candidates.py`：仅高能量段产出；落在人声活跃区的节拍候选 `vocal_cut_risk` 高。
+- [x] 将 `_detect_chorus_regions` 多特征副歌判定从 `snap_to_beat_strategy.py` 迁移到 `audio_cut/analysis/chorus_regions.py`（策略侧改为引用，行为等价单测保护）。（证据：`tests/unit/test_beat_candidates.py::test_detect_chorus_regions_requires_continuous_high_energy_bars`；`tests/unit/test_snap_to_beat_vad_guard.py` -> passed）
+- [x] 新增 `audio_cut/cutting/beat_candidates.py`：高能量段内每 N 小节的小节起始拍生成 `CandidateSource.BEAT` 候选，基础分 0.3，强制携带 `vocal_cut_risk` 特征。（证据：`test_generate_beat_candidates_only_in_high_energy_regions`、`test_beat_candidates_mark_high_vocal_cut_risk`、`test_vpbd_includes_enabled_beat_candidates_in_pool`）
+- [x] 新增配置 `vpbd.beat_candidates: {enable, bars_per_cut, base_score}` 并进配置契约测试。（证据：`tests/contracts/test_config_contracts.py` -> passed）
+- [x] 新增 `tests/unit/test_beat_candidates.py`：仅高能量段产出；落在人声活跃区的节拍候选 `vocal_cut_risk` 高。（证据：`venv/bin/python -m pytest -s tests/unit/test_beat_candidates.py -q` -> 4 passed）
 
 验收命令：
 

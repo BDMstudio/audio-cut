@@ -375,6 +375,10 @@ vpbd:
   fallback_mode: vpbd_acoustic
   candidate_debug_json: true
   breath_score_scale: 0.6              # VPBD only: breath candidates are weak fallback cuts; 0 disables them
+  beat_candidates:
+    enable: true                       # VPBD only: weak beat candidates in high-energy regions
+    bars_per_cut: 2                    # emit one beat candidate every N high-energy bars
+    base_score: 0.3                    # weak prior; acoustic/ASR candidates should still dominate
 
 lyrics_alignment:
   enabled: false
