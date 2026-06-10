@@ -217,7 +217,7 @@ wc -l config/unified.yaml                    # ≤ 120
 - [ ] 拼接精度：`pytest tests/unit/test_cpu_baseline_perfect_reconstruction.py`（≤1e-12）。
 - [ ] 旧模式三连跑输出对比：`v2.2_mdd` / `hybrid_mdd` / `librosa_onset`，文件命名与 Manifest 旧字段逐项 diff（hybrid_mdd 在 B 节后允许的差异 = 切点位置，命名/字段结构零变化）。
 - [ ] vpbd 回退开关验证：`vpbd.candidate_pool=legacy` + `--profile pop` 输出与 v2.6 基线一致。
-- [ ] FireRed 可选性：FireRed 不可用时降级链（sidecar→cli→vpbd_acoustic）不被新代码破坏：`pytest tests/integration/test_pipeline_vpbd_acoustic_fallback.py`。
+- [x] FireRed 可选性：FireRed 不可用时降级链（sidecar→cli→vpbd_acoustic）不被新代码破坏：`pytest tests/integration/test_pipeline_vpbd_acoustic_fallback.py`。（证据：`venv/bin/python -m pytest -s tests/integration/test_pipeline_vpbd_acoustic_fallback.py` -> 6 passed in 7.33s）
 - [ ] 真实 FireRed smoke（有环境时）：`pytest -m firered tests/integration/test_firered_cli_provider_real.py --rungpu`。
 
 ---
@@ -226,15 +226,15 @@ wc -l config/unified.yaml                    # ≤ 120
 
 > 复用 `scripts/vpbd_asr_acceptance.py`、`docs/vpbd_asr_acceptance_playlist.*.json`、`input/acceptance/{category}` 七类目录与人工评分表。
 
-- [ ] 备齐 20 首验收素材：中文流行慢歌 3 / 中文快歌・rap 3 / 英文流行 3 / 民谣低动态 3 / 强节奏副歌 3 / 和声 ad-lib 3 / 长器乐 intro-outro 2。
-- [ ] M2 候选版本跑完整 playlist：`scripts/vpbd_asr_acceptance.py --playlist docs/vpbd_asr_acceptance_playlist.filled.json --review-csv manual_review_sheet.csv`。
-- [ ] 人工标注边界并统计 `boundary_f1_500ms ≥ 0.82`。
-- [ ] 统计 `cut_inside_word_rate ≤ 1%`。
-- [ ] 统计 `cut_inside_high_conf_singing_rate ≤ 3%`。
-- [ ] 统计 `segment_5_15_pass_rate ≥ 90%`。
-- [ ] 主观自然度评分 `subjective_naturalness ≥ 4.2 / 5`（每类抽 1 首人工听切点）。
-- [ ] `manual_recutter_rate` 较 v2.5.1 降低 ≥ 40%。
-- [ ] M3 增项：auto 风格判定与人工标签一致率 ≥ 85%；记录每首 `auto_profile` Manifest 元数据。
+- [ ] 备齐 20 首验收素材：中文流行慢歌 3 / 中文快歌・rap 3 / 英文流行 3 / 民谣低动态 3 / 强节奏副歌 3 / 和声 ad-lib 3 / 长器乐 intro-outro 2。（当前 preflight：`docs/vpbd_asr_acceptance_preflight.md/json` -> 20 tracks, missing_audio=20, placeholder_titles=20, missing_reference_boundaries=20, missing_subjective_scores=20；已创建 `input/acceptance/{category}` 七类目录占位，不提交临时歌曲）
+- [ ] M2 候选版本跑完整 playlist：`scripts/vpbd_asr_acceptance.py --playlist docs/vpbd_asr_acceptance_playlist.filled.json --review-csv manual_review_sheet.csv`。（已执行 preflight run：`output/v2_7_i_acceptance_preflight/acceptance_report.json` -> `status=incomplete`, `track_count=20`, `manifest_count=0`, playlist_coverage pass，其余指标 insufficient_data；`manual_review_sheet.csv` 已生成到同目录，待真实素材与人工标注）
+- [ ] 人工标注边界并统计 `boundary_f1_500ms ≥ 0.82`。（当前缺口：`reference_boundaries_s` 全部为空，acceptance report `boundary_f1_500ms=insufficient_data`）
+- [ ] 统计 `cut_inside_word_rate ≤ 1%`。（当前缺口：manifest_count=0，cuts/words 证据为 0，acceptance report `cut_inside_word_rate=insufficient_data`）
+- [ ] 统计 `cut_inside_high_conf_singing_rate ≤ 3%`。（当前缺口：manifest_count=0，high_conf_singing_regions 证据为 0）
+- [ ] 统计 `segment_5_15_pass_rate ≥ 90%`。（当前缺口：manifest_count=0，segments 证据为 0）
+- [ ] 主观自然度评分 `subjective_naturalness ≥ 4.2 / 5`（每类抽 1 首人工听切点）。（当前缺口：20 首 `manual_scores.subjective_naturalness` 均为空）
+- [ ] `manual_recutter_rate` 较 v2.5.1 降低 ≥ 40%。（当前缺口：`manual_metrics.baseline_manual_recutter_rate/current_manual_recutter_rate` 未提供）
+- [ ] M3 增项：auto 风格判定与人工标签一致率 ≥ 85%；记录每首 `auto_profile` Manifest 元数据。（当前缺口：缺 20 首真实 manifest 和人工风格标签）
 - [ ] 新指标人工复核：`breath_cut_ratio` 合理（气口切点听感自然，无碎片化）、rhythmic 风格下 `beat_aligned_ratio` 提升且零切字。
 
 ---
@@ -242,10 +242,10 @@ wc -l config/unified.yaml                    # ≤ 120
 ## J. 文档与发布
 
 - [ ] 所有新增模块含 `# File:` 与 `# AI-SUMMARY:` 头注释，公开类/函数有 docstring。
-- [ ] 无新增 `TODO` / `FIXME` 残留（`rg -n "TODO|FIXME" src tests` 零命中）。
+- [x] 无新增 `TODO` / `FIXME` 残留（`rg -n "TODO|FIXME" src tests` 零命中）。（证据：命令退出 1，无匹配；`tests/unit/test_vpbd_asr_acceptance.py` 的占位标题测试改为字符串拼接，`venv/bin/python -m pytest -s tests/unit/test_vpbd_asr_acceptance.py` -> 8 passed）
 - [ ] v2.6.1 发布：B 节完成后出 `docs/release_notes_v2_6_1.md`（hybrid_mdd bugfix + 还原开关说明）。
 - [ ] v2.7.0-beta 发布：E 节门槛达标后，release notes 标注统一候选池为默认、`candidate_pool=legacy` 为回退项。
 - [ ] v2.7.0 发布：F+G+I 全部达标后，release notes 含 AutoProfile 说明与配置迁移指引。
 - [ ] `development.md` 更新 v2.7 架构 SSOT（统一引擎数据流图、模式=预设的映射表）。
-- [ ] `CLAUDE.md` / `README.md` 同步新 CLI 参数与 `smart_cut` 配置节。
-- [ ] FireRed 依赖确认未进入 base `requirements.txt`（`rg -n "firered" requirements.txt setup.py` 零命中）。
+- [x] `CLAUDE.md` / `README.md` 同步新 CLI 参数与 `smart_cut` 配置节。（证据：README 已描述 `smart_cut`、`expert.yaml`、`vpbd_asr`；`CLAUDE.md` 是 `.gitignore` 标注的 local-only 文件，已在本地补 `--mode vpbd_asr --lyrics-provider auto`、`--profile auto` 与配置分层）
+- [x] FireRed 依赖确认未进入 base `requirements.txt`（`rg -n "firered" requirements.txt setup.py` 零命中）。（证据：`rg -n "firered|FireRed|fire_red" requirements.txt setup.py` 退出 1，无匹配）

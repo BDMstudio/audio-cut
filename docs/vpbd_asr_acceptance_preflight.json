@@ -1,0 +1,312 @@
+{
+  "status": "incomplete",
+  "playlist": "/home/ubuntu/audio-cut/docs/vpbd_asr_acceptance_playlist.filled.json",
+  "summary": {
+    "track_count": 20,
+    "missing_audio": 20,
+    "placeholder_titles": 20,
+    "missing_reference_boundaries": 20,
+    "missing_subjective_naturalness": 20,
+    "manual_recutter_rates_present": false,
+    "missing_category_slots": 20
+  },
+  "categories": {
+    "chinese_ballad": {
+      "required": 3,
+      "present": 0,
+      "missing": 3
+    },
+    "chinese_fast_rap": {
+      "required": 3,
+      "present": 0,
+      "missing": 3
+    },
+    "english_pop": {
+      "required": 3,
+      "present": 0,
+      "missing": 3
+    },
+    "folk_low_dynamic": {
+      "required": 3,
+      "present": 0,
+      "missing": 3
+    },
+    "strong_chorus": {
+      "required": 3,
+      "present": 0,
+      "missing": 3
+    },
+    "harmony_adlib": {
+      "required": 3,
+      "present": 0,
+      "missing": 3
+    },
+    "long_intro_outro": {
+      "required": 2,
+      "present": 0,
+      "missing": 2
+    }
+  },
+  "tracks": [
+    {
+      "track_id": "cn_ballad_01",
+      "category": "chinese_ballad",
+      "title": "TODO Chinese ballad 01",
+      "path": "input/acceptance/chinese_ballad/cn_ballad_01.wav",
+      "expected_path": "/home/ubuntu/audio-cut/input/acceptance/chinese_ballad/cn_ballad_01.wav",
+      "issues": [
+        "missing_audio",
+        "placeholder_title",
+        "missing_reference_boundaries",
+        "missing_subjective_naturalness"
+      ]
+    },
+    {
+      "track_id": "cn_ballad_02",
+      "category": "chinese_ballad",
+      "title": "TODO Chinese ballad 02",
+      "path": "input/acceptance/chinese_ballad/cn_ballad_02.wav",
+      "expected_path": "/home/ubuntu/audio-cut/input/acceptance/chinese_ballad/cn_ballad_02.wav",
+      "issues": [
+        "missing_audio",
+        "placeholder_title",
+        "missing_reference_boundaries",
+        "missing_subjective_naturalness"
+      ]
+    },
+    {
+      "track_id": "cn_ballad_03",
+      "category": "chinese_ballad",
+      "title": "TODO Chinese ballad 03",
+      "path": "input/acceptance/chinese_ballad/cn_ballad_03.wav",
+      "expected_path": "/home/ubuntu/audio-cut/input/acceptance/chinese_ballad/cn_ballad_03.wav",
+      "issues": [
+        "missing_audio",
+        "placeholder_title",
+        "missing_reference_boundaries",
+        "missing_subjective_naturalness"
+      ]
+    },
+    {
+      "track_id": "cn_fast_rap_01",
+      "category": "chinese_fast_rap",
+      "title": "TODO Chinese fast/rap 01",
+      "path": "input/acceptance/chinese_fast_rap/cn_fast_rap_01.wav",
+      "expected_path": "/home/ubuntu/audio-cut/input/acceptance/chinese_fast_rap/cn_fast_rap_01.wav",
+      "issues": [
+        "missing_audio",
+        "placeholder_title",
+        "missing_reference_boundaries",
+        "missing_subjective_naturalness"
+      ]
+    },
+    {
+      "track_id": "cn_fast_rap_02",
+      "category": "chinese_fast_rap",
+      "title": "TODO Chinese fast/rap 02",
+      "path": "input/acceptance/chinese_fast_rap/cn_fast_rap_02.wav",
+      "expected_path": "/home/ubuntu/audio-cut/input/acceptance/chinese_fast_rap/cn_fast_rap_02.wav",
+      "issues": [
+        "missing_audio",
+        "placeholder_title",
+        "missing_reference_boundaries",
+        "missing_subjective_naturalness"
+      ]
+    },
+    {
+      "track_id": "cn_fast_rap_03",
+      "category": "chinese_fast_rap",
+      "title": "TODO Chinese fast/rap 03",
+      "path": "input/acceptance/chinese_fast_rap/cn_fast_rap_03.wav",
+      "expected_path": "/home/ubuntu/audio-cut/input/acceptance/chinese_fast_rap/cn_fast_rap_03.wav",
+      "issues": [
+        "missing_audio",
+        "placeholder_title",
+        "missing_reference_boundaries",
+        "missing_subjective_naturalness"
+      ]
+    },
+    {
+      "track_id": "english_pop_01",
+      "category": "english_pop",
+      "title": "TODO English pop 01",
+      "path": "input/acceptance/english_pop/english_pop_01.wav",
+      "expected_path": "/home/ubuntu/audio-cut/input/acceptance/english_pop/english_pop_01.wav",
+      "issues": [
+        "missing_audio",
+        "placeholder_title",
+        "missing_reference_boundaries",
+        "missing_subjective_naturalness"
+      ]
+    },
+    {
+      "track_id": "english_pop_02",
+      "category": "english_pop",
+      "title": "TODO English pop 02",
+      "path": "input/acceptance/english_pop/english_pop_02.wav",
+      "expected_path": "/home/ubuntu/audio-cut/input/acceptance/english_pop/english_pop_02.wav",
+      "issues": [
+        "missing_audio",
+        "placeholder_title",
+        "missing_reference_boundaries",
+        "missing_subjective_naturalness"
+      ]
+    },
+    {
+      "track_id": "english_pop_03",
+      "category": "english_pop",
+      "title": "TODO English pop 03",
+      "path": "input/acceptance/english_pop/english_pop_03.wav",
+      "expected_path": "/home/ubuntu/audio-cut/input/acceptance/english_pop/english_pop_03.wav",
+      "issues": [
+        "missing_audio",
+        "placeholder_title",
+        "missing_reference_boundaries",
+        "missing_subjective_naturalness"
+      ]
+    },
+    {
+      "track_id": "folk_low_dynamic_01",
+      "category": "folk_low_dynamic",
+      "title": "TODO folk/low dynamic 01",
+      "path": "input/acceptance/folk_low_dynamic/folk_low_dynamic_01.wav",
+      "expected_path": "/home/ubuntu/audio-cut/input/acceptance/folk_low_dynamic/folk_low_dynamic_01.wav",
+      "issues": [
+        "missing_audio",
+        "placeholder_title",
+        "missing_reference_boundaries",
+        "missing_subjective_naturalness"
+      ]
+    },
+    {
+      "track_id": "folk_low_dynamic_02",
+      "category": "folk_low_dynamic",
+      "title": "TODO folk/low dynamic 02",
+      "path": "input/acceptance/folk_low_dynamic/folk_low_dynamic_02.wav",
+      "expected_path": "/home/ubuntu/audio-cut/input/acceptance/folk_low_dynamic/folk_low_dynamic_02.wav",
+      "issues": [
+        "missing_audio",
+        "placeholder_title",
+        "missing_reference_boundaries",
+        "missing_subjective_naturalness"
+      ]
+    },
+    {
+      "track_id": "folk_low_dynamic_03",
+      "category": "folk_low_dynamic",
+      "title": "TODO folk/low dynamic 03",
+      "path": "input/acceptance/folk_low_dynamic/folk_low_dynamic_03.wav",
+      "expected_path": "/home/ubuntu/audio-cut/input/acceptance/folk_low_dynamic/folk_low_dynamic_03.wav",
+      "issues": [
+        "missing_audio",
+        "placeholder_title",
+        "missing_reference_boundaries",
+        "missing_subjective_naturalness"
+      ]
+    },
+    {
+      "track_id": "strong_chorus_01",
+      "category": "strong_chorus",
+      "title": "TODO strong chorus 01",
+      "path": "input/acceptance/strong_chorus/strong_chorus_01.wav",
+      "expected_path": "/home/ubuntu/audio-cut/input/acceptance/strong_chorus/strong_chorus_01.wav",
+      "issues": [
+        "missing_audio",
+        "placeholder_title",
+        "missing_reference_boundaries",
+        "missing_subjective_naturalness"
+      ]
+    },
+    {
+      "track_id": "strong_chorus_02",
+      "category": "strong_chorus",
+      "title": "TODO strong chorus 02",
+      "path": "input/acceptance/strong_chorus/strong_chorus_02.wav",
+      "expected_path": "/home/ubuntu/audio-cut/input/acceptance/strong_chorus/strong_chorus_02.wav",
+      "issues": [
+        "missing_audio",
+        "placeholder_title",
+        "missing_reference_boundaries",
+        "missing_subjective_naturalness"
+      ]
+    },
+    {
+      "track_id": "strong_chorus_03",
+      "category": "strong_chorus",
+      "title": "TODO strong chorus 03",
+      "path": "input/acceptance/strong_chorus/strong_chorus_03.wav",
+      "expected_path": "/home/ubuntu/audio-cut/input/acceptance/strong_chorus/strong_chorus_03.wav",
+      "issues": [
+        "missing_audio",
+        "placeholder_title",
+        "missing_reference_boundaries",
+        "missing_subjective_naturalness"
+      ]
+    },
+    {
+      "track_id": "harmony_adlib_01",
+      "category": "harmony_adlib",
+      "title": "TODO harmony/ad-lib 01",
+      "path": "input/acceptance/harmony_adlib/harmony_adlib_01.wav",
+      "expected_path": "/home/ubuntu/audio-cut/input/acceptance/harmony_adlib/harmony_adlib_01.wav",
+      "issues": [
+        "missing_audio",
+        "placeholder_title",
+        "missing_reference_boundaries",
+        "missing_subjective_naturalness"
+      ]
+    },
+    {
+      "track_id": "harmony_adlib_02",
+      "category": "harmony_adlib",
+      "title": "TODO harmony/ad-lib 02",
+      "path": "input/acceptance/harmony_adlib/harmony_adlib_02.wav",
+      "expected_path": "/home/ubuntu/audio-cut/input/acceptance/harmony_adlib/harmony_adlib_02.wav",
+      "issues": [
+        "missing_audio",
+        "placeholder_title",
+        "missing_reference_boundaries",
+        "missing_subjective_naturalness"
+      ]
+    },
+    {
+      "track_id": "harmony_adlib_03",
+      "category": "harmony_adlib",
+      "title": "TODO harmony/ad-lib 03",
+      "path": "input/acceptance/harmony_adlib/harmony_adlib_03.wav",
+      "expected_path": "/home/ubuntu/audio-cut/input/acceptance/harmony_adlib/harmony_adlib_03.wav",
+      "issues": [
+        "missing_audio",
+        "placeholder_title",
+        "missing_reference_boundaries",
+        "missing_subjective_naturalness"
+      ]
+    },
+    {
+      "track_id": "long_intro_outro_01",
+      "category": "long_intro_outro",
+      "title": "TODO long intro/outro 01",
+      "path": "input/acceptance/long_intro_outro/long_intro_outro_01.wav",
+      "expected_path": "/home/ubuntu/audio-cut/input/acceptance/long_intro_outro/long_intro_outro_01.wav",
+      "issues": [
+        "missing_audio",
+        "placeholder_title",
+        "missing_reference_boundaries",
+        "missing_subjective_naturalness"
+      ]
+    },
+    {
+      "track_id": "long_intro_outro_02",
+      "category": "long_intro_outro",
+      "title": "TODO long intro/outro 02",
+      "path": "input/acceptance/long_intro_outro/long_intro_outro_02.wav",
+      "expected_path": "/home/ubuntu/audio-cut/input/acceptance/long_intro_outro/long_intro_outro_02.wav",
+      "issues": [
+        "missing_audio",
+        "placeholder_title",
+        "missing_reference_boundaries",
+        "missing_subjective_naturalness"
+      ]
+    }
+  ]
+}

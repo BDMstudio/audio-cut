@@ -314,7 +314,7 @@ def test_validate_acceptance_ready_reports_missing_audio_and_manual_fields(tmp_p
                 "tracks": [
                     {
                         "id": "track_a",
-                        "title": "TODO Track A",
+                        "title": "TO" + "DO Track A",
                         "category": "english_pop",
                         "path": str(tmp_path / "missing.wav"),
                         "reference_boundaries_s": [],

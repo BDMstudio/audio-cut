@@ -1,6 +1,6 @@
 # VPBD ASR Acceptance Audio Inventory
 
-- Playlist: `/home/ubuntu/audio-cut/docs/vpbd_asr_acceptance_playlist.template.json`
+- Playlist: `/home/ubuntu/audio-cut/docs/vpbd_asr_acceptance_playlist.filled.json`
 - Tracks: 20
 - Missing audio: 20
 

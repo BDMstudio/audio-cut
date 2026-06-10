@@ -20,10 +20,13 @@ env/
 output/*
 !output/.gitkeep
 
-# Inputs (keep placeholder only)
+# Inputs (keep placeholder only; audio binaries remain ignored)
 input/*
 input - 副本/*
 !input/.gitkeep
+!input/acceptance/
+!input/acceptance/*/
+!input/acceptance/*/.gitkeep
 
 # OS junk
 .DS_Store
