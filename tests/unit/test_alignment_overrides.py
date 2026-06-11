@@ -64,6 +64,29 @@ def test_alignment_endpoints_match_poles() -> None:
     assert beat["global_planner.beat_conflict_weight"] == 0.3
 
 
+def test_alignment_poles_config_override_changes_endpoint_weights() -> None:
+    custom_poles = {
+        "lyric": {
+            "acoustic_pause": 0.44,
+            "asr_gap": 0.31,
+        },
+        "beat": {
+            "beat_affinity": 0.41,
+            "inside_word_penalty": 0.83,
+        },
+    }
+
+    lyric = derive_alignment_overrides(0.0, BASE_WEIGHTS, alignment_poles=custom_poles)
+    beat = derive_alignment_overrides(1.0, BASE_WEIGHTS, alignment_poles=custom_poles)
+
+    assert lyric["phrase_boundary.weights.acoustic_pause"] == 0.44
+    assert lyric["phrase_boundary.weights.asr_gap"] == 0.31
+    assert lyric["phrase_boundary.weights.beat_affinity"] == LYRIC_POLE["beat_affinity"]
+    assert beat["phrase_boundary.weights.beat_affinity"] == 0.41
+    assert beat["phrase_boundary.weights.inside_word_penalty"] == 0.83
+    assert beat["phrase_boundary.weights.asr_gap"] == BEAT_POLE["asr_gap"]
+
+
 def test_alignment_weight_monotonicity() -> None:
     samples = [derive_alignment_overrides(a, BASE_WEIGHTS) for a in (0.0, 0.25, 0.75, 1.0)]
 

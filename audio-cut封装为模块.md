@@ -40,7 +40,8 @@ v2.8 只增字段，不删除旧字段。agent 应重点读取：
     "alignment": 0.75,
     "alignment_raw": 0.75,
     "lyrics": "auto",
-    "profile": "auto"
+    "profile": "auto",
+    "applied_overrides": ["phrase_boundary.weights.beat_affinity"]
   },
   "segments": [
     {"id": "0001", "start": 0.0, "end": 5.2, "lyrics": {"text": "..."}}
@@ -53,7 +54,7 @@ v2.8 只增字段，不删除旧字段。agent 应重点读取：
 }
 ```
 
-`segments[*].lyrics` 是可选字段；没有歌词覆盖时可能不存在或为 `null`。`qa_report` 是 agent 闭环检查入口，用于判断卡点比例、气口自然度和词内切割风险。
+`intent.applied_overrides` 是可选诊断字段：真实统一引擎路径会回显 alignment 实际改动的运行时键；轻量封装、测试替身或旧路径可能不提供该字段。`segments[*].lyrics` 是可选字段；没有歌词覆盖时可能不存在或为 `null`。`qa_report` 是 agent 闭环检查入口，用于判断卡点比例、气口自然度和词内切割风险。
 
 ## 4. 降级语义
 

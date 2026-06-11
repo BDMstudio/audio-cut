@@ -101,6 +101,60 @@ def test_public_api_intent_parameters_route_to_unified_engine(monkeypatch, tmp_p
     assert "qa_report" in manifest
 
 
+def test_public_api_preserves_splitter_intent_applied_overrides(monkeypatch, tmp_path: Path) -> None:
+    input_path = tmp_path / "song.wav"
+    sf.write(input_path, np.zeros(44100 * 2, dtype=np.float32), 44100, subtype="PCM_16")
+
+    class FakeSplitter:
+        def __init__(self, sample_rate: int) -> None:
+            self.sample_rate = sample_rate
+
+        def split_audio_seamlessly(
+            self,
+            input_file: str,
+            output_dir: str,
+            *,
+            mode: str,
+            export_plan: Any = None,
+        ) -> Dict[str, Any]:
+            return {
+                "success": True,
+                "method": f"pure_vocal_split_{mode}",
+                "export_plan": [],
+                "cut_points_sec": [0.0, 2.0],
+                "cut_points_samples": [0, 88200],
+                "segment_labels": ["human"],
+                "segment_durations": [2.0],
+                "segment_vocal_flags": [True],
+                "intent": {
+                    "target_duration_s": [3.0, 8.0],
+                    "segments": "many",
+                    "alignment": 1.0,
+                    "alignment_raw": "beat",
+                    "lyrics": "auto",
+                    "profile": "auto",
+                    "applied_overrides": [
+                        "phrase_boundary.weights.beat_affinity",
+                        "vpbd.beat_candidates.base_score",
+                    ],
+                },
+            }
+
+    monkeypatch.setattr(api_module, "SeamlessSplitter", FakeSplitter)
+
+    manifest = api_module.separate_and_segment(
+        input_uri=str(input_path),
+        export_dir=str(tmp_path / "out"),
+        segments="many",
+        alignment="beat",
+    )
+
+    assert manifest["intent"]["applied_overrides"] == [
+        "phrase_boundary.weights.beat_affinity",
+        "vpbd.beat_candidates.base_score",
+    ]
+
+
 def test_public_api_without_intent_keeps_legacy_default(monkeypatch, tmp_path: Path) -> None:
     input_path = tmp_path / "song.wav"
     sf.write(input_path, np.zeros(44100 * 2, dtype=np.float32), 44100, subtype="PCM_16")
