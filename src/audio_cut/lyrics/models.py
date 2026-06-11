@@ -11,6 +11,7 @@ from typing import Any, Dict, Iterable, List, Optional, Type, TypeVar
 from audio_cut.exceptions import TimelineValidationError
 
 _EPS = 1e-9
+_DURATION_ROUNDING_TOLERANCE_S = 0.001
 _T = TypeVar("_T", bound="_TimedItem")
 
 
@@ -135,6 +136,17 @@ class Sentence(_TimedItem):
         }
 
 
+def _clamp_minor_duration_overshoot(item: _T, duration_s: Optional[float]) -> bool:
+    """Clamp millisecond-rounded ASR spans that barely exceed the audio tail."""
+
+    if duration_s is None or item.end_s <= duration_s + _EPS:
+        return False
+    if item.end_s <= duration_s + _DURATION_ROUNDING_TOLERANCE_S and item.start_s < duration_s:
+        item.end_s = float(duration_s)
+        return True
+    return False
+
+
 @dataclass
 class VadRegion(_TimedItem):
     """mVAD or singing region emitted by an ASR provider."""
@@ -249,6 +261,11 @@ def _load_items(
     for index, raw in enumerate(raw_items):
         try:
             item = item_type.from_dict(raw)  # type: ignore[attr-defined]
+            if _clamp_minor_duration_overshoot(item, duration_s):
+                warnings.append(
+                    f"{item_type.__name__}[{index}]: "
+                    "end_s clamped to timeline duration after minor rounding overshoot"
+                )
             item.validate(duration_s)
             items.append(item)
         except TimelineValidationError as exc:

@@ -61,6 +61,29 @@ def test_parse_worker_response_converts_local_ms_to_global_seconds() -> None:
     assert timeline.vad_regions[0].start_s == 10.05
 
 
+def test_parse_worker_response_clamps_minor_ms_rounding_past_duration_in_strict_mode() -> None:
+    duration_s = 75.86575
+    payload = {
+        "duration_s": duration_s,
+        "sentences": [
+            {"text": "tail", "start_ms": 69130, "end_ms": 75866},
+        ],
+    }
+
+    timeline = parse_worker_response(
+        payload,
+        duration_s=duration_s,
+        global_t0_s=0.0,
+        source="firered_cli",
+        strict=True,
+    )
+
+    assert timeline.sentences[0].end_s == duration_s
+    assert timeline.warnings == [
+        "Sentence[0]: end_s clamped to timeline duration after minor rounding overshoot"
+    ]
+
+
 def test_parse_worker_response_allows_missing_mvad() -> None:
     timeline = parse_worker_response(
         {"words": [{"text": "hello", "start_ms": 0, "end_ms": 250}]},
