@@ -1,8 +1,8 @@
 # File: config/expert.yaml
-# AI-SUMMARY: v2.7 expert defaults hidden behind the slim unified user config.
+# AI-SUMMARY: v2.8 expert defaults hidden behind the slim unified user config.
 global:
-  default_mode: v2.2_mdd
-  version: 2.7.0-beta
+  default_mode: vpbd_asr
+  version: 2.8.0-beta
 gpu_pipeline:
   chunk_seconds: 10.0
   overlap_seconds: 2.5
@@ -191,6 +191,25 @@ phrase_boundary:
     breath: 0.12
     inside_word_penalty: 0.8
     singing_penalty: 0.5
+  alignment_poles:
+    lyric:
+      acoustic_pause: 0.38
+      asr_gap: 0.26
+      sentence_end: 0.22
+      beat_affinity: 0.02
+      mdd_affinity: 0.06
+      breath: 0.10
+      inside_word_penalty: 0.85
+      singing_penalty: 0.50
+    beat:
+      acoustic_pause: 0.22
+      asr_gap: 0.10
+      sentence_end: 0.08
+      beat_affinity: 0.32
+      mdd_affinity: 0.12
+      breath: 0.10
+      inside_word_penalty: 0.80
+      singing_penalty: 0.50
 global_planner:
   enable: true
   hard_min_s: 2.0

@@ -19,6 +19,8 @@ def test_vpbd_asr_config_defaults_are_loaded() -> None:
     assert cfg.get("vpbd.beat_candidates.bars_per_cut") == 2
     assert cfg.get("vpbd.beat_candidates.base_score") == 0.3
     assert cfg.get("vpbd.candidate_pool") == "unified"
+    assert cfg.get("smart_cut.segments") == "medium"
+    assert cfg.get("smart_cut.alignment") == "balanced"
     assert cfg.get("smart_cut.profile") == "auto"
     assert cfg.get("smart_cut.cut_style") == "natural"
     assert cfg.get("smart_cut.target_duration_s") == [5.0, 12.0]
@@ -30,6 +32,8 @@ def test_vpbd_asr_config_defaults_are_loaded() -> None:
     weights = cfg.get("phrase_boundary.weights")
     assert weights["breath"] > 0.0
     assert weights["inside_word_penalty"] == 0.8
+    assert cfg.get("phrase_boundary.alignment_poles.lyric.asr_gap") == 0.26
+    assert cfg.get("phrase_boundary.alignment_poles.beat.beat_affinity") == 0.32
     positive_keys = {"acoustic_pause", "asr_gap", "sentence_end", "beat_affinity", "mdd_affinity", "breath"}
     penalty_keys = {"inside_word_penalty", "singing_penalty"}
     assert sum(float(weights[key]) for key in positive_keys) <= 1.0 + 1e-9
@@ -53,6 +57,8 @@ def test_vpbd_asr_config_supports_vss_env_override(monkeypatch) -> None:
     monkeypatch.setenv("VSS__VPBD__BEAT_CANDIDATES__BARS_PER_CUT", "4")
     monkeypatch.setenv("VSS__VPBD__CANDIDATE_POOL", "legacy")
     monkeypatch.setenv("VSS__SMART_CUT__PROFILE", "ballad")
+    monkeypatch.setenv("VSS__SMART_CUT__SEGMENTS", "many")
+    monkeypatch.setenv("VSS__SMART_CUT__ALIGNMENT", "0.8")
     monkeypatch.setenv("VSS__PHRASE_BOUNDARY__WORD_EDGE_TOLERANCE_MS", "45")
     monkeypatch.setenv("VSS__GLOBAL_PLANNER__VOCAL_RISK_WEIGHT", "0.4")
 
@@ -66,6 +72,8 @@ def test_vpbd_asr_config_supports_vss_env_override(monkeypatch) -> None:
     assert cfg.get("vpbd.beat_candidates.bars_per_cut") == 4
     assert cfg.get("vpbd.candidate_pool") == "legacy"
     assert cfg.get("smart_cut.profile") == "ballad"
+    assert cfg.get("smart_cut.segments") == "many"
+    assert cfg.get("smart_cut.alignment") == 0.8
     assert cfg.get("phrase_boundary.word_edge_tolerance_ms") == 45
     assert cfg.get("global_planner.vocal_risk_weight") == 0.4
 

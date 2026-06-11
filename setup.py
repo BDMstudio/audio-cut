@@ -22,7 +22,7 @@ def read_requirements():
 
 setup(
     name="vocal-smart-splitter",
-    version="2.5.1",
+    version="2.8.0b0",
     description="智能人声分割器 - 基于人声内容和换气停顿的智能音频分割工具（支持多特征副歌检测）",
     long_description=read_readme(),
     long_description_content_type="text/markdown",
@@ -36,6 +36,7 @@ setup(
         "vocal_smart_splitter": ["config.yaml"],
         "audio_cut.config": [
             "unified.yaml",
+            "expert.yaml",
             "schema_v3.yaml",
             "profiles/*.yaml",
             "examples/*.yaml",
@@ -43,7 +44,7 @@ setup(
     },
     # 确保 config 目录被复制到安装位置
     data_files=[
-        ("audio_cut_config", ["config/unified.yaml"]),
+        ("audio_cut_config", ["config/unified.yaml", "config/expert.yaml"]),
     ],
     install_requires=read_requirements(),
     extras_require={

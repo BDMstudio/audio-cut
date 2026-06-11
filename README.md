@@ -3,7 +3,7 @@
 
 # 智能人声分割器（Vocal Smart Splitter）
 
-Vocal Smart Splitter 支持高保真声部拆分、纯人声检测，以及带 MDD（Musical Dynamic Density）守卫的一站式处理能力。自 v2.5 起新增 `hybrid_mdd` 模式，支持 MDD 人声分割 + librosa 节拍卡点增强，片段带 `_lib` 后缀标记，适合 MV 剪辑场景。v2.6.1 起 `hybrid_mdd` 的节拍吸附会使用分离后人声轨做安静度保护，并在吸附后重新进入统一守卫链；v2.7 draft 起 `vpbd_asr` 会把 FireRedASR/FireRedASR2S 歌词时间轴、声学低谷、气口与高能量段弱节拍点统一放入候选池，仍由权重和规划器决定最终切点。
+Vocal Smart Splitter 支持高保真声部拆分、纯人声检测和智能切分。v2.8 起用户面收敛为两个意图轴：片段密度（少/中/多）与切点风格（歌词到节拍的连续偏好）。旧 `--mode` 仍完整保留为专家兼容入口，但 `quick_start.py`、CLI 新参数和 Python API 默认都面向意图而不是算法名词。
 
 ## 核心能力
 - **双通道分离**：默认使用 MDX23 ONNX 输出人声/伴奏，失败时自动回退 Demucs v4（可配置关闭）。
@@ -23,63 +23,47 @@ Vocal Smart Splitter 支持高保真声部拆分、纯人声检测，以及带 M
    ```bash
    python quick_start.py
    ```
-   - 第一步选择处理范围（单文件或批量处理）。
-   - 第二步按使用目标选择主流程：
-     - `1` 只做人声/伴奏分离：准备素材，不切片。
-     - `2` 稳定声学切分：不依赖歌词 ASR，复用 v2.2 MDD 低谷检测。
-     - `3` 歌词辅助自然切分：v2.7 主路径；声学低谷为主，歌词边界加分；mvagent 默认。
-     - `4` 音乐卡点切分：Hybrid MDD + 节拍吸附，适合 MV/短视频卡点。
-     - `5` 节拍网格基线：librosa onset 调试或节奏基线对比。
-   - 选择歌词辅助自然切分时，默认歌词来源为自动选择：sidecar → CLI → 声学降级。常规批量和 mvagent 不需要指定 provider；只有调试或固定部署时才手动选择 CLI、sidecar、fake fixture 或关闭歌词。
-   - 选择音乐卡点切分后可配置卡点密度和节拍对齐策略。
-3. 命令行模式：
+   除文件选择外只问三件事：
+   - 要切片，还是只做人声/伴奏分离；
+   - 片段密度：少（10-18s）、中（5-12s）、多（3-8s）；
+   - 切点风格：歌词优先、偏歌词、均衡、偏节拍、强卡点。
+
+   歌词来源、风格估计、输出格式和 provider 回退链都走配置默认；常规用户和 agent 不需要选择内部实现。
+3. 命令行意图参数：
    ```bash
-   # MDD 模式（默认）
-   python run_splitter.py input/your_song.mp3 --mode v2.2_mdd
-   
-   # Hybrid MDD 模式（MDD + 节拍卡点）
-   python run_splitter.py input/your_song.mp3 --mode hybrid_mdd
-   
-   # librosa_onset 模式（纯节拍分割）
-   python run_splitter.py input/your_song.mp3 --mode librosa_onset
-
-   # VPBD + fake lyrics fixture（测试/回归）
-   python run_splitter.py input/your_song.mp3 --mode vpbd_asr \
-     --lyrics-provider fake \
-     --lyrics-fixture tests/fixtures/lyrics/simple_song_timeline.json
-
-   # VPBD + FireRed sidecar
-   python run_splitter.py input/your_song.mp3 --mode vpbd_asr \
-     --lyrics-provider sidecar \
-     --firered-endpoint http://127.0.0.1:8765
+   python run_splitter.py input/track.mp3 --segments medium --align beat_lean
+   python run_splitter.py input/track.mp3 --segments 6-14 --align 0.8
    ```
-   可按需追加 `--validate-reconstruction`、`--gpu-device cuda:1|cpu`、`--strict-gpu`、`--profile ...`、`--compat-config v2`、`--asr-chunk-s`、`--asr-overlap-s`、`--asr-strict`。
-4. FireRed provider 部署：
-   - **Sidecar**：外部常驻 worker 提供 `GET /health` 与 `POST /analyze`；请求 JSON 包含 `audio_path`、`duration_s`、`sample_rate`、`strict`、`meta`，响应 JSON 输出 `words`、`sentences`、可选 `mvad`。
-   - **CLI**：外部 worker 接收 `--input-json - --output <lyrics_timeline.json>`，返回码非 0、超时或非法 JSON 会按 strict 配置报错或降级。
-   - FireRed 依赖不进入 base requirements；实际 worker 可放在 `/home/ubuntu/asr_test` 或独立环境。
-5. 输出目录统一为 `output/<日期>_<时间>_<原音频名>/`（例如 `20241010_153045_song`），单文件与批处理遵循同一规则。
+   `--segments` 支持 `few|medium|many|MIN-MAX`；`--align` 支持 `lyric|lyric_lean|balanced|beat_lean|beat` 或 `0.0-1.0`。
+4. 旧模式仍可显式调用：
+   ```bash
+   python run_splitter.py input/track.mp3 --mode vocal_separation
+   python run_splitter.py input/track.mp3 --mode v2.2_mdd
+   python run_splitter.py input/track.mp3 --mode hybrid_mdd
+   python run_splitter.py input/track.mp3 --mode librosa_onset
+   python run_splitter.py input/track.mp3 --mode vpbd_asr --lyrics-provider fake --lyrics-fixture tests/fixtures/lyrics/simple_song_timeline.json
+   ```
+   显式 `--mode` 永远优先；未显式传 `--mode` 但给了意图参数时，自动走统一候选池路径。
+5. 输出目录统一为 `output/<日期>_<时间>_<原音频名>/`，单文件与批处理遵循同一规则。
 
 ## 模块化调用（作为子模块嵌入）
-- 通过 `audio_cut.api.separate_and_segment(...)` 可在上层项目中直接调用整套流水线（分离→切分→布局→导出→Manifest）。
+- `audio_cut.api.separate_and_segment(...)` 是上层 agent 的稳定入口；既有参数保持兼容，新意图参数全部可选。
 - 调用示例：
   ```python
   from audio_cut.api import separate_and_segment
 
   manifest = separate_and_segment(
-      input_uri="input/song.mp3",
-      export_dir="output/song_job",
-      mode="v2.2_mdd",
-      device="cuda:0",
+      input_uri="input/track.mp3",
+      export_dir="output/job",
+      segments="medium",
+      alignment=0.75,
       export_types=("vocal", "human_segments", "music_segments"),
-      layout={"micro_merge_s": 2.0, "soft_min_s": 6.0, "soft_max_s": 18.0},
-      strict_gpu=True,
       export_manifest=True,
   )
   ```
-- Manifest 默认写入 `SegmentManifest.json`，包含音频哈希/时长、导出计划、切点与守卫统计、片段列表及导出资产相对路径（详见 `audio-cut封装为模块.md`）。
-- `export_types` 控制导出资产：`vocal`（全量人声）、`instrumental`（全量伴奏）、`human_segments`（人声片段）、`music_segments`（混音片段）。未指定时默认导出全部。
-- 返回结果中的 `export_plan` 字段会列出实际执行计划；如模型缺少伴奏分离会自动剔除 `instrumental` 并写入日志。
+- 不传 `segments/alignment/mode` 时沿用旧默认 `v2.2_mdd`；传意图参数且未显式传 `mode` 时走统一候选池；显式 `mode` 永远优先。
+- Manifest 会增量回显 `intent`，并继续包含旧字段、`segments[*].lyrics`（可选）和 `qa_report`。详见 `audio-cut封装为模块.md`。
+- `export_types` 控制导出资产：`vocal`、`instrumental`、`human_segments`、`music_segments`。未指定时默认导出全部。
 
 ## 输出结构
 - `segment_###_{human|music}_*.wav`：混音片段，文件名追加 `_X.X`（秒，保留 1 位小数）表示片段时长。
@@ -93,24 +77,23 @@ Vocal Smart Splitter 支持高保真声部拆分、纯人声检测，以及带 M
 - 其他字段：`cut_points_samples/sec`、`guard_adjustments`、`suppressed_cut_points_sec` 等，用于验证切点一致性。
 
 ## 配置总览
-`config/unified.yaml` 是 v2.7 用户面配置，保持在 120 行以内；`config/expert.yaml` 存放高级默认值并由 `ConfigManager` 自动先加载。优先级从低到高为：`expert.yaml` → `unified.yaml` → `VSS_EXTERNAL_CONFIG_PATH` → 显式配置文件 → `VSS__...` 环境变量。
+`config/unified.yaml` 是 v2.8 用户面配置，保持在 120 行以内；`config/expert.yaml` 存放高级默认值并由 `ConfigManager` 自动先加载。优先级从低到高为：`expert.yaml` -> `unified.yaml` -> `VSS_EXTERNAL_CONFIG_PATH` -> 显式配置文件 -> `VSS__...` 环境变量。
 
-用户通常只需要改 `unified.yaml`：
-- `smart_cut.*`：`profile=auto` 按 BPM/MDD/能量 CV/人声覆盖率估计风格；手动 `ballad/pop/edm/rap` 优先于 auto；`target_duration_s` 派生 planner/layout/quality 的时长约束。
-- `audio.*`：采样率、声道、默认格式与质量。
-- `gpu_pipeline.enable/prefer_device/strict_gpu`：GPU 开关、首选设备与 strict GPU 行为。
-- `lyrics_alignment.*` / `fire_red.*`：控制 `vpbd_asr` provider、strict 降级、ASR chunk、sidecar/CLI 参数。
-- `output.*` / `logging.*`：导出格式、命名、Manifest 与日志。
+用户通常只需要改 `smart_cut`：
+- `segments`：`few|medium|many`，分别解析为 `[10,18]`、`[5,12]`、`[3,8]` 秒；也可用 `target_duration_s` 直接给数值轨。
+- `alignment`：`lyric|lyric_lean|balanced|beat_lean|beat` 或 `0.0-1.0`；`0.5` 是兼容恒等点。
+- `lyrics=auto`：自动 provider 回退链；失败时降级声学候选继续处理。
+- `profile=auto`：按 BPM/MDD/能量 CV/人声覆盖率估计风格；手动 `ballad/pop/edm/rap` 是专家逃生口。
+- `cut_style` 已废弃，读取时会映射到 `alignment/segments`，计划在 v3.0 移除。
 
-高级参数仍然生效，但默认隐藏在 `config/expert.yaml`：
-- `pure_vocal_detection.*`、`quality_control.*`、`segment_layout.*`：声学低谷、静音守卫和布局精炼细参。
-- `hybrid_mdd.*`：节拍吸附、`vad_protection`、`chorus_force_snap` 和密度预设。
-- `vpbd.*` / `phrase_boundary.*` / `global_planner.*`：VPBD 候选池、权重和全局规划；`vpbd.candidate_pool=legacy` 可回退到 v2.6 声学候选池。
-- `gpu_pipeline.ort.*`、`advanced_vad.*`、`enforce_quiet_cut.*`、`valley_scoring.*` 属于 expert 细参；通过 `VSS__...` 或外部配置覆盖时仍按原路径生效。
+高级参数仍在 `config/expert.yaml`：`pure_vocal_detection.*`、`quality_control.*`、`segment_layout.*`、`hybrid_mdd.*`、`vpbd.*`、`phrase_boundary.*`、`global_planner.*`、`gpu_pipeline.ort.*` 等。需要覆盖时继续使用原路径或 `VSS__...`。
 
-已废弃默认键：`bpm_adaptive_core.*` 与 `vocal_pause_splitting.bpm_adaptive_settings` 不再出现在默认配置中；迁移旧配置时会发出 deprecation warning。VPP 乘数已并入 `pure_vocal_detection.relative_threshold_adaptation.pause_stats_multipliers`。
+示例：
+```bash
+VSS__smart_cut__segments=many VSS__smart_cut__alignment=0.8 python run_splitter.py input/track.mp3
+```
 
-`vpbd_asr` 的长段二次分割遵循软约束：优先选择声学低谷，并用 ASR 句/唱段边界加权；找不到可信低谷时保留稍长片段，不使用 midpoint 硬切。Hybrid legacy helper 仍保留 midpoint fallback 以兼容原有节拍卡点行为。
+`vpbd_asr` 的长段二次分割遵循软约束：优先选择声学低谷，并用歌词句/唱段边界加权；找不到可信低谷时保留稍长片段，不使用 midpoint 硬切。
 
 ## 调参指引
 - **切点过少/片段过长**：优先调整 `smart_cut.target_duration_s`；必要时在 `config/expert.yaml` 或 `VSS__...` 中降低 `pure_vocal_detection.peak_relative_threshold_ratio` / `rms_relative_threshold_ratio`、减小 `quality_control.min_split_gap` 或调节 `valley_scoring.merge_close_ms`。
@@ -147,7 +130,8 @@ Vocal Smart Splitter 支持高保真声部拆分、纯人声检测，以及带 M
   - `tests/benchmarks/test_chunk_vs_full_equivalence.py`：chunk/full 误差报告；
   - `tests/integration/test_pipeline_v2_valley.py`：MDD 主流程；
   - `tests/contracts/test_config_contracts.py`：配置兼容契约；
-  - `tests/unit/test_firered_*`、`tests/unit/test_run_splitter_cli.py`、`tests/unit/test_quick_start_vpbd.py`：v2.6 VPBD ASR provider 与入口契约。
+  - `tests/unit/test_alignment_overrides.py`、`tests/unit/test_intent_routing.py`、`tests/unit/test_seamless_splitter_intent_runtime.py`、`tests/contracts/test_agent_intent_contract.py`：v2.8 意图解析、入口路由、runtime 接线与 agent Manifest 契约；
+  - `tests/unit/test_firered_*`、`tests/unit/test_run_splitter_cli.py`、`tests/unit/test_quick_start_vpbd.py`：provider 与入口契约。
 - 待补测试：`tests/test_seamless_reconstruction.py` 需适配 v2.3 结果结构；批量处理路径需要新的集成测试。
 
 ## 性能基线
@@ -162,6 +146,12 @@ Vocal Smart Splitter 支持高保真声部拆分、纯人声检测，以及带 M
   ```
 
 ## 更新记录
+- **2026-06-11 (v2.8 draft)**
+  - 产品面减法：`quick_start.py` 从多层算法菜单收敛为文件选择 + 三问。
+  - 新增意图参数：CLI `--segments/--align` 与 API `segments/alignment`，Manifest 增量回显 `intent`。
+  - `alignment` 滑块在 AutoProfile 后叠加权重；`0.5` 为恒等点，词内和高人声风险惩罚保持高位。
+  - `smart_cut.segments/alignment` 进入用户配置；`cut_style` 标记废弃并映射到新双轴。
+  - agent 契约明确 `intent + segments[*].lyrics + qa_report` 三件套，旧 `--mode` 路径继续保留。
 - **2026-06-10 (v2.7 draft)**
   - VPBD 候选池开始接收气口候选，默认按 `vpbd.breath_score_scale=0.6` 降权；旧模式仍按原逻辑过滤 breath。
   - `vpbd_asr` 的 lyrics gap / sentence end / mVAD 边界与声学候选合并后统一打分规划，近重复候选在 ±120ms 内融合并在 `meta.sources` 留痕。

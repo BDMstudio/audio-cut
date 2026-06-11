@@ -17,8 +17,11 @@ from audio_cut.analysis import BeatAnalyzer, TrackFeatureCache, build_feature_ca
 from audio_cut.config.auto_profile import (
     build_auto_profile_overrides,
     build_style_weight_overrides,
+    derive_alignment_overrides,
     derive_smart_cut_overrides,
     estimate_style,
+    resolve_smart_cut_intent,
+    should_apply_duration_overrides,
 )
 from audio_cut.config.derive import apply_profile_overrides
 from audio_cut.utils.gpu_pipeline import PipelineConfig, PipelineContext, build_pipeline_context
@@ -91,6 +94,7 @@ class SeamlessSplitter:
         self._last_suppressed_cut_points: List[CutPoint] = []
         self._precision_guard_ok: bool = True
         self._last_auto_profile_meta: Optional[Dict[str, Any]] = None
+        self._last_intent_meta: Optional[Dict[str, Any]] = None
         default_export_format = ensure_supported_format(get_config('output.format', 'wav'))
         self._export_format = default_export_format
         self._export_options = build_export_options(
@@ -345,6 +349,7 @@ class SeamlessSplitter:
             smart_profile_meta = self._apply_smart_cut_runtime(feature_cache, vocal_track=vocal_track)
         else:
             self._last_auto_profile_meta = None
+            self._last_intent_meta = None
         vpbd_detection = None
         markers = getattr(separation_result, 'quality_metrics', {}) or {}
         marker_times = []
@@ -735,6 +740,9 @@ class SeamlessSplitter:
             result['lyrics_alignment'] = vpbd_detection.lyrics_alignment
         if smart_profile_meta is not None:
             result['auto_profile'] = smart_profile_meta
+        smart_intent_meta = getattr(self, '_last_intent_meta', None)
+        if smart_intent_meta is not None:
+            result['intent'] = dict(smart_intent_meta)
         result['segment_layout_applied'] = bool(layout_applied)
         result['lyrics_cut_protection_applied'] = bool(lyrics_protection_applied)
         result['suppressed_cut_points_sec'] = [float(cut.t) for cut in self._last_suppressed_cut_points]
@@ -747,7 +755,7 @@ class SeamlessSplitter:
         *,
         vocal_track: Optional[np.ndarray] = None,
     ) -> Optional[Dict[str, Any]]:
-        """Apply smart_cut profile and duration overrides before boundary detection."""
+        """Apply smart_cut intent, profile and duration overrides before boundary detection."""
 
         try:
             smart_cut = get_config('smart_cut', {}) or {}
@@ -756,12 +764,12 @@ class SeamlessSplitter:
         if not isinstance(smart_cut, dict):
             smart_cut = {}
 
-        profile = str(smart_cut.get('profile', 'auto') or 'auto').strip().lower()
-        cut_style = str(smart_cut.get('cut_style', 'natural') or 'natural').strip().lower()
         runtime_keys = get_runtime_override_keys()
+        intent_meta = resolve_smart_cut_intent(smart_cut, explicit_keys=runtime_keys)
+        profile = str(intent_meta.get('profile', 'auto') or 'auto').strip().lower()
         overrides: Dict[str, Any] = (
-            derive_smart_cut_overrides(smart_cut)
-            if 'smart_cut.target_duration_s' in runtime_keys
+            derive_smart_cut_overrides(smart_cut, explicit_keys=runtime_keys)
+            if should_apply_duration_overrides(smart_cut, explicit_keys=runtime_keys)
             else {}
         )
         auto_profile_meta: Optional[Dict[str, Any]] = None
@@ -769,30 +777,78 @@ class SeamlessSplitter:
         if profile == 'auto':
             self._attach_vocal_coverage(feature_cache, vocal_track)
             estimate = estimate_style(feature_cache)
-            profile_overrides = build_auto_profile_overrides(estimate, cut_style=cut_style)
+            profile_overrides = build_auto_profile_overrides(estimate, cut_style='natural')
             auto_profile_meta = dict(profile_overrides.get('meta.auto_profile', {}))
             overrides.update(profile_overrides)
             logger.info(
-                "[AutoProfile] style=%s confidence=%.3f bpm=%s",
+                "[AutoProfile] style=%s confidence=%.3f bpm=%s alignment=%s",
                 auto_profile_meta.get('style'),
                 float(auto_profile_meta.get('confidence') or 0.0),
                 auto_profile_meta.get('bpm'),
+                intent_meta.get('alignment'),
             )
         elif profile in {'ballad', 'pop', 'edm', 'rap'}:
             _, profile_overrides = apply_profile_overrides(profile)
             overrides.update(profile_overrides)
-            overrides.update(build_style_weight_overrides(profile, cut_style=cut_style))
+            overrides.update(build_style_weight_overrides(profile, cut_style='natural'))
             overrides['meta.profile'] = profile
-            logger.info("[AutoProfile] manual profile=%s", profile)
+            logger.info("[AutoProfile] manual profile=%s alignment=%s", profile, intent_meta.get('alignment'))
         else:
             logger.warning("[AutoProfile] unknown smart_cut.profile=%s; falling back to pop", profile)
             _, profile_overrides = apply_profile_overrides('pop')
             overrides.update(profile_overrides)
+            overrides.update(build_style_weight_overrides('pop', cut_style='natural'))
             overrides['meta.profile'] = 'pop'
+
+        base_weights = self._phrase_weights_from_overrides(overrides)
+        try:
+            alignment_poles = get_config('phrase_boundary.alignment_poles', None)
+        except Exception:
+            alignment_poles = None
+        alignment_overrides = derive_alignment_overrides(
+            intent_meta.get('alignment', 0.5),
+            base_weights,
+            alignment_poles=alignment_poles,
+        )
+        overrides.update(alignment_overrides)
+        intent_meta = dict(intent_meta)
+        intent_meta['applied_overrides'] = sorted(
+            key for key in alignment_overrides if not key.startswith('meta.')
+        )
+        if auto_profile_meta is not None:
+            auto_profile_meta['alignment'] = {
+                'value': intent_meta.get('alignment'),
+                'raw': intent_meta.get('alignment_raw'),
+            }
+        overrides['meta.intent'] = intent_meta
 
         set_runtime_config(overrides)
         self._last_auto_profile_meta = auto_profile_meta
+        self._last_intent_meta = intent_meta
         return auto_profile_meta
+
+    @staticmethod
+    def _phrase_weights_from_overrides(overrides: Dict[str, Any]) -> Dict[str, float]:
+        """Read phrase-boundary weights after profile overrides, falling back to config."""
+
+        keys = (
+            'acoustic_pause',
+            'asr_gap',
+            'sentence_end',
+            'beat_affinity',
+            'mdd_affinity',
+            'breath',
+            'inside_word_penalty',
+            'singing_penalty',
+        )
+        weights: Dict[str, float] = {}
+        for key in keys:
+            flat_key = f'phrase_boundary.weights.{key}'
+            if flat_key in overrides:
+                weights[key] = float(overrides[flat_key])
+            else:
+                weights[key] = float(get_config(flat_key, 0.0))
+        return weights
 
     def _attach_vocal_coverage(
         self,

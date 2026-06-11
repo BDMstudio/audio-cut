@@ -66,6 +66,10 @@ test_*.py
 !tests/unit/test_firered_provider_selection.py
 !tests/unit/test_run_splitter_cli.py
 !tests/unit/test_quick_start_vpbd.py
+!tests/unit/test_alignment_overrides.py
+!tests/unit/test_intent_routing.py
+!tests/unit/test_seamless_splitter_intent_runtime.py
+!tests/contracts/test_agent_intent_contract.py
 !tests/unit/test_qa_report.py
 !tests/unit/test_legacy_mode_regression.py
 !tests/unit/test_cpu_baseline_perfect_reconstruction.py

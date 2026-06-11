@@ -13,11 +13,19 @@ from .derive import (
     apply_profile_overrides,
 )
 from .auto_profile import (
+    ALIGNMENT_STOPS,
+    BEAT_POLE,
+    LYRIC_POLE,
+    SEGMENT_DURATION_STOPS,
     StyleEstimate,
     build_auto_profile_overrides,
     build_style_weight_overrides,
+    derive_alignment_overrides,
     derive_smart_cut_overrides,
     estimate_style,
+    resolve_alignment,
+    resolve_smart_cut_intent,
+    should_apply_duration_overrides,
 )
 
 __all__ = [
@@ -26,9 +34,17 @@ __all__ = [
     "schema_from_mapping",
     "build_legacy_overrides",
     "apply_profile_overrides",
+    "ALIGNMENT_STOPS",
+    "BEAT_POLE",
+    "LYRIC_POLE",
+    "SEGMENT_DURATION_STOPS",
     "StyleEstimate",
     "build_auto_profile_overrides",
     "build_style_weight_overrides",
+    "derive_alignment_overrides",
     "derive_smart_cut_overrides",
     "estimate_style",
+    "resolve_alignment",
+    "resolve_smart_cut_intent",
+    "should_apply_duration_overrides",
 ]

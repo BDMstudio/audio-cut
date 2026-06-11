@@ -13,7 +13,7 @@ import soundfile as sf
 import audio_cut.api as api_module
 import vocal_smart_splitter.core.utils.segment_exporter as segment_exporter_module
 from audio_cut.api import _build_manifest
-from run_splitter import build_parser
+from run_splitter import build_parser, resolve_effective_mode
 from vocal_smart_splitter.core.seamless_splitter import SeamlessSplitter
 from vocal_smart_splitter.core.utils.segment_exporter import SegmentExporter
 from vocal_smart_splitter.utils.config_manager import reset_runtime_config, set_runtime_config
@@ -24,7 +24,8 @@ def test_legacy_cli_requires_no_new_asr_arguments() -> None:
 
     args = parser.parse_args(["input/song.mp3"])
 
-    assert args.mode == "v2.2_mdd"
+    assert args.mode is None
+    assert resolve_effective_mode(args) == "v2.2_mdd"
     assert args.lyrics_provider is None
     assert args.firered_endpoint is None
     assert args.asr_chunk_s is None

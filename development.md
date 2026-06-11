@@ -1,12 +1,13 @@
 <!-- File: development.md -->
 <!-- AI-SUMMARY: 记录 Vocal Smart Splitter 的架构、流程、测试矩阵与演进规划。 -->
 
-# development.md — 技术路线与模块总览（更新于 2026-06-10）
+# development.md — 技术路线与模块总览（更新于 2026-06-11）
 
 本文档是工程事实的单一可信来源（SSOT），持续记录系统架构、实现约束与进度。所有涉及流程、参数或测试的改动，须同步更新此处。
 
 ## 1. 版本演进
 
+- **v2.8 draft（2026-06-11）**: 产品面收敛为 `segments` 密度轴与 `alignment` 歌词-节拍轴；`quick_start.py` 变为文件选择 + 三问，CLI/API 新增意图参数，Manifest 增量回显 `intent`，旧 `--mode` 路径保留为专家兼容入口。
 - **v2.7 draft（2026-06-10）**: VPBD 候选池开始接收气口、ASR lyrics gap / sentence end / mVAD 与高能量段弱节拍候选；近重复候选先融合再统一打分规划，breath 只在 VPBD 路径通过 `vpbd.breath_score_scale` 降权启用；`vocal_cut_risk` / `mdd_affinity` / `beat_conflict` 进入真实打分闭环。
 - **v2.6.1 draft（2026-06-10）**: 修复 `hybrid_mdd` 副歌节拍吸附绕过人声保护的问题；节拍切点使用分离后人声轨安静度检查，吸附后统一过 `finalize_cut_points`，并提供 `chorus_force_snap` 回退开关。
 - **v2.6 draft（2026-06-09）**: 新增 `vpbd_acoustic` / `vpbd_asr` 可选路径，FireRedASR/FireRedASR2S 通过 sidecar 或 CLI provider 接入；ASR 只作为歌词边界 soft prior，声学低谷仍是切点主控。
@@ -31,7 +32,7 @@
 - `tests/`：分层测试（unit / integration / contracts / performance / sanity）。
 - `config/`：默认配置与 schema；严禁提交个人实验参数。
 
-## 3. v2.7 统一引擎 SSOT
+## 3. v2.8 意图面与统一引擎 SSOT
 
 ### 统一切点数据流
 
@@ -61,7 +62,7 @@ flowchart TD
 | `vpbd_acoustic` | Acoustic valleys + breath + MDD affinity + weak beat candidates | Disabled | Weak beat candidates are scored, not forced | `vpbd.candidate_pool=legacy` uses acoustic-only pool |
 | `vpbd_asr` | `vpbd_acoustic` sources + lyrics gap / sentence end / mVAD boundary | Optional sidecar/CLI/fake providers; strict mode fail-loud, non-strict falls back | Beat affinity and weak beat candidates remain soft priors | Provider fallback to `vpbd_acoustic`; `vpbd.candidate_pool=legacy` |
 
-`smart_cut.profile=auto` and manual profile values are presets over the same engine knobs, not separate algorithms. `smart_cut.target_duration_s` derives duration constraints for planner/layout/quality, while expert-only knobs remain overrideable through `config/expert.yaml`, external config, or `VSS__...`.
+`smart_cut.segments` and `smart_cut.alignment` are the user-facing truth. `segments` resolves to target duration constraints for planner/layout/quality; `alignment` is applied after AutoProfile as a soft preference between lyric/natural boundaries and beat affinity. `alignment=0.5` produces no alignment override and preserves the v2.7 baseline. Manual profile and legacy `mode` values remain expert compatibility controls, not the primary product surface.
 
 ## 4. 核心流程
 0. `audio_cut.api.separate_and_segment` 在上层项目中聚合资源配置、调用 `SeamlessSplitter` 并生成 Manifest。
@@ -84,7 +85,7 @@ flowchart TD
 - **ChunkFeatureBuilder/TrackFeatureCache**：集中管理 STFT/RMS/MDD 等特征，支持 GPU 批量计算与跨块拼接。
 - **SegmentExporter/ResultBuilder**：统一导出与结果字典构建，减少重复逻辑与手工拼接字段；v2.6 Manifest 可选暴露 `lyrics_alignment`、`boundary_detection` 与 `segments[*].lyrics`。
 - **VocalPhraseBoundaryDetector**：VPBD 编排层，统一融合声学停顿、气口、弱节拍和 ASR lyrics 候选；ASR/节拍通过权重加分而不是后置硬改切点，`candidate_pool=legacy` 可回退到 v2.6 声学候选池，rescue fallback 只复用 `score > 0` 的 suppressed candidate。
-- **AutoProfile**：`audio_cut.config.auto_profile` 从 TrackFeatureCache + 人声覆盖率估计 `ballad/pop/edm/rap`，插值现有 Schema v3 profile anchor，并将 `smart_cut.target_duration_s` 派生到 planner/layout/quality 时长约束；手动 profile 优先于 auto。
+- **Intent + AutoProfile**：`audio_cut.config.auto_profile` 解析 `segments/alignment`，从 TrackFeatureCache + 人声覆盖率估计 profile，并在 AutoProfile 权重之后叠加 alignment 两极插值；手动 profile 优先于 auto。
 - **FireRed provider seam**：`FireRedSidecarProvider` 调用本地 HTTP worker，`FireRedCliProvider` 调用外部 CLI worker；FireRed 依赖保持在外部环境，不进入 base requirements。
 - **segment_layout_refiner**：微碎片合并、软最小合并、软最大救援，复用 NMS 被抑制的 cut point；VPBD 路径禁用 midpoint fallback，Hybrid legacy helper 显式启用以保持旧节拍卡点契约。
 - **Hybrid strategies**：`snap_to_beat` / `beat_only` 共享人声轨安静度检查；默认不再为了副歌卡点强制切入活跃人声，旧行为通过 `chorus_force_snap` 显式开启。
@@ -93,7 +94,7 @@ flowchart TD
 ## 6. 配置与参数策略
 - `ConfigManager` 默认先加载 `config/expert.yaml`，再加载 `config/unified.yaml`；用户面只保留 `smart_cut`、`audio/output/logging`、`gpu_pipeline` 基础三项、`lyrics_alignment/fire_red`。高级默认值在 expert 层自动生效。
 - 配置优先级：`expert.yaml` < `unified.yaml` < `VSS_EXTERNAL_CONFIG_PATH` < 显式 `config_path` < `VSS__...` 环境变量；`set_runtime_config` 行为保持不变。
-- `smart_cut` 是 v2.7 用户面入口：`profile=auto` 默认自动估计风格，`target_duration_s` 统一派生 `global_planner.*`、`segment_layout.soft_*` 与 `quality_control.segment_max_duration`；手动 profile 仍优先并可回退到既有 profile 行为。
+- `smart_cut` 是 v2.8 用户面入口：`segments` 解析为目标时长，`alignment` 解析为 0.0-1.0 切点偏好；`target_duration_s` 数值轨仍保留且显式设置时优先；`cut_style` 已废弃并映射到新双轴。
 - `pure_vocal_detection.relative_threshold_adaptation` 是阈值缩放的单一配置入口；VPP 乘数位于 `pause_stats_multipliers`，旧 `pause_stats_adaptation.multipliers/clamp_*` 不再保留。
 - `bpm_adaptive_core.*` 与 `vocal_pause_splitting.bpm_adaptive_settings` 已从默认配置删除；`migrate_v2_to_v3.py` 遇到这些旧键会发出 deprecation warning。
 - `hybrid_mdd.snap_tolerance_ms` 默认 200ms，运行时再限制为 ≤0.4 个 beat；`vad_protection=true` 时节拍切点必须通过人声轨安静度检查，`chorus_force_snap=true` 是 v2.6 行为回退开关。
@@ -108,7 +109,7 @@ flowchart TD
 - **Hybrid guard**：`tests/unit/test_snap_to_beat_vad_guard.py` 覆盖 snap_to_beat/beat_only 的人声保护、`chorus_force_snap` 回退、snap tolerance clamp 与 `_lib` 标记重映射。
 - **VPBD candidate pool**：`tests/unit/test_breath_candidates.py` 覆盖 breath 只进 VPBD 候选池与 scale=0 回退；`tests/unit/test_candidate_pool_fusion.py` 覆盖 ASR 候选入池、±120ms 去重、`candidate_pool=legacy`、候选 debug JSON 和 `meta.sources` 来源追踪；`tests/unit/test_beat_candidates.py` 覆盖弱节拍候选、高能量段过滤和 `vocal_cut_risk`；`tests/integration/test_pipeline_vpbd_asr_fake_provider.py` 覆盖 fake timeline 下“长停顿 > 气口+句尾 > 节拍”的权重优先级。
 - **QA report**：`tests/unit/test_qa_report.py` 覆盖 `breath_cut_ratio` 与 `beat_aligned_ratio`，用于人工验收时观察气口自然度和卡点比例。
-- **AutoProfile**：`tests/unit/test_auto_profile.py` 覆盖四类风格估计、低置信回退和 anchor 插值；`tests/unit/test_smart_cut_duration_derivation.py` 覆盖目标时长派生；`tests/unit/test_seamless_splitter_auto_profile.py` 覆盖 auto/manual profile 应用和人声覆盖率派生。
+- **Intent / AutoProfile**：`tests/unit/test_alignment_overrides.py` 覆盖 alignment/segments 双轨；`tests/unit/test_seamless_splitter_intent_runtime.py` 覆盖 runtime 接线；`tests/unit/test_auto_profile.py` 覆盖风格估计、低置信回退和 anchor 插值；`tests/contracts/test_agent_intent_contract.py` 覆盖 agent Manifest 契约。
 - **H release gate**：`scripts/legacy_mode_diff_gate.py` 在 v2.6 基线 ref 与当前代码之间重跑 `v2.2_mdd` / `hybrid_mdd` / `librosa_onset`，比对 Manifest 旧字段和输出命名；`scripts/vpbd_rollback_diff_gate.py` 验证 `vpbd.candidate_pool=legacy` + `--profile pop` 与 v2.6 基线一致。两个脚本都要求显式传入本地 smoke 音频，不在文档或默认参数中记录真实歌曲名；基线 worktree 会通过 symlink 复用当前本地 MDX 模型资产，避免 Demucs/MDX 后端差异污染 diff。
 - **Performance**：`tests/performance/test_valley_perf.py` 监控检测+守卫耗时。
 - **Benchmarks**：`tests/benchmarks/test_chunk_vs_full_equivalence.py` 分析 chunk vs full 误差。

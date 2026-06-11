@@ -1,19 +1,9 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-# run_splitter.py
-# AI-SUMMARY: 运行脚本，支持纯人声分离、v2.2 MDD、VPBD ASR 和 librosa_onset 智能分割
+# File: run_splitter.py
+# AI-SUMMARY: CLI entry point for legacy modes and the v2.8 intent-surface splitter.
 
-"""
-智能人声分割器运行脚本
-
-- 支持六种模式：
-  1. `vocal_separation` —— 仅输出人声/伴奏轨
-  2. `v2.2_mdd` —— 启用纯人声检测 + MDD 增强的无缝分割
-  3. `librosa_onset` —— 智能分割 v2（BPM 节拍对齐 + 能量曲线分析）
-  4. `hybrid_mdd` —— 混合模式（MDD 基础 + 节拍卡点增强，卡点感强）
-  5. `vpbd_acoustic` —— VPBD 声学候选全局规划，无 ASR
-  6. `vpbd_asr` —— VPBD + 歌词时间轴 soft prior（FireRed/Fake provider）
-"""
+"""智能人声分割器命令行入口。"""
 
 import sys
 import argparse
@@ -28,6 +18,7 @@ sys.path.insert(0, str(project_root / 'src'))
 
 from src.vocal_smart_splitter.core.seamless_splitter import SeamlessSplitter
 from src.vocal_smart_splitter.utils.config_manager import get_config, set_runtime_config
+from audio_cut.config.auto_profile import resolve_alignment, resolve_segment_duration
 from audio_cut.config.derive import (
     apply_profile_overrides,
     build_runtime_override_map,
@@ -61,15 +52,14 @@ def build_parser() -> argparse.ArgumentParser:
     """Build the command-line parser without running the splitter."""
 
     parser = argparse.ArgumentParser(
-        description="智能人声分割器 - 纯人声分离 / v2.2 MDD / VPBD ASR 无缝分割",
+        description="智能人声分割器 - 按片段密度与切点风格处理音频",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 示例:
+  python run_splitter.py input/song.mp3 --segments medium --align beat_lean
+  python run_splitter.py input/song.mp3 --segments 6-14 --align 0.75
   python run_splitter.py input/song.mp3 --mode vocal_separation
-  python run_splitter.py input/song.mp3 --mode v2.2_mdd --validate-reconstruction
-  python run_splitter.py input/song.mp3 --mode librosa_onset --gpu-device cuda:0
-  python run_splitter.py input/song.mp3 --mode vpbd_asr --lyrics-provider fake --lyrics-fixture tests/fixtures/lyrics/simple_song_timeline.json
-  python run_splitter.py input/song.mp3 --mode vpbd_asr --lyrics-provider sidecar --firered-endpoint http://127.0.0.1:8765
+  python run_splitter.py input/song.mp3 --mode hybrid_mdd
         """,
     )
 
@@ -84,8 +74,18 @@ def build_parser() -> argparse.ArgumentParser:
             'vpbd_acoustic',
             'vpbd_asr',
         ],
-        default='v2.2_mdd',
-        help='运行模式 (默认: v2.2_mdd)。vpbd_asr = VPBD + 歌词时间轴 soft prior',
+        default=None,
+        help='兼容旧流程名；不提供时按 --segments/--align 自动选择，未提供意图则沿用 v2.2_mdd',
+    )
+    parser.add_argument(
+        '--segments',
+        default=None,
+        help='片段密度意图：few、medium、many，或 MIN-MAX 秒，例如 6-14',
+    )
+    parser.add_argument(
+        '--align',
+        default=None,
+        help='切点风格意图：lyric、lyric_lean、balanced、beat_lean、beat，或 0.0-1.0',
     )
     parser.add_argument(
         '--validate-reconstruction',
@@ -151,6 +151,40 @@ def build_parser() -> argparse.ArgumentParser:
         help='fake provider 使用的 lyrics timeline fixture JSON',
     )
     return parser
+
+
+def has_intent_args(args: argparse.Namespace) -> bool:
+    """Return whether v2.8 intent flags were provided."""
+
+    return getattr(args, 'segments', None) is not None or getattr(args, 'align', None) is not None
+
+
+def resolve_effective_mode(args: argparse.Namespace) -> str:
+    """Resolve CLI mode while preserving the legacy no-argument default."""
+
+    explicit_mode = getattr(args, 'mode', None)
+    if explicit_mode:
+        return str(explicit_mode)
+    return 'vpbd_asr' if has_intent_args(args) else 'v2.2_mdd'
+
+
+def apply_intent_runtime_overrides(
+    args: argparse.Namespace,
+    runtime_overrides: Dict[str, Any],
+) -> None:
+    """Apply v2.8 intent flags to runtime config overrides."""
+
+    if not has_intent_args(args):
+        return
+    if getattr(args, 'segments', None) is not None:
+        resolve_segment_duration(args.segments)
+        runtime_overrides['smart_cut.segments'] = args.segments
+    if getattr(args, 'align', None) is not None:
+        resolve_alignment(args.align)
+        runtime_overrides['smart_cut.alignment'] = args.align
+    runtime_overrides.setdefault('lyrics_alignment.enabled', True)
+    runtime_overrides.setdefault('lyrics_alignment.provider', 'auto')
+    runtime_overrides.setdefault('lyrics_alignment.strict', False)
 
 
 def apply_asr_runtime_overrides(
@@ -239,6 +273,7 @@ def main() -> None:
         runtime_overrides['gpu_pipeline.strict_gpu'] = True
         logger.info("[GPU Pipeline] strict_gpu 模式已开启")
     try:
+        apply_intent_runtime_overrides(args, runtime_overrides)
         apply_asr_runtime_overrides(args, runtime_overrides, logger)
     except ValueError as exc:
         logger.error(str(exc))
@@ -251,8 +286,9 @@ def main() -> None:
 
     splitter = SeamlessSplitter(sample_rate=sample_rate)
 
-    logger.info(f"运行模式: {args.mode}")
-    result = splitter.split_audio_seamlessly(str(input_path), output_dir, mode=args.mode)
+    effective_mode = resolve_effective_mode(args)
+    logger.info(f"运行模式: {effective_mode}")
+    result = splitter.split_audio_seamlessly(str(input_path), output_dir, mode=effective_mode)
     if active_profile:
         meta = result.setdefault('meta', {})
         meta['profile'] = active_profile
@@ -265,7 +301,7 @@ def main() -> None:
         sys.exit(1)
 
     logger.info("=" * 50)
-    if args.mode == 'vocal_separation':
+    if effective_mode == 'vocal_separation':
         logger.info("纯人声分离完成")
     else:
         logger.info("无缝分割完成")

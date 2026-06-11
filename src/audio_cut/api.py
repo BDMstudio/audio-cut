@@ -12,6 +12,7 @@ import logging
 from pathlib import Path
 from typing import Any, Dict, Mapping, MutableMapping, Optional, Sequence
 
+from audio_cut.config.auto_profile import resolve_smart_cut_intent
 from audio_cut.lyrics.models import LyricsTimeline
 from audio_cut.lyrics.segment_attach import attach_lyrics_to_segments
 from audio_cut.qa_report import build_qa_report
@@ -31,7 +32,9 @@ def separate_and_segment(
     *,
     input_uri: str,
     export_dir: str,
-    mode: str = 'v2.2_mdd',
+    mode: Optional[str] = None,
+    segments: Any = None,
+    alignment: Any = None,
     device: Optional[str] = None,
     export_types: Optional[Sequence[str]] = None,
     layout: Optional[Mapping[str, Any]] = None,
@@ -46,7 +49,9 @@ def separate_and_segment(
     Args:
         input_uri: 待处理音频路径。
         export_dir: 输出目录（函数内部会创建）。
-        mode: 处理模式，默认 `v2.2_mdd`。
+        mode: 处理模式；为空且未提供意图参数时沿用旧默认 `v2.2_mdd`。
+        segments: v2.8 片段密度意图，支持 `few`/`medium`/`many` 或 `(min_s, max_s)`。
+        alignment: v2.8 对齐意图，支持档位名或 0.0-1.0 数值。
         device: GPU 设备标识（如 `cuda:0` / `cpu`），为空沿用配置文件。
         export_types: 导出类别控制，例如 `("vocal","human_segments","music_segments")`。
         layout: 布局参数覆盖，如 `{"micro_merge_s":2.0,"soft_min_s":6.0}`。
@@ -66,8 +71,16 @@ def separate_and_segment(
     export_path = Path(export_dir).expanduser().resolve()
     export_path.mkdir(parents=True, exist_ok=True)
 
+    has_intent = segments is not None or alignment is not None
+    effective_mode = mode or ("vpbd_asr" if has_intent else "v2.2_mdd")
+    intent_overrides = _build_intent_runtime_overrides(segments=segments, alignment=alignment) if has_intent else {}
+    combined_runtime_overrides = dict(intent_overrides)
+    if runtime_overrides:
+        combined_runtime_overrides.update(dict(runtime_overrides))
+
     cfg_manager = get_config_manager()
     config_snapshot = copy.deepcopy(cfg_manager.config)
+    intent_echo: Optional[Dict[str, Any]] = None
 
     try:
         _apply_runtime_overrides(
@@ -75,21 +88,27 @@ def separate_and_segment(
             device=device,
             strict_gpu=strict_gpu,
             layout=layout,
-            runtime_overrides=runtime_overrides,
+            runtime_overrides=combined_runtime_overrides or None,
         )
 
         layout_cfg_snapshot = copy.deepcopy(_get_nested(cfg_manager.config, ('segment_layout',), default={})) or {}
         sample_rate = int(_get_nested(cfg_manager.config, ('audio', 'sample_rate'), default=44100))
         audio_channels = int(_get_nested(cfg_manager.config, ('audio', 'channels'), default=1))
+        if has_intent:
+            intent_echo = resolve_smart_cut_intent(
+                _get_nested(cfg_manager.config, ('smart_cut',), default={}) or {}
+            )
 
         splitter = SeamlessSplitter(sample_rate=sample_rate)
         export_plan = list(export_types) if export_types is not None else None
         result = splitter.split_audio_seamlessly(
             str(input_path),
             str(export_path),
-            mode=mode,
+            mode=effective_mode,
             export_plan=export_plan,
         )
+        if intent_echo is not None:
+            result.setdefault('intent', intent_echo)
     finally:
         cfg_manager.config = config_snapshot
 
@@ -97,7 +116,7 @@ def separate_and_segment(
         result=result,
         input_path=input_path,
         export_dir=export_path,
-        mode=mode,
+        mode=effective_mode,
         sample_rate=sample_rate,
         channels=audio_channels,
         layout_cfg=layout_cfg_snapshot,
@@ -110,6 +129,19 @@ def separate_and_segment(
         manifest['manifest_path'] = manifest_path.as_posix()
 
     return manifest
+
+
+def _build_intent_runtime_overrides(*, segments: Any, alignment: Any) -> Dict[str, Any]:
+    overrides: Dict[str, Any] = {
+        'lyrics_alignment.enabled': True,
+        'lyrics_alignment.provider': 'auto',
+        'lyrics_alignment.strict': False,
+    }
+    if segments is not None:
+        overrides['smart_cut.segments'] = segments
+    if alignment is not None:
+        overrides['smart_cut.alignment'] = alignment
+    return overrides
 
 
 def _apply_runtime_overrides(
@@ -208,6 +240,9 @@ def _build_manifest(
 
     if result.get('auto_profile') is not None:
         manifest['auto_profile'] = result.get('auto_profile')
+
+    if result.get('intent') is not None:
+        manifest['intent'] = result.get('intent')
 
     gpu_meta = {k: result[k] for k in result.keys() if k.startswith('gpu_pipeline_')}
     if gpu_meta:

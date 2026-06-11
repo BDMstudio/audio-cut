@@ -1,15 +1,17 @@
 # File: src/audio_cut/config/unified.yaml
-# AI-SUMMARY: v2.7 slim user-facing config; expert defaults live in config/expert.yaml.
+# AI-SUMMARY: v2.8 slim user-facing config; expert defaults live in config/expert.yaml.
 
 global:
-  default_mode: v2.2_mdd  # modes: all; code: run_splitter/main mode resolver
-  version: "2.7.0-beta"  # modes: all; code: ConfigManager metadata
+  default_mode: vpbd_asr  # modes: intent surface default; legacy API no-intent calls still resolve v2.2_mdd
+  version: "2.8.0-beta"  # modes: all; code: ConfigManager metadata
 
 smart_cut:
-  profile: auto  # modes: vpbd_acoustic/vpbd_asr; code: SeamlessSplitter._apply_smart_cut_runtime
-  cut_style: natural  # modes: vpbd_acoustic/vpbd_asr; code: audio_cut.config.auto_profile
-  target_duration_s: [5.0, 12.0]  # modes: split modes; code: derive_smart_cut_overrides
-  lyrics: auto  # modes: vpbd_asr; code: lyrics provider selection
+  segments: medium  # few|medium|many; code: resolve_smart_cut_intent
+  alignment: balanced  # lyric|lyric_lean|balanced|beat_lean|beat or 0.0-1.0
+  profile: auto  # auto or expert override ballad/pop/edm/rap
+  cut_style: natural  # deprecated, v3.0 remove; mapped to alignment/segments when present
+  target_duration_s: [5.0, 12.0]  # numeric track wins over segments when explicitly set
+  lyrics: auto  # auto|off; provider details live in expert fire_red settings
 
 audio:
   sample_rate: 44100  # modes: all; code: ConfigManager._validate_audio_config
