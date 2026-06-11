@@ -9,8 +9,8 @@
 ## A. 设计冻结与基线
 
 - [x] A1 评审并冻结两极表初值（方案 §3.2 表格），落为 `audio_cut/config/auto_profile.py` 代码常量 `LYRIC_POLE` / `BEAT_POLE`，支持 `expert.yaml` `phrase_boundary.alignment_poles` 覆盖（证据: `venv/bin/python -m pytest -s -q tests/unit/test_alignment_overrides.py ...` 目标组通过；root/package `config/expert.yaml` 均包含 `phrase_boundary.alignment_poles`）
-- [ ] A2 留存卡点感对照组: 2–3 首高能量歌跑 `--mode hybrid_mdd`（snap_to_beat, density medium/high），输出与 `SegmentManifest.json`（含 qa_report）存档 `output/baselines/v2_8_ab/`，不进 git（证据: ）
-- [ ] A3 留存恒等性基线: 同批歌跑 `--mode vpbd_asr` 现状输出存档，供 F2/F5 比对（证据: ）
+- [x] A2 留存卡点感对照组: 2–3 首高能量歌跑 `--mode hybrid_mdd`（snap_to_beat, density medium/high），输出与 `SegmentManifest.json`（含 qa_report）存档 `output/baselines/v2_8_ab/`，不进 git（证据: `output/baselines/v2_8_ab/sample_{01,02}/hybrid_mdd_{medium,high}/SegmentManifest.json` 齐全；`output/baselines/v2_8_ab/v2_8_ab_report.json` 汇总匿名 sample 指标）
+- [x] A3 留存恒等性基线: 同批歌跑 `--mode vpbd_asr` 现状输出存档，供 F2/F5 比对（证据: `output/baselines/v2_8_ab/sample_{01,02}/vpbd_asr_default/SegmentManifest.json` 齐全；F2 复跑报告 `output/baselines/v2_8_ab/f2_identity_diff_report.json` -> `status=pass`）
 - [x] A4 建分支 `codex/v2.8-intent-surface`（证据: `git status --short --branch` -> `## codex/v2.8-intent-surface`）
 
 ```bash
@@ -88,11 +88,11 @@ pytest tests/contracts/test_agent_intent_contract.py -v
 
 ## F. 验收门（每节合并前全绿，发布前整体复跑）
 
-- [ ] F1 卡点感 A/B: `alignment=1.0 × segments many` vs A2 基线——`beat_aligned_ratio` 差 ≤10pp，`cut_inside_word_rate`=0，主观听感不低于对照组；不达标则校准 BEAT_POLE / base_score 插值曲线后复测（证据: ）
-- [ ] F2 恒等性: 缺省配置跑 `vpbd_asr`，输出与 A3 基线逐样本 diff 为零（证据: ）
-- [ ] F3 旧模式三连跑 diff: 六个 `--mode` 各跑三次，输出（含文件命名、`_lib` 后缀）diff 为零（证据: ）
+- [ ] F1 卡点感 A/B: `alignment=1.0 × segments many` vs A2 基线——`beat_aligned_ratio` 差 ≤10pp，`cut_inside_word_rate`=0，主观听感不低于对照组；不达标则校准 BEAT_POLE / base_score 插值曲线后复测（证据: 自动指标已生成 `output/baselines/v2_8_ab/sample_{01,02}/intent_beat_many/SegmentManifest.json` 与 `output/baselines/v2_8_ab/v2_8_ab_report.json`，`f1_auto.status=pass`、两首 sample 的 `beat_delta<=0.10` 且 `cut_inside_word_rate=0.0`；仍待人工抽听确认“主观听感不低于对照组”）
+- [x] F2 恒等性: 缺省配置跑 `vpbd_asr`，输出与 A3 基线逐样本 diff 为零（证据: `output/baselines/v2_8_ab/f2_identity_diff_report.json` -> `status=pass`，`sample_01 max_abs_diff=0.0 files_compared=64`，`sample_02 max_abs_diff=0.0 files_compared=58`）
+- [x] F3 旧模式三连跑 diff: 六个 `--mode` 各跑三次，输出（含文件命名、`_lib` 后缀）diff 为零（证据: `output/baselines/v2_8_ab/f3_mode_three_run/f3_mode_three_run_report.json` -> `status=pass`；6 个显式 mode × 3 run，相对文件名一致，导出音频 `max_abs_diff=0.0`；仅忽略 `manifest_path`/timing/GPU telemetry/debug path/`separation.confidence` 等非输出运行元数据）
 - [x] F4 快速回归 + 契约 + 拼接精度: `pytest -m "not slow and not gpu" --cov=src` 全绿；`test_cpu_baseline_perfect_reconstruction.py` 误差 ≤1e-12（证据: `venv/bin/python -m pytest -s -m "not slow and not gpu and not firered" --cov=src --cov-report=term-missing` -> `184 passed, 1 deselected`; `venv/bin/python -m pytest -s tests/unit/test_cpu_baseline_perfect_reconstruction.py -v` -> `1 passed`）
-- [ ] F5 三问可用性走查: quick_start 从启动到出片 ≤4 次输入，记录实际问答序列（证据: ）
+- [x] F5 三问可用性走查: quick_start 从启动到出片 ≤4 次输入，记录实际问答序列（证据: `venv/bin/python quick_start.py` 交互实跑，输入序列 `2 -> 1 -> 2 -> 3`，共 4 次输入，批量处理 5 个文件均完成；匿名记录见 `output/baselines/v2_8_ab/f5_quick_start_walkthrough.json`）
 
 ```bash
 # F 节验收
