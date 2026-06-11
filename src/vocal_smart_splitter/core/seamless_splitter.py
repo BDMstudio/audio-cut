@@ -338,10 +338,13 @@ class SeamlessSplitter:
                 logger.warning("Failed to build feature cache: %s", exc)
                 feature_cache = None
 
-        smart_profile_meta = self._apply_smart_cut_runtime(feature_cache, vocal_track=vocal_track)
-
         # 3. Detect boundary candidates
         is_vpbd_mode = mode in {'vpbd_acoustic', 'vpbd_asr'}
+        smart_profile_meta = None
+        if is_vpbd_mode:
+            smart_profile_meta = self._apply_smart_cut_runtime(feature_cache, vocal_track=vocal_track)
+        else:
+            self._last_auto_profile_meta = None
         vpbd_detection = None
         markers = getattr(separation_result, 'quality_metrics', {}) or {}
         marker_times = []
@@ -391,6 +394,9 @@ class SeamlessSplitter:
                     "no_vpbd_candidates",
                     is_vocal=has_vocal,
                     gpu_meta=gpu_meta,
+                    export_plan=export_plan,
+                    append_duration=False,
+                    include_note=True,
                 )
                 single['boundary_detection'] = vpbd_detection.boundary_detection
                 single['lyrics_alignment'] = vpbd_detection.lyrics_alignment
@@ -416,6 +422,9 @@ class SeamlessSplitter:
                     "no_pause_candidates",
                     is_vocal=has_vocal,
                     gpu_meta=gpu_meta,
+                    export_plan=export_plan,
+                    append_duration=False,
+                    include_note=True,
                 )
 
             cut_points_samples: List[int] = []
@@ -2408,28 +2417,49 @@ class SeamlessSplitter:
 
         return refined
 
-    def _create_single_segment_result(self, audio: np.ndarray, input_path: str, output_dir: str, reason: str, is_vocal: bool = True, gpu_meta: Optional[Dict[str, Any]] = None) -> Dict:
+    def _create_single_segment_result(
+        self,
+        audio: np.ndarray,
+        input_path: str,
+        output_dir: str,
+        reason: str,
+        is_vocal: bool = True,
+        gpu_meta: Optional[Dict[str, Any]] = None,
+        export_plan: Optional[Sequence[str]] = None,
+        append_duration: bool = False,
+        include_note: bool = False,
+    ) -> Dict:
         """Create a single-segment result when splitting fails."""
         logger.warning("%s; exporting as a single file.", reason)
         self._set_guard_adjustments([])
         self._last_suppressed_cut_points = []
         sample_count = audio.shape[-1] if hasattr(audio, 'shape') else len(audio)
         duration_s = float(sample_count) / float(self.sample_rate) if self.sample_rate > 0 else 0.0
-        saved_files = self.segment_exporter.export_segments(
-            [audio],
-            output_dir,
-            segment_is_vocal=[is_vocal],
-            export_format=self._export_format,
-            export_options=self._export_options,
-            index_offset=1,
+        export_flags = self._normalize_export_plan(
+            export_plan,
+            default=('mix_segments',),
         )
+        duration_map = {0: duration_s} if append_duration else None
+        saved_files: List[str] = []
+        mix_segment_files: List[str] = []
+        if 'mix_segments' in export_flags:
+            mix_segment_files = self.segment_exporter.export_segments(
+                [audio],
+                output_dir,
+                segment_is_vocal=[is_vocal],
+                export_format=self._export_format,
+                export_options=self._export_options,
+                duration_map=duration_map,
+                index_offset=1,
+            )
+            saved_files.extend(mix_segment_files)
         result = {
             'success': True, 'num_segments': 1, 'saved_files': saved_files,
-            'mix_segment_files': saved_files,
+            'mix_segment_files': mix_segment_files,
             'vocal_segment_files': [],
             'full_vocal_file': saved_files[0] if saved_files else None,
             'full_instrumental_file': None,
-            'export_plan': [],
+            'export_plan': sorted(export_flags),
             'segment_durations': [duration_s],
             'segment_vocal_flags': [is_vocal],
             'segment_labels': ['human' if is_vocal else 'music'],
@@ -2443,8 +2473,10 @@ class SeamlessSplitter:
                 'avg': PRECISION_GUARD_AVG_MS,
                 'p95': PRECISION_GUARD_P95_MS,
             },
-            'note': reason, 'input_file': input_path, 'output_dir': output_dir
+            'input_file': input_path, 'output_dir': output_dir
         }
+        if include_note:
+            result['note'] = reason
         auto_profile_meta = getattr(self, '_last_auto_profile_meta', None)
         if auto_profile_meta is not None:
             result['auto_profile'] = auto_profile_meta

@@ -53,6 +53,8 @@ test_*.py
 !tests/unit/test_phrase_boundary_scorer.py
 !tests/unit/test_global_cut_planner.py
 !tests/unit/test_cutting_consistency.py
+!tests/unit/test_legacy_mode_diff_gate.py
+!tests/unit/test_vpbd_rollback_diff_gate.py
 !tests/integration/test_pipeline_vpbd_acoustic_fallback.py
 !tests/integration/test_pipeline_vpbd_asr_fake_provider.py
 !tests/integration/test_pipeline_vpbd_asr_strict_failure.py

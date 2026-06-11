@@ -9,34 +9,34 @@
   },
   "tracks": [
     {
-      "id": "cn_ballad_dang_ai_zai_hui_tou",
+      "id": "local_smoke_01",
       "title": "local-smoke-zh-01",
       "category": "chinese_ballad",
       "path": "input/local-smoke-zh-01.mp3"
     },
     {
-      "id": "english_be_your_love",
+      "id": "local_smoke_02",
       "title": "local-smoke-en-01",
       "category": "english_pop",
       "path": "input/local-smoke-en-01.mp3"
     },
     {
-      "id": "english_if_everyone_cared",
-      "title": "If Everyone Cared",
+      "id": "local_smoke_03",
+      "title": "local-smoke-en-02",
       "category": "english_pop",
-      "path": "input/If Everyone Cared.mp3"
+      "path": "input/local-smoke-en-02.mp3"
     },
     {
-      "id": "local_forgotten_phase_1",
-      "title": "Forgotten-phase-1",
+      "id": "local_smoke_04",
+      "title": "local-smoke-folk-01",
       "category": "folk_low_dynamic",
-      "path": "input/Forgotten-phase-1.mp3"
+      "path": "input/local-smoke-folk-01.mp3"
     },
     {
-      "id": "local_nuvole_di_luce",
-      "title": "Nuvole di luce(鲜艳的云)",
+      "id": "local_smoke_05",
+      "title": "local-smoke-folk-02",
       "category": "folk_low_dynamic",
-      "path": "input/Nuvole di luce(鲜艳的云).mp3"
+      "path": "input/local-smoke-folk-02.mp3"
     }
   ]
 }

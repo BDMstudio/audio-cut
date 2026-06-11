@@ -181,6 +181,55 @@ def test_legacy_candidate_pool_keeps_lyrics_out_of_planner(tmp_path, monkeypatch
     assert result.boundary_detection["candidate_counts"]["merged"] == 0
 
 
+class _BreathMddDetector:
+    def detect_pure_vocal_pauses(self, *args: Any, **kwargs: Any) -> list[Any]:
+        return [
+            SimpleNamespace(
+                start_time=5.8,
+                end_time=6.2,
+                cut_point=6.0,
+                confidence=0.8,
+                duration=0.4,
+                pause_type="breath_mdd",
+            )
+        ]
+
+
+def test_legacy_candidate_pool_preserves_v26_acoustic_candidates_with_pause_type(tmp_path) -> None:
+    set_runtime_config(
+        {
+            "vpbd.candidate_pool": "legacy",
+            "vpbd.breath_score_scale": 0.0,
+            "lyrics_alignment.enabled": False,
+            "global_planner.hard_min_s": 2.0,
+            "global_planner.hard_max_s": 8.0,
+            "global_planner.target_min_s": 5.0,
+            "global_planner.target_max_s": 7.0,
+        }
+    )
+    try:
+        sample_rate = 44100
+        duration_s = 12.0
+        vocal = np.zeros(int(sample_rate * duration_s), dtype=np.float32)
+
+        result = VocalPhraseBoundaryDetector(sample_rate=sample_rate).detect(
+            mode="vpbd_acoustic",
+            vocal_track=vocal,
+            original_audio=vocal.copy(),
+            pure_vocal_detector=_BreathMddDetector(),
+            feature_cache=None,
+            vad_segments=[],
+            input_path=str(Path(tmp_path) / "sample.wav"),
+            output_dir=str(Path(tmp_path) / "out"),
+        )
+    finally:
+        reset_runtime_config()
+
+    assert result.boundary_detection["candidate_pool"] == "legacy"
+    assert result.boundary_detection["candidate_counts"]["acoustic"] == 1
+    assert result.boundary_detection["candidate_counts"]["merged"] == 1
+    assert result.selected_candidates[0].source == CandidateSource.ACOUSTIC_PAUSE
+
 def test_candidate_debug_json_records_sources_and_features(tmp_path, monkeypatch) -> None:
     class _SentenceProvider:
         name = "sentence_provider"

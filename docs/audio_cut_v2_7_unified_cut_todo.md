@@ -212,13 +212,13 @@ wc -l config/unified.yaml                    # ≤ 120
 
 ## H. 回归与发布门（每个 M 合并前强制）
 
-- [ ] 快速回归：`pytest -m "not slow and not gpu and not firered" --cov=src --cov-report=term-missing` 全绿。
-- [ ] 配置契约：`pytest tests/contracts/test_config_contracts.py`。
-- [ ] 拼接精度：`pytest tests/unit/test_cpu_baseline_perfect_reconstruction.py`（≤1e-12）。
-- [ ] 旧模式三连跑输出对比：`v2.2_mdd` / `hybrid_mdd` / `librosa_onset`，文件命名与 Manifest 旧字段逐项 diff（hybrid_mdd 在 B 节后允许的差异 = 切点位置，命名/字段结构零变化）。
-- [ ] vpbd 回退开关验证：`vpbd.candidate_pool=legacy` + `--profile pop` 输出与 v2.6 基线一致。
+- [x] 快速回归：`pytest -m "not slow and not gpu and not firered" --cov=src --cov-report=term-missing` 全绿。（证据：`venv/bin/python -m pytest -s -m "not slow and not gpu and not firered" --cov=src --cov-report=term-missing` -> 165 passed, 1 deselected in 16.75s，coverage TOTAL 48%；无 `-s` 时当前环境在 pytest capture 初始化阶段触发临时文件 `FileNotFoundError`，未进入测试收集）
+- [x] 配置契约：`pytest tests/contracts/test_config_contracts.py`。（证据：`venv/bin/python -m pytest -s tests/contracts/test_config_contracts.py` -> 4 passed in 0.98s）
+- [x] 拼接精度：`pytest tests/unit/test_cpu_baseline_perfect_reconstruction.py`（≤1e-12）。（证据：`venv/bin/python -m pytest -s tests/unit/test_cpu_baseline_perfect_reconstruction.py` -> 1 passed in 2.60s）
+- [x] 旧模式三连跑输出对比：`v2.2_mdd` / `hybrid_mdd` / `librosa_onset`，文件命名与 Manifest 旧字段逐项 diff（hybrid_mdd 在 B 节后允许的差异 = 切点位置，命名/字段结构零变化）。（证据：新增 `scripts/legacy_mode_diff_gate.py`；`venv/bin/python scripts/legacy_mode_diff_gate.py --baseline-ref 8271984 --input <local-smoke-audio> --output-dir output/v2_7_h_legacy_diff --export-types music_segments` -> `output/v2_7_h_legacy_diff/legacy_mode_diff_report.json`, `status=pass`，三种旧模式均无 issue；基线 worktree 复用本地 MDX 模型资产以避免后端不一致造成假差异）
+- [x] vpbd 回退开关验证：`vpbd.candidate_pool=legacy` + `--profile pop` 输出与 v2.6 基线一致。（证据：新增 `scripts/vpbd_rollback_diff_gate.py`；`venv/bin/python scripts/vpbd_rollback_diff_gate.py --baseline-ref 8271984 --input <local-smoke-audio> --lyrics-fixture tests/fixtures/lyrics/simple_song_timeline.json --output-dir output/v2_7_h_vpbd_rollback_diff` -> `output/v2_7_h_vpbd_rollback_diff/vpbd_rollback_diff_report.json`, `status=pass`）
 - [x] FireRed 可选性：FireRed 不可用时降级链（sidecar→cli→vpbd_acoustic）不被新代码破坏：`pytest tests/integration/test_pipeline_vpbd_acoustic_fallback.py`。（证据：`venv/bin/python -m pytest -s tests/integration/test_pipeline_vpbd_acoustic_fallback.py` -> 6 passed in 7.33s）
-- [ ] 真实 FireRed smoke（有环境时）：`pytest -m firered tests/integration/test_firered_cli_provider_real.py --rungpu`。
+- [ ] 真实 FireRed smoke（有环境时）：`pytest -m firered tests/integration/test_firered_cli_provider_real.py --rungpu`。（当前环境未确认真实 FireRed/GPU worker 可用，保持可选门禁未关闭）
 
 ---
 

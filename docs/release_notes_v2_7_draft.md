@@ -5,14 +5,14 @@
 
 ## Status
 
-This is a draft, not a release sign-off. `v2.7.0-beta` still requires the M2 acceptance gates, and final `v2.7.0` still requires the full 20-track manual playlist, AutoProfile accuracy review, and H release gate.
+This is a draft, not a release sign-off. The automated H release gate has passed in the local environment, but `v2.7.0-beta` still requires the M2 acceptance gates, and final `v2.7.0` still requires the full 20-track manual playlist plus AutoProfile accuracy review.
 
 Current blocking evidence:
 
 - `docs/vpbd_asr_acceptance_preflight.md` reports `status=incomplete`.
 - The 20-track playlist has full category slots but `missing_audio=20`, `missing_reference_boundaries=20`, and `missing_subjective_scores=20`.
 - `output/v2_7_i_acceptance_preflight/acceptance_report.json` has `manifest_count=0`; all metric gates except playlist coverage are `insufficient_data`.
-- The coverage form of the H quick regression still requires `pytest-cov`; in this environment pytest rejects `--cov=src --cov-report=term-missing` as unrecognized arguments.
+- H quick regression with coverage passed with capture disabled: `venv/bin/python -m pytest -s -m "not slow and not gpu and not firered" --cov=src --cov-report=term-missing` -> 165 passed, 1 deselected, TOTAL coverage 48%. The same command without `-s` fails before test collection in this environment due a pytest capture temp-file `FileNotFoundError`.
 
 ## v2.7.0-beta Scope
 
@@ -40,7 +40,9 @@ The beta scope is the unified candidate-pool and planning behavior that replaces
 - `venv/bin/python -m pytest -s tests/unit/test_qa_report.py`
 - `venv/bin/python -m pytest -s tests/contracts/test_config_contracts.py`
 - `venv/bin/python -m pytest -s tests/integration/test_pipeline_vpbd_acoustic_fallback.py` (last recorded: 6 passed in 7.33s)
-- `venv/bin/python -m pytest -s -m "not slow and not gpu and not firered"` (last recorded after config slimming: 153 passed, 1 deselected)
+- `venv/bin/python -m pytest -s -m "not slow and not gpu and not firered" --cov=src --cov-report=term-missing` (last recorded: 165 passed, 1 deselected, TOTAL coverage 48%)
+- `venv/bin/python scripts/legacy_mode_diff_gate.py --baseline-ref 8271984 --input input/<local-smoke-audio>.mp3 --output-dir output/v2_7_h_legacy_diff --export-types music_segments` (last recorded: `status=pass`)
+- `venv/bin/python scripts/vpbd_rollback_diff_gate.py --baseline-ref 8271984 --input input/<local-smoke-audio>.mp3 --lyrics-fixture tests/fixtures/lyrics/simple_song_timeline.json --output-dir output/v2_7_h_vpbd_rollback_diff` (last recorded: `status=pass`)
 
 ### Beta Blockers
 
@@ -82,4 +84,4 @@ The final scope adds AutoProfile and configuration migration on top of the beta 
 - Full I-stage manual acceptance has not run because the repository does not include the required 20 local acceptance tracks or manual labels.
 - AutoProfile accuracy against human style labels is not measured yet.
 - Subjective naturalness, manual recutter-rate reduction, `breath_cut_ratio`, and rhythmic `beat_aligned_ratio` still require human review.
-- The H gate still needs a successful coverage-enabled quick regression once `pytest-cov` is installed.
+- Real FireRed smoke remains optional and should be run only in an environment with the actual FireRed/GPU worker available.

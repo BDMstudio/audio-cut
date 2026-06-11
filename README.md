@@ -126,6 +126,20 @@ Vocal Smart Splitter 支持高保真声部拆分、纯人声检测，以及带 M
   ```bash
   pytest -m "not slow and not gpu and not firered" --cov=src --cov-report=term-missing
   ```
+- v2.7 H 发布门禁补充：
+  ```bash
+  python scripts/legacy_mode_diff_gate.py \
+    --baseline-ref 8271984 \
+    --input input/<local-smoke-audio>.mp3 \
+    --output-dir output/v2_7_h_legacy_diff
+
+  python scripts/vpbd_rollback_diff_gate.py \
+    --baseline-ref 8271984 \
+    --input input/<local-smoke-audio>.mp3 \
+    --lyrics-fixture tests/fixtures/lyrics/simple_song_timeline.json \
+    --output-dir output/v2_7_h_vpbd_rollback_diff
+  ```
+  `legacy_mode_diff_gate.py` 比对 `v2.2_mdd` / `hybrid_mdd` / `librosa_onset` 的 Manifest 字段与文件命名契约；`vpbd_rollback_diff_gate.py` 验证 `vpbd.candidate_pool=legacy` + `--profile pop` 相对 v2.6 基线不漂移。脚本要求调用方提供本地 smoke 音频，仓库不记录真实歌曲名。
 - 重点单测：
   - `tests/unit/test_cpu_baseline_perfect_reconstruction.py`：样本级重建误差；
   - `tests/unit/test_cutting_refiner.py` / `test_cutting_consistency.py`：守卫与 NMS 行为；

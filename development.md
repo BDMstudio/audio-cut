@@ -109,6 +109,7 @@ flowchart TD
 - **VPBD candidate pool**：`tests/unit/test_breath_candidates.py` 覆盖 breath 只进 VPBD 候选池与 scale=0 回退；`tests/unit/test_candidate_pool_fusion.py` 覆盖 ASR 候选入池、±120ms 去重、`candidate_pool=legacy`、候选 debug JSON 和 `meta.sources` 来源追踪；`tests/unit/test_beat_candidates.py` 覆盖弱节拍候选、高能量段过滤和 `vocal_cut_risk`；`tests/integration/test_pipeline_vpbd_asr_fake_provider.py` 覆盖 fake timeline 下“长停顿 > 气口+句尾 > 节拍”的权重优先级。
 - **QA report**：`tests/unit/test_qa_report.py` 覆盖 `breath_cut_ratio` 与 `beat_aligned_ratio`，用于人工验收时观察气口自然度和卡点比例。
 - **AutoProfile**：`tests/unit/test_auto_profile.py` 覆盖四类风格估计、低置信回退和 anchor 插值；`tests/unit/test_smart_cut_duration_derivation.py` 覆盖目标时长派生；`tests/unit/test_seamless_splitter_auto_profile.py` 覆盖 auto/manual profile 应用和人声覆盖率派生。
+- **H release gate**：`scripts/legacy_mode_diff_gate.py` 在 v2.6 基线 ref 与当前代码之间重跑 `v2.2_mdd` / `hybrid_mdd` / `librosa_onset`，比对 Manifest 旧字段和输出命名；`scripts/vpbd_rollback_diff_gate.py` 验证 `vpbd.candidate_pool=legacy` + `--profile pop` 与 v2.6 基线一致。两个脚本都要求显式传入本地 smoke 音频，不在文档或默认参数中记录真实歌曲名；基线 worktree 会通过 symlink 复用当前本地 MDX 模型资产，避免 Demucs/MDX 后端差异污染 diff。
 - **Performance**：`tests/performance/test_valley_perf.py` 监控检测+守卫耗时。
 - **Benchmarks**：`tests/benchmarks/test_chunk_vs_full_equivalence.py` 分析 chunk vs full 误差。
 - **Sanity**：`tests/sanity/ort_mdx23_cuda_sanity.py` 自检 GPU Provider。
@@ -127,7 +128,9 @@ flowchart TD
   - 已完成 D：`vocal_cut_risk` 打分闭环、MDD affinity、ASR 容差软化、`beat_conflict` 与 `min_score` 死配置收敛
   - 已完成 E 的代码与测试部分：natural 权重归一化、breath 独立计分、`candidate_pool=legacy`、candidate debug JSON、QA 新指标和 fake provider 优先级集成测试；M2 playlist 验收需按本地素材状态单独记录
   - 已完成 F 的 AutoProfile 代码与测试部分：自动风格估计、profile anchor 插值、phrase weights 联动、`smart_cut.target_duration_s` 派生、`--profile auto` 与 quick_start 入口；M3 playlist 准确率验收未完成
-  - 已完成 G 的配置瘦身与迁移主体：`unified.yaml` 降到 62 行，expert 默认自动加载，废弃 BPM 旧键删除并在迁移时 warning；H 门禁仍需按里程碑继续执行
+  - 已完成 G 的配置瘦身与迁移主体：`unified.yaml` 降到 62 行，expert 默认自动加载，废弃 BPM 旧键删除并在迁移时 warning
+  - 已完成 H 的自动化发布门禁：quick regression + coverage、配置契约、拼接精度、旧模式三连 diff、VPBD legacy rollback diff 与 FireRed fallback；真实 FireRed smoke 仍按“有环境时”执行
+  - I/J 仍阻塞在 20 首真实验收素材、人工边界/评分、AutoProfile 人工标签准确率与发布签核，不能把 v2.7 beta/final 标记为已发布
 - **进行中 (v2.6 draft - 2026-06-09)**：
   - 新增 VPBD 数据模型、lyrics timeline、候选生成、边界打分与全局规划骨架
   - `SeamlessSplitter` 已接入 `vpbd_acoustic` / `vpbd_asr` 可选路径

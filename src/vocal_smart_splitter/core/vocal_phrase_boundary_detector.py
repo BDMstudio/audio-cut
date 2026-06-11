@@ -207,18 +207,14 @@ class VocalPhraseBoundaryDetector:
         for pause in pauses or []:
             t = float(getattr(pause, "cut_point", (pause.start_time + pause.end_time) / 2.0))
             score = float(getattr(pause, "confidence", 1.0))
-            raw.append(
-                (
-                    t,
-                    score,
-                    {
-                        "pause_start_s": float(getattr(pause, "start_time", t)),
-                        "pause_end_s": float(getattr(pause, "end_time", t)),
-                        "pause_duration_s": float(getattr(pause, "duration", 0.0)),
-                        "pause_type": str(getattr(pause, "pause_type", "")),
-                    },
-                )
-            )
+            meta = {
+                "pause_start_s": float(getattr(pause, "start_time", t)),
+                "pause_end_s": float(getattr(pause, "end_time", t)),
+                "pause_duration_s": float(getattr(pause, "duration", 0.0)),
+            }
+            if include_breath_candidates:
+                meta["pause_type"] = str(getattr(pause, "pause_type", ""))
+            raw.append((t, score, meta))
         return adapt_legacy_acoustic_candidates(
             raw,
             source=CandidateSource.ACOUSTIC_PAUSE,

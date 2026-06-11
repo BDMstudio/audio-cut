@@ -72,3 +72,98 @@ def test_seamless_splitter_derives_vocal_coverage_for_auto_profile() -> None:
         assert meta["style"] == "rap"
     finally:
         reset_runtime_config()
+
+
+def test_legacy_mode_clears_previous_auto_profile_meta(monkeypatch, tmp_path) -> None:
+    splitter = SeamlessSplitter(sample_rate=1000)
+    audio = np.zeros(1000, dtype=np.float32)
+    splitter._last_auto_profile_meta = {"style": "rap"}
+
+    monkeypatch.setattr(splitter, "_load_and_resample_if_needed", lambda _path: audio)
+    monkeypatch.setattr(splitter, "_get_gpu_pipeline_config", lambda: SimpleNamespace(enable=False))
+    monkeypatch.setattr(
+        splitter.separator,
+        "separate_for_detection",
+        lambda _audio, gpu_context=None: SimpleNamespace(
+            vocal_track=audio,
+            instrumental_track=None,
+            feature_cache=_cache(),
+            gpu_meta={},
+            vad_segments=[],
+            backend_used="fake",
+            separation_confidence=1.0,
+            quality_metrics={},
+        ),
+    )
+    monkeypatch.setattr(splitter.pure_vocal_detector, "detect_pure_vocal_pauses", lambda *args, **kwargs: [])
+    monkeypatch.setattr(splitter, "_estimate_vocal_presence", lambda _vocal: False)
+    monkeypatch.setattr(
+        splitter.segment_exporter,
+        "export_segments",
+        lambda *args, **kwargs: [str(tmp_path / "segment_001_music.wav")],
+    )
+
+    result = splitter._process_pure_vocal_split(
+        "song.wav",
+        str(tmp_path),
+        "v2.2_mdd",
+        export_plan=("music_segments",),
+    )
+
+    assert "auto_profile" not in result
+    assert result["export_plan"] == ["mix_segments"]
+    assert result["mix_segment_files"] == [str(tmp_path / "segment_001_music.wav")]
+
+
+def test_single_segment_fallback_preserves_mix_segment_contract(monkeypatch, tmp_path) -> None:
+    splitter = SeamlessSplitter(sample_rate=1000)
+    calls = []
+
+    def fake_export_segments(*args, **kwargs):
+        calls.append(kwargs)
+        return [str(tmp_path / "segment_001_music.wav")]
+
+    monkeypatch.setattr(splitter.segment_exporter, "export_segments", fake_export_segments)
+
+    result = splitter._create_single_segment_result(
+        np.zeros(2000, dtype=np.float32),
+        "song.wav",
+        str(tmp_path),
+        "no_pause_candidates",
+        is_vocal=False,
+        export_plan=("music_segments",),
+        append_duration=False,
+        include_note=True,
+    )
+
+    assert calls[0]["duration_map"] is None
+    assert result["export_plan"] == ["mix_segments"]
+    assert result["mix_segment_files"] == [str(tmp_path / "segment_001_music.wav")]
+    assert result["full_vocal_file"] == str(tmp_path / "segment_001_music.wav")
+    assert result["note"] == "no_pause_candidates"
+
+
+def test_vpbd_single_segment_fallback_preserves_note_without_duration_suffix(monkeypatch, tmp_path) -> None:
+    splitter = SeamlessSplitter(sample_rate=1000)
+    calls = []
+
+    def fake_export_segments(*args, **kwargs):
+        calls.append(kwargs)
+        return [str(tmp_path / "segment_001_music.wav")]
+
+    monkeypatch.setattr(splitter.segment_exporter, "export_segments", fake_export_segments)
+
+    result = splitter._create_single_segment_result(
+        np.zeros(2000, dtype=np.float32),
+        "song.wav",
+        str(tmp_path),
+        "no_vpbd_candidates",
+        is_vocal=False,
+        export_plan=("music_segments",),
+        append_duration=False,
+        include_note=True,
+    )
+
+    assert calls[0]["duration_map"] is None
+    assert result["note"] == "no_vpbd_candidates"
+    assert result["mix_segment_files"] == [str(tmp_path / "segment_001_music.wav")]
