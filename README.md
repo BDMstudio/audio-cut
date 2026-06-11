@@ -24,16 +24,14 @@ Vocal Smart Splitter 支持高保真声部拆分、纯人声检测，以及带 M
    python quick_start.py
    ```
    - 第一步选择处理范围（单文件或批量处理）。
-   - 第二步选择处理模式：
-     - `1` 仅分离
-     - `2` Pure Vocal v2.2 MDD
-     - `3` librosa_onset 节拍分割
-     - `4` **Hybrid MDD**（MDD + 节拍卡点，推荐 MV 剪辑）
-     - `5` **VPBD + FireRedASR2S**（实验模式，歌词时间轴 soft prior）
-   - 选择 Hybrid MDD 后可配置：
-     - **卡点密度**（少/中/多）
-     - **对齐策略**（beat_only 强制节拍切割 / snap_to_beat MDD智能吸附，推荐）
-   - 选择 VPBD + FireRedASR2S 后可选择 sidecar、CLI、fake fixture 或 auto provider。
+   - 第二步按使用目标选择主流程：
+     - `1` 只做人声/伴奏分离：准备素材，不切片。
+     - `2` 稳定声学切分：不依赖歌词 ASR，复用 v2.2 MDD 低谷检测。
+     - `3` 歌词辅助自然切分：v2.7 主路径；声学低谷为主，歌词边界加分；mvagent 默认。
+     - `4` 音乐卡点切分：Hybrid MDD + 节拍吸附，适合 MV/短视频卡点。
+     - `5` 节拍网格基线：librosa onset 调试或节奏基线对比。
+   - 选择歌词辅助自然切分时，默认歌词来源为自动选择：sidecar → CLI → 声学降级。常规批量和 mvagent 不需要指定 provider；只有调试或固定部署时才手动选择 CLI、sidecar、fake fixture 或关闭歌词。
+   - 选择音乐卡点切分后可配置卡点密度和节拍对齐策略。
 3. 命令行模式：
    ```bash
    # MDD 模式（默认）

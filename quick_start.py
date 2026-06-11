@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-# quick_start.py - 快速启动脚本 (v2.4.0 支持智能分割 v2)
+# quick_start.py - 快速启动脚本 (v2.7 主流程选择)
 # AI-SUMMARY: 精简的传令兵模式快速启动脚本，统一调用SeamlessSplitter
 
 import sys
@@ -61,58 +61,56 @@ def check_system_status():
     return True
 
 def select_processing_mode():
-    """让用户选择处理模式"""
+    """让用户按使用目标选择主流程，而不是按内部版本标签选择。"""
     print("\n" + "=" * 60)
-    print("选择处理模式")
+    print("选择主流程")
     print("=" * 60)
-    print("  1. 纯人声分离 (Vocal Separation Only)")
-    print("     - 仅分离人声和伴奏，不执行切割")
-    print("  2. [推荐] MDD增强纯人声检测v2.2 (Pure Vocal v2.2 MDD)")
-    print("     - 先分离再检测，集成音乐动态密度识别主副歌")
-    print("  3. 智能分割v2 (Smart Segmentation - librosa_onset)")
-    print("     - BPM节拍对齐 + 能量曲线副歌识别 + 密度控制")
-    print("  4. [新] 混合模式 (Hybrid MDD + 节拍卡点)")
-    print("     - MDD人声分割为基础 + 副歌添加节拍卡点")
-    print("     - 卡点片段带 _lib 后缀，适合剪辑")
-    print("  5. [实验] VPBD + FireRedASR2S")
-    print("     - 声学候选 + 歌词时间轴 soft prior，全局规划切点")
+    print("  1. 只做人声/伴奏分离")
+    print("     用途: 准备素材，不切片。")
+    print("  2. 稳定声学切分")
+    print("     用途: 不依赖歌词 ASR，复用 v2.2 MDD 低谷检测。")
+    print("  3. 歌词辅助自然切分")
+    print("     用途: v2.7 主路径；声学低谷为主，歌词边界加分；mvagent 默认。")
+    print("  4. 音乐卡点切分")
+    print("     用途: MV/短视频卡点，Hybrid MDD + 节拍吸附。")
+    print("  5. 节拍网格基线")
+    print("     用途: librosa onset 调试或节奏基线对比。")
     print()
 
+    modes = {
+        1: 'vocal_separation',
+        2: 'v2.2_mdd',
+        3: 'vpbd_asr',
+        4: 'hybrid_mdd',
+        5: 'librosa_onset',
+    }
     try:
-        choice = int(input("请选择 (1-5): ").strip())
-        modes = {
-            1: 'vocal_separation',
-            2: 'v2.2_mdd',
-            3: 'librosa_onset',
-            4: 'hybrid_mdd',
-            5: 'vpbd_asr',
-        }
-        mode = modes.get(choice, 'v2.2_mdd')
-        print(f"[SELECT] 已选择模式: {mode}")
-        return mode
+        choice = int(input("请选择主流程 (1-5，直接回车=3): ").strip() or "3")
     except ValueError:
-        print("[ERROR] 输入无效，使用默认MDD v2.2模式")
-        return 'v2.2_mdd'
+        choice = 3
+    mode = modes.get(choice, 'vpbd_asr')
+    print(f"[SELECT] 已选择主流程: {mode}")
+    return mode
 
 
 def select_smart_profile():
     """让用户选择 smart_cut profile；默认 auto。"""
     print("\n" + "=" * 60)
-    print("选择智能 Profile")
+    print("选择风格策略")
     print("=" * 60)
-    print("  1. Auto - 自动识别风格 (默认)")
-    print("  2. Ballad - 抒情慢歌")
-    print("  3. Pop - 流行")
-    print("  4. EDM - 强节奏")
-    print("  5. Rap - 密集人声")
+    print("  1. Auto - 自动识别风格，适合批量处理和 mvagent")
+    print("  2. Ballad - 抒情慢歌，切点更保守")
+    print("  3. Pop - 流行歌曲，均衡默认")
+    print("  4. EDM - 强节奏，提升节拍亲和")
+    print("  5. Rap - 密集人声，偏向短句和气口")
     print()
     try:
-        choice = int(input("请选择 (1-5，默认1): ").strip() or "1")
+        choice = int(input("请选择风格策略 (1-5，直接回车=1): ").strip() or "1")
     except ValueError:
         choice = 1
     profiles = {1: 'auto', 2: 'ballad', 3: 'pop', 4: 'edm', 5: 'rap'}
     profile = profiles.get(choice, 'auto')
-    print(f"[SELECT] 已选择 Profile: {profile}")
+    print(f"[SELECT] 已选择风格策略: {profile}")
     return profile
 
 
@@ -122,7 +120,7 @@ def select_hybrid_density():
     print("选择卡点密度")
     print("=" * 60)
     print("  1. 少 - 较少或没有节拍卡点")
-    print("  2. 中 - 默认卡点数量 (推荐)")
+    print("  2. 中 - 默认卡点数量")
     print("  3. 多 - 更多卡点，更有灵动感 (可能碎片化)")
     print()
 
@@ -144,7 +142,7 @@ def select_lib_alignment():
     print("=" * 60)
     print("  1. 强制节拍分割 (beat_only) - 副歌每小节切割")
     print("     - _lib片段: 副歌段纯节拍切割，适合强节奏卡点")
-    print("  2. MDD智能吸附到节拍 (snap_to_beat) - 平衡方案 (推荐)")
+    print("  2. MDD智能吸附到节拍 (snap_to_beat) - 平衡方案")
     print("     - _lib片段: MDD切点吸附最近节拍，副歌额外添加节拍切点")
     print()
 
@@ -168,10 +166,12 @@ def build_vpbd_asr_runtime_overrides(
 ):
     """Build runtime config overrides for VPBD ASR quick-start choices."""
 
-    normalized = str(provider or 'sidecar').strip().lower()
+    normalized = str(provider or 'auto').strip().lower()
+    if normalized == 'null':
+        normalized = 'disabled'
     overrides = {
-        'lyrics_alignment.enabled': normalized not in {'disabled', 'null'},
-        'lyrics_alignment.provider': 'disabled' if normalized == 'null' else normalized,
+        'lyrics_alignment.enabled': normalized not in {'disabled'},
+        'lyrics_alignment.provider': normalized,
         'lyrics_alignment.strict': bool(strict),
     }
     if endpoint:
@@ -184,39 +184,55 @@ def build_vpbd_asr_runtime_overrides(
 
 
 def select_vpbd_asr_runtime_overrides():
-    """让用户选择 VPBD ASR provider 并返回运行时配置覆盖。"""
+    """让用户选择 VPBD ASR 歌词来源策略并返回运行时配置覆盖。"""
 
     print("\n" + "=" * 60)
-    print("选择 VPBD ASR Provider")
+    print("选择歌词来源策略")
     print("=" * 60)
-    print("  1. FireRed sidecar (推荐，本地常驻 HTTP worker)")
+    print("  1. 自动选择")
+    print("     常规用户和 mvagent 默认: sidecar -> CLI -> 声学降级；无需知道部署方式。")
     print("  2. FireRed CLI worker")
-    print("  3. Fake fixture (测试用)")
-    print("  4. Auto")
+    print("     已有本地 worker 脚本时使用；适合一次性批处理。")
+    print("  3. FireRed sidecar")
+    print("     已启动 HTTP 常驻服务时使用；适合高频批量。")
+    print("  4. Fake fixture")
+    print("     只用于回归测试，使用固定歌词时间轴。")
+    print("  5. 关闭歌词")
+    print("     退回 VPBD acoustic，只用声学低谷、气口和弱节拍候选。")
     print()
 
     try:
-        choice = int(input("请选择 (1-4，默认1): ").strip() or "1")
+        choice = int(input("请选择歌词来源 (1-5，直接回车=1): ").strip() or "1")
     except ValueError:
         choice = 1
 
-    provider_map = {1: 'sidecar', 2: 'cli', 3: 'fake', 4: 'auto'}
-    provider = provider_map.get(choice, 'sidecar')
+    provider_map = {1: 'auto', 2: 'cli', 3: 'sidecar', 4: 'fake', 5: 'disabled'}
+    provider = provider_map.get(choice, 'auto')
     endpoint = None
     cli_executable = None
     fixture_path = None
+    strict = False
 
     if provider == 'sidecar':
         default_endpoint = get_config('fire_red.endpoint', None) or 'http://127.0.0.1:8765'
-        endpoint = input(f"FireRed sidecar endpoint (默认 {default_endpoint}): ").strip() or default_endpoint
+        endpoint = input(f"FireRed sidecar endpoint (直接回车={default_endpoint}): ").strip() or default_endpoint
     elif provider == 'cli':
-        cli_executable = input("FireRed CLI worker 路径或命令: ").strip()
+        default_cli = get_config('fire_red.cli.executable', None) or 'scripts/fireredasr2s_worker.py'
+        cli_executable = input(f"FireRed CLI worker 路径或命令 (直接回车={default_cli}): ").strip() or default_cli
     elif provider == 'fake':
         default_fixture = 'tests/fixtures/lyrics/simple_song_timeline.json'
-        fixture_path = input(f"lyrics fixture JSON (默认 {default_fixture}): ").strip() or default_fixture
+        fixture_path = input(f"lyrics fixture JSON (直接回车={default_fixture}): ").strip() or default_fixture
 
-    strict_text = input("ASR strict 模式? (y/N): ").strip().lower()
-    strict = strict_text in {'y', 'yes', '1', 'true'}
+    if provider in {'sidecar', 'cli', 'fake'}:
+        print("\nASR 失败处理")
+        print("  1. 降级继续 - ASR 失败时退回声学 VPBD，适合批量处理")
+        print("  2. 严格失败 - ASR 输出异常时中止，适合调试 provider")
+        try:
+            strict_choice = int(input("请选择 (1-2，直接回车=1): ").strip() or "1")
+        except ValueError:
+            strict_choice = 1
+        strict = strict_choice == 2
+
     overrides = build_vpbd_asr_runtime_overrides(
         provider=provider,
         endpoint=endpoint,
@@ -224,7 +240,8 @@ def select_vpbd_asr_runtime_overrides():
         fixture_path=fixture_path,
         strict=strict,
     )
-    print(f"[SELECT] VPBD ASR provider: {provider}")
+    strict_label = '严格失败' if strict else '降级继续'
+    print(f"[SELECT] 歌词来源: {provider}；ASR失败处理: {strict_label}")
     return overrides
 
 
@@ -339,7 +356,7 @@ def main():
         format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
     )
     print("=" * 60)
-    print("智能人声分割器 - 快速启动 (v2.4.0)")
+    print("智能人声分割器 - 快速启动 (v2.7)")
     print("=" * 60)
 
     if not check_system_status():
@@ -383,8 +400,9 @@ def main():
             target_files = [selected_file]
 
     processing_mode = select_processing_mode()
-    smart_profile = select_smart_profile()
-    set_runtime_config({'smart_cut.profile': smart_profile})
+    if processing_mode != 'vocal_separation':
+        smart_profile = select_smart_profile()
+        set_runtime_config({'smart_cut.profile': smart_profile})
 
     # 如果选择了 hybrid_mdd 模式，询问卡点密度和对齐策略
     hybrid_density = None
