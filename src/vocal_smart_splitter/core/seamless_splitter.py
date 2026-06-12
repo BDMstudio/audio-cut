@@ -640,6 +640,21 @@ class SeamlessSplitter:
                 )
                 classification_debug = list(getattr(self, '_last_segment_classification_debug', []))
 
+        cleaned_cut_points, cleaned_flags, cleaned_debug = self._merge_short_weak_human_tails_into_following_music(
+            final_cut_points,
+            segment_vocal_flags,
+            classification_debug,
+            vocal_track,
+            min_duration_s=float(getattr(layout_config, 'soft_min_s', 0.0) or 0.0),
+            layout_applied=layout_applied,
+        )
+        if cleaned_cut_points != final_cut_points:
+            final_cut_points = cleaned_cut_points
+            segment_vocal_flags = cleaned_flags
+            classification_debug = cleaned_debug
+            self._last_segment_classification_debug = classification_debug
+            layout_applied = True
+
         lyrics_protection_applied = False
 
         segments, segment_vocal_flags, merged_debug = self._split_at_sample_level(
@@ -2126,6 +2141,138 @@ class SeamlessSplitter:
         if not isinstance(self, SeamlessSplitter):
             return segments
         return segments, merged_flags, merged_debug
+
+    def _merge_short_weak_human_tails_into_following_music(
+        self,
+        cut_points: List[int],
+        segment_vocal_flags: List[bool],
+        debug_entries: List[Dict[str, Any]],
+        vocal_audio: np.ndarray,
+        *,
+        min_duration_s: float,
+        layout_applied: bool,
+    ) -> Tuple[List[int], List[bool], List[Dict[str, Any]]]:
+        if (
+            not layout_applied
+            or min_duration_s <= 0.0
+            or len(cut_points) < 3
+            or len(segment_vocal_flags) != len(cut_points) - 1
+            or vocal_audio is None
+            or getattr(vocal_audio, 'size', 0) == 0
+        ):
+            return list(cut_points), list(segment_vocal_flags), list(debug_entries or [])
+
+        sr = float(self.sample_rate)
+        if sr <= 0.0:
+            return list(cut_points), list(segment_vocal_flags), list(debug_entries or [])
+
+        audio = vocal_audio
+        if getattr(audio, 'ndim', 1) > 1:
+            audio = np.mean(audio, axis=1)
+
+        points = [int(point) for point in cut_points]
+        flags = [bool(flag) for flag in segment_vocal_flags]
+        debug = [dict(entry) for entry in (debug_entries or [])]
+        while len(debug) < len(flags):
+            debug.append({})
+
+        def _stats() -> List[Dict[str, float]]:
+            values: List[Dict[str, float]] = []
+            for idx in range(len(points) - 1):
+                start = max(0, min(points[idx], len(audio)))
+                end = max(start, min(points[idx + 1], len(audio)))
+                segment = audio[start:end]
+                if segment.size:
+                    rms = float(np.sqrt(np.mean(np.square(segment.astype(np.float64))) + 1e-12))
+                    peak = float(np.max(np.abs(segment)))
+                else:
+                    rms = 0.0
+                    peak = 0.0
+                values.append({
+                    'duration_s': max(0.0, (points[idx + 1] - points[idx]) / sr),
+                    'rms': rms,
+                    'peak': peak,
+                })
+            return values
+
+        stats = _stats()
+        ref_rms_values = [
+            item['rms']
+            for item, flag in zip(stats, flags)
+            if flag and item['duration_s'] >= min_duration_s and item['rms'] > 0.0
+        ]
+        ref_peak_values = [
+            item['peak']
+            for item, flag in zip(stats, flags)
+            if flag and item['duration_s'] >= min_duration_s and item['peak'] > 0.0
+        ]
+        if not ref_rms_values or not ref_peak_values:
+            return points, flags, debug[:len(flags)]
+
+        ref_rms = float(np.median(np.asarray(ref_rms_values, dtype=np.float64)))
+        ref_peak = float(np.median(np.asarray(ref_peak_values, dtype=np.float64)))
+        weak_rms_ratio = float(get_config('quality_control.short_human_tail_rms_ratio', 0.12) or 0.12)
+        weak_peak_ratio = float(get_config('quality_control.short_human_tail_peak_ratio', 0.18) or 0.18)
+        reason = 'merged_short_weak_human_tail_into_following_music'
+
+        def _merge_debug(
+            left: Dict[str, Any],
+            right: Dict[str, Any],
+            index: int,
+            start_s: float,
+            end_s: float,
+        ) -> Dict[str, Any]:
+            merged = dict(right or left or {})
+            left_seconds = float((left or {}).get('vocal_activity_seconds', 0.0) or 0.0)
+            right_seconds = float((right or {}).get('vocal_activity_seconds', 0.0) or 0.0)
+            duration_s = max(end_s - start_s, 1e-6)
+            merged_from = []
+            for entry in (left, right):
+                if not entry:
+                    continue
+                merged_from.extend(entry.get('merged_from_segments', [entry.get('index')]))
+            vocal_seconds = min(duration_s, left_seconds + right_seconds)
+            merged.update({
+                'index': index,
+                'start_s': start_s,
+                'end_s': end_s,
+                'duration_s': duration_s,
+                'vocal_activity_seconds': vocal_seconds,
+                'vocal_activity_ratio': vocal_seconds / duration_s,
+                'decision': False,
+                'decision_reason': reason,
+                'reason': reason,
+                'merged_from_segments': sorted({int(item) for item in merged_from if item is not None}),
+            })
+            return merged
+
+        idx = 0
+        while idx < len(flags) - 1:
+            stats = _stats()
+            current = stats[idx]
+            is_short_weak_human = (
+                flags[idx]
+                and not flags[idx + 1]
+                and current['duration_s'] < min_duration_s
+                and current['rms'] <= ref_rms * weak_rms_ratio
+                and current['peak'] <= ref_peak * weak_peak_ratio
+            )
+            if not is_short_weak_human:
+                idx += 1
+                continue
+
+            start_s = points[idx] / sr
+            end_s = points[idx + 2] / sr
+            points.pop(idx + 1)
+            merged_entry = _merge_debug(debug[idx], debug[idx + 1], idx, start_s, end_s)
+            flags[idx:idx + 2] = [False]
+            debug[idx:idx + 2] = [merged_entry]
+
+        for new_idx, entry in enumerate(debug[:len(flags)]):
+            entry['index'] = new_idx
+
+        return points, flags, debug[:len(flags)]
+
     def _classify_segments_vocal_presence(
         self,
         vocal_audio: np.ndarray,

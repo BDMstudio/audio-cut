@@ -7,7 +7,7 @@
 
 ## 1. 版本演进
 
-- **v2.8 draft（2026-06-11）**: 产品面收敛为 `segments` 密度轴与 `alignment` 歌词-节拍轴；`quick_start.py` 变为文件选择 + 三问，CLI/API 新增意图参数，Manifest 增量回显 `intent`，旧 `--mode` 路径保留为专家兼容入口。
+- **v2.8 draft（2026-06-11）**: 产品面收敛为 `segments` 密度轴与 `alignment` 歌词-节拍轴；`quick_start.py` 变为文件选择 + 三问，CLI/API 新增意图参数，Manifest 增量回显 `intent`，旧 `--mode` 路径保留为专家兼容入口；layout 二次切分后的短弱人声尾段会在右邻为 music 时并入 music。
 - **v2.7 draft（2026-06-10）**: VPBD 候选池开始接收气口、ASR lyrics gap / sentence end / mVAD 与高能量段弱节拍候选；近重复候选先融合再统一打分规划，breath 只在 VPBD 路径通过 `vpbd.breath_score_scale` 降权启用；`vocal_cut_risk` / `mdd_affinity` / `beat_conflict` 进入真实打分闭环。
 - **v2.6.1 draft（2026-06-10）**: 修复 `hybrid_mdd` 副歌节拍吸附绕过人声保护的问题；节拍切点使用分离后人声轨安静度检查，吸附后统一过 `finalize_cut_points`，并提供 `chorus_force_snap` 回退开关。
 - **v2.6 draft（2026-06-09）**: 新增 `vpbd_acoustic` / `vpbd_asr` 可选路径，FireRedASR/FireRedASR2S 通过 sidecar 或 CLI provider 接入；ASR 只作为歌词边界 soft prior，声学低谷仍是切点主控。
@@ -74,11 +74,11 @@ flowchart TD
 4b. `hybrid_mdd` 策略层以 MDD 切点为 raw 边界，节拍吸附前先在分离后人声轨上做安静度检查；`chorus_force_snap=true` 可显式恢复旧版强吸附。
 5. `audio_cut.cutting.finalize_cut_points` 对候选执行加权 NMS、静音守卫、最小间隔，输出守卫位移统计；`hybrid_mdd` 和 `vpbd_asr` 均会在策略/规划后重新进入此守卫链，`vpbd_asr` 会撤销把词外 raw cut 推入 ASR word interval 的 guard 移动。
 6. `SeamlessSplitter._classify_segments_vocal_presence` 根据 RMS 活跃度估计 `_human/_music` 标签并记录调试信息。
-7. `segment_layout_refiner.refine_layout` 执行微碎片合并、软最小合并、软最大救援；`vpbd_asr` 的软最大救援优先声学低谷 + ASR 句/唱段边界，词区间用于降权，找不到可信低谷时不做 midpoint 硬切。
+7. `segment_layout_refiner.refine_layout` 执行微碎片合并、软最小合并、软最大救援；`vpbd_asr` 的软最大救援优先声学低谷 + ASR 句/唱段边界，词区间用于降权，找不到可信低谷时不做 midpoint 硬切。layout/local refine 之后，`SeamlessSplitter` 会复查短于 `soft_min_s`、相对正常 human 能量很弱且右邻为 music 的 human 尾段，并删除右边界归入后续 music。
 8. `SegmentExporter` 统一调用 `audio_export` 模块导出文件，默认追加 `_X.X`（秒，保留一位小数）后缀；落盘目录按 `<日期>_<时间>_<原音频名>` 命名。
 
 ## 5. 核心模块要点
-- **SeamlessSplitter**：统一调度入口，缓存 `segment_classification_debug`、`guard_shift_stats`、守卫调整明细，确保 GPU chunk 与整段流程可追踪。
+- **SeamlessSplitter**：统一调度入口，缓存 `segment_classification_debug`、`guard_shift_stats`、守卫调整明细；layout 后会合并短弱 human 尾段到右邻 music，确保 GPU chunk 与整段流程可追踪。
 - **EnhancedVocalSeparator**：封装 MDX23/Demucs 后端，记录 `h2d_ms/dtoh_ms/compute_ms/peak_mem_bytes`，提供 `fallback_reason`。
 - **GPU Pipeline**：`PipelineConfig`/`PipelineContext` 管理 chunk 规划、CUDA stream、pinned buffer 与背压。
 - **SileroChunkVAD**：分块推理 + halo 裁剪 + 焦点窗口构造，仅在关键区间运行昂贵特征。
@@ -109,7 +109,7 @@ flowchart TD
 - **Hybrid guard**：`tests/unit/test_snap_to_beat_vad_guard.py` 覆盖 snap_to_beat/beat_only 的人声保护、`chorus_force_snap` 回退、snap tolerance clamp 与 `_lib` 标记重映射。
 - **VPBD candidate pool**：`tests/unit/test_breath_candidates.py` 覆盖 breath 只进 VPBD 候选池与 scale=0 回退；`tests/unit/test_candidate_pool_fusion.py` 覆盖 ASR 候选入池、±120ms 去重、`candidate_pool=legacy`、候选 debug JSON 和 `meta.sources` 来源追踪；`tests/unit/test_beat_candidates.py` 覆盖弱节拍候选、高能量段过滤和 `vocal_cut_risk`；`tests/integration/test_pipeline_vpbd_asr_fake_provider.py` 覆盖 fake timeline 下“长停顿 > 气口+句尾 > 节拍”的权重优先级。
 - **QA report**：`tests/unit/test_qa_report.py` 覆盖 `breath_cut_ratio` 与 `beat_aligned_ratio`，用于人工验收时观察气口自然度和卡点比例。
-- **Intent / AutoProfile**：`tests/unit/test_alignment_overrides.py` 覆盖 alignment/segments 双轨；`tests/unit/test_seamless_splitter_intent_runtime.py` 覆盖 runtime 接线；`tests/unit/test_auto_profile.py` 覆盖风格估计、低置信回退和 anchor 插值；`tests/contracts/test_agent_intent_contract.py` 覆盖 agent Manifest 契约。
+- **Intent / AutoProfile**：`tests/unit/test_alignment_overrides.py` 覆盖 alignment/segments 双轨；`tests/unit/test_seamless_splitter_intent_runtime.py` 覆盖 runtime 接线、vocal RMS layout split 与短弱 human 尾段合并；`tests/unit/test_auto_profile.py` 覆盖风格估计、低置信回退和 anchor 插值；`tests/contracts/test_agent_intent_contract.py` 覆盖 agent Manifest 契约。
 - **H release gate**：`scripts/legacy_mode_diff_gate.py` 在 v2.6 基线 ref 与当前代码之间重跑 `v2.2_mdd` / `hybrid_mdd` / `librosa_onset`，比对 Manifest 旧字段和输出命名；`scripts/vpbd_rollback_diff_gate.py` 验证 `vpbd.candidate_pool=legacy` + `--profile pop` 与 v2.6 基线一致。两个脚本都要求显式传入本地 smoke 音频，不在文档或默认参数中记录真实歌曲名；基线 worktree 会通过 symlink 复用当前本地 MDX 模型资产，避免 Demucs/MDX 后端差异污染 diff。
 - **Performance**：`tests/performance/test_valley_perf.py` 监控检测+守卫耗时。
 - **Benchmarks**：`tests/benchmarks/test_chunk_vs_full_equivalence.py` 分析 chunk vs full 误差。

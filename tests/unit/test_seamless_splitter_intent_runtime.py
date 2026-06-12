@@ -123,3 +123,32 @@ def test_local_boundary_refine_does_not_create_micro_segment() -> None:
         assert refined == boundaries
     finally:
         reset_runtime_config()
+
+
+def test_short_weak_human_tail_from_layout_merges_into_following_music() -> None:
+    sample_rate = 1000
+    splitter = SeamlessSplitter(sample_rate=sample_rate)
+    vocal = np.zeros(sample_rate * 15, dtype=np.float32)
+    vocal[:sample_rate * 10] = 0.5
+    vocal[sample_rate * 10:sample_rate * 12] = 0.02
+    cut_points = [0, sample_rate * 10, sample_rate * 12, sample_rate * 15]
+    flags = [True, True, False]
+    debug_entries = [
+        {"index": 0, "start_s": 0.0, "end_s": 10.0, "duration_s": 10.0, "decision": True},
+        {"index": 1, "start_s": 10.0, "end_s": 12.0, "duration_s": 2.0, "decision": True},
+        {"index": 2, "start_s": 12.0, "end_s": 15.0, "duration_s": 3.0, "decision": False},
+    ]
+
+    merged_points, merged_flags, merged_debug = splitter._merge_short_weak_human_tails_into_following_music(
+        cut_points,
+        flags,
+        debug_entries,
+        vocal,
+        min_duration_s=5.0,
+        layout_applied=True,
+    )
+
+    assert merged_points == [0, sample_rate * 10, sample_rate * 15]
+    assert merged_flags == [True, False]
+    assert merged_debug[1]["decision"] is False
+    assert merged_debug[1]["reason"] == "merged_short_weak_human_tail_into_following_music"
