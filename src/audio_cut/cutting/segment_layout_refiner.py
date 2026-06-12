@@ -110,6 +110,11 @@ def refine_layout(
         asr_word_intervals=word_intervals,
         allow_midpoint_fallback=allow_midpoint_fallback,
     )
+    refined_segments = _apply_post_split_micro_merge(
+        refined_segments,
+        config.micro_merge_s,
+        config.soft_max_s,
+    )
     refined_segments = _enforce_min_gap(refined_segments, config.min_gap_s)
     refined_segments = _apply_beat_snap(
         refined_segments,
@@ -242,6 +247,62 @@ def _apply_soft_min_merge(
             merged = Segment(start=seg.start, end=right.end, kind=new_kind)
             segs[idx] = merged
             segs.pop(idx + 1)
+        else:
+            idx += 1
+
+    _restore_continuity(segs)
+    return segs
+
+
+def _apply_post_split_micro_merge(
+    segments: List[Segment],
+    micro_threshold_s: float,
+    soft_max_s: float,
+) -> List[Segment]:
+    if micro_threshold_s <= 0.0 or len(segments) <= 1:
+        return segments
+
+    segs = [Segment(seg.start, seg.end, seg.kind) for seg in segments]
+    idx = 0
+    while len(segs) > 1 and idx < len(segs):
+        seg = segs[idx]
+        if "_lib" in seg.kind or seg.duration >= micro_threshold_s:
+            idx += 1
+            continue
+
+        choices = []
+        if idx > 0:
+            left = segs[idx - 1]
+            combined = seg.end - left.start
+            choices.append(("left", left, combined))
+        if idx + 1 < len(segs):
+            right = segs[idx + 1]
+            combined = right.end - seg.start
+            choices.append(("right", right, combined))
+        if not choices:
+            idx += 1
+            continue
+
+        def _cost(item: Tuple[str, Segment, float]) -> Tuple[float, float, float]:
+            _, neighbor, combined = item
+            same_kind_penalty = 0.0 if neighbor.kind == seg.kind else 10.0
+            if soft_max_s > 0.0 and combined > soft_max_s:
+                overage = combined - soft_max_s
+                if neighbor.kind != seg.kind or overage > micro_threshold_s:
+                    same_kind_penalty += 100.0 + overage
+            else:
+                overage = 0.0
+            return same_kind_penalty, overage, combined
+
+        direction, _, _ = min(choices, key=_cost)
+        if direction == "left" and idx > 0:
+            left = segs[idx - 1]
+            segs[idx - 1] = Segment(start=left.start, end=seg.end, kind=left.kind)
+            segs.pop(idx)
+            idx = max(idx - 1, 0)
+        elif direction == "right" and idx + 1 < len(segs):
+            right = segs[idx + 1]
+            segs[idx:idx + 2] = [Segment(start=seg.start, end=right.end, kind=right.kind)]
         else:
             idx += 1
 

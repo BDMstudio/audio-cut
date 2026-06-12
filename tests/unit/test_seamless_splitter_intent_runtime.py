@@ -101,3 +101,25 @@ def test_layout_feature_cache_uses_vocal_rms_for_secondary_splits() -> None:
 
     boundaries = [seg.end for seg in result.segments[:-1]]
     assert any(abs(boundary - 20.0) <= 0.25 for boundary in boundaries)
+
+
+def test_local_boundary_refine_does_not_create_micro_segment() -> None:
+    reset_runtime_config()
+    set_runtime_config({"segment_layout.micro_merge_s": 2.0})
+    try:
+        sample_rate = 1000
+        splitter = SeamlessSplitter(sample_rate=sample_rate)
+        vocal = np.full(sample_rate * 18, 0.5, dtype=np.float32)
+        vocal[12480:12520] = 0.001
+        boundaries = [0, 12000, 14000, 18000]
+
+        refined = splitter._refine_boundaries_local_valley(
+            boundaries,
+            vocal,
+            {"search_radius_ms": 1000, "window_ms": 20, "min_drop_db": 3.0},
+            min_gap_s=1.0,
+        )
+
+        assert refined == boundaries
+    finally:
+        reset_runtime_config()

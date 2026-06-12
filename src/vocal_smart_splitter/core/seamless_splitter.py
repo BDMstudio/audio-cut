@@ -2479,7 +2479,16 @@ class SeamlessSplitter:
         radius = max(1, int(float(cfg.get('search_radius_ms', 200)) / 1000.0 * sr))
         win = max(1, int(float(cfg.get('window_ms', 20)) / 1000.0 * sr))
         drop_db = float(cfg.get('min_drop_db', 3.0))
-        min_gap_samples = max(1, int(min_gap_s * sr))
+        try:
+            micro_merge_s = float(get_config('segment_layout.micro_merge_s', 0.0) or 0.0)
+        except (TypeError, ValueError):
+            micro_merge_s = 0.0
+        try:
+            min_mix_piece_s = float(get_config('quality_control.segment_min_mix_piece', 0.0) or 0.0)
+        except (TypeError, ValueError):
+            min_mix_piece_s = 0.0
+        min_segment_s = max(float(min_gap_s), micro_merge_s, min_mix_piece_s)
+        min_segment_samples = max(1, int(min_segment_s * sr))
         protected_intervals = sorted(
             (float(start_s), float(end_s))
             for start_s, end_s in (protected_intervals_s or [])
@@ -2514,9 +2523,9 @@ class SeamlessSplitter:
             candidate_s = candidate / sr
             if any(start_s < candidate_s < end_s for start_s, end_s in protected_intervals):
                 continue
-            if candidate <= refined[idx - 1] + min_gap_samples:
+            if candidate <= refined[idx - 1] + min_segment_samples:
                 continue
-            if candidate >= refined[idx + 1] - min_gap_samples:
+            if candidate >= refined[idx + 1] - min_segment_samples:
                 continue
 
             refined[idx] = candidate
