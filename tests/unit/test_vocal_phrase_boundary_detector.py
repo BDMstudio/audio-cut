@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import numpy as np
@@ -19,6 +20,34 @@ from vocal_smart_splitter.utils.config_manager import reset_runtime_config, set_
 class _NoPauseDetector:
     def detect_pure_vocal_pauses(self, *args: Any, **kwargs: Any) -> list[Any]:
         return []
+
+
+def test_zero_beat_base_score_disables_beat_only_candidates() -> None:
+    set_runtime_config(
+        {
+            "vpbd.beat_candidates.enable": True,
+            "vpbd.beat_candidates.bars_per_cut": 2,
+            "vpbd.beat_candidates.base_score": 0.0,
+        }
+    )
+    try:
+        feature_cache = SimpleNamespace(
+            beat_times=np.arange(0.0, 8.001, 0.5, dtype=np.float32),
+            rms_series=np.full(160, 0.8, dtype=np.float32),
+            hop_s=0.05,
+        )
+        sample_rate = 16000
+        vocal = np.full(sample_rate * 8, 0.2, dtype=np.float32)
+
+        candidates = VocalPhraseBoundaryDetector(sample_rate=sample_rate)._build_beat_candidates(
+            vocal_track=vocal,
+            feature_cache=feature_cache,
+            duration_s=8.0,
+        )
+    finally:
+        reset_runtime_config()
+
+    assert candidates == []
 
 
 def test_vpbd_asr_writes_readable_vocal_copy_before_provider_call(tmp_path, monkeypatch) -> None:

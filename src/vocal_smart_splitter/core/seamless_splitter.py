@@ -7,7 +7,7 @@ import os
 import numpy as np
 import librosa
 import logging
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from typing import List, Dict, Optional, Tuple, Any, Sequence, Iterable, Set
 from pathlib import Path
 import time
@@ -544,9 +544,14 @@ class SeamlessSplitter:
         layout_cfg_raw.setdefault('min_gap_s', float(get_config('quality_control.min_split_gap', 1.0)))
         layout_cfg_raw.setdefault('beat_snap_ms', float(get_config('segment_layout.beat_snap_ms', 0.0) or 0.0))
 
+        layout_feature_cache = (
+            self._build_vocal_layout_feature_cache(feature_cache, vocal_track)
+            if vpbd_detection is not None and mode == 'vpbd_asr'
+            else feature_cache
+        )
         layout_config = derive_layout_config(
             layout_cfg_raw,
-            feature_cache,
+            layout_feature_cache,
             sample_rate=self.sample_rate,
         )
         layout_applied = False
@@ -566,7 +571,7 @@ class SeamlessSplitter:
                 config=layout_config,
                 sample_rate=self.sample_rate,
                 suppressed_cut_points=self._last_suppressed_cut_points,
-                features=feature_cache,
+                features=layout_feature_cache,
                 asr_boundary_times=(
                     self._collect_lyrics_boundary_times(vpbd_detection.lyrics_alignment)
                     if vpbd_detection is not None and mode == 'vpbd_asr'
@@ -871,6 +876,51 @@ class SeamlessSplitter:
             setattr(feature_cache, 'vocal_coverage_ratio', max(0.0, min(1.0, coverage)))
         except Exception:
             return
+
+    @staticmethod
+    def _build_vocal_layout_feature_cache(
+        feature_cache: Optional[TrackFeatureCache],
+        vocal_track: Optional[np.ndarray],
+    ) -> Optional[TrackFeatureCache]:
+        """Return layout features whose RMS follows the vocal track for valley rescue."""
+
+        if feature_cache is None or vocal_track is None:
+            return feature_cache
+        try:
+            sr = int(getattr(feature_cache, 'sr', 0) or 0)
+            hop_length = int(getattr(feature_cache, 'hop_length', 0) or 0)
+            if sr <= 0 or hop_length <= 0:
+                return feature_cache
+            audio = np.asarray(vocal_track, dtype=np.float32)
+            if audio.size == 0:
+                return feature_cache
+            if audio.ndim == 2:
+                axis = 0 if audio.shape[0] <= 2 and audio.shape[1] > audio.shape[0] else 1
+                audio = np.mean(audio, axis=axis, dtype=np.float32)
+            mono = np.ravel(audio).astype(np.float32, copy=False)
+            frame_length = max(hop_length * 2, int(round(sr * 0.1)))
+            vocal_rms = librosa.feature.rms(
+                y=mono,
+                frame_length=frame_length,
+                hop_length=hop_length,
+            )[0].astype(np.float32, copy=False)
+            if vocal_rms.size == 0:
+                return feature_cache
+            target_len = int(feature_cache.frame_count())
+            if target_len > 0 and vocal_rms.size != target_len:
+                if vocal_rms.size < target_len:
+                    pad_value = float(vocal_rms[-1])
+                    vocal_rms = np.pad(vocal_rms, (0, target_len - vocal_rms.size), constant_values=pad_value)
+                else:
+                    vocal_rms = vocal_rms[:target_len]
+            return replace(
+                feature_cache,
+                rms_series=vocal_rms,
+                rms_max=float(np.max(vocal_rms) if vocal_rms.size else 0.0),
+            )
+        except Exception as exc:
+            logger.debug('[Layout] failed to build vocal RMS feature cache: %s', exc)
+            return feature_cache
 
     def _get_gpu_pipeline_config(self) -> PipelineConfig:
         try:

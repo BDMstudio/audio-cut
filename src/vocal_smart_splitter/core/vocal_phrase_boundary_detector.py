@@ -234,6 +234,9 @@ class VocalPhraseBoundaryDetector:
             return []
         if feature_cache is None:
             return []
+        base_score = float(beat_cfg.get("base_score", 0.3))
+        if base_score <= 0.0:
+            return []
         beat_times = getattr(feature_cache, "beat_times", [])
         rms_series = getattr(feature_cache, "rms_series", [])
         hop_s = float(getattr(feature_cache, "hop_s", 0.0) or 0.0)
@@ -245,7 +248,7 @@ class VocalPhraseBoundaryDetector:
             sample_rate=self.sample_rate,
             vocal_track=vocal_track,
             bars_per_cut=int(beat_cfg.get("bars_per_cut", 2)),
-            base_score=float(beat_cfg.get("base_score", 0.3)),
+            base_score=base_score,
         )
 
     def _merge_candidate_pool(

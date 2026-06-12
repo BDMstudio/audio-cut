@@ -9,6 +9,8 @@ from types import SimpleNamespace
 
 import numpy as np
 
+from audio_cut.analysis.features_cache import TrackFeatureCache
+from audio_cut.cutting.segment_layout_refiner import LayoutConfig, Segment, refine_layout
 from vocal_smart_splitter.core.seamless_splitter import SeamlessSplitter
 from vocal_smart_splitter.utils.config_manager import get_config, reset_runtime_config, set_runtime_config
 
@@ -52,3 +54,50 @@ def test_splitter_balanced_alignment_keeps_existing_weight_overrides_empty() -> 
         assert splitter._last_intent_meta["applied_overrides"] == []
     finally:
         reset_runtime_config()
+
+
+def _track_feature_cache(*, sample_rate: int, duration_s: float, hop_s: float = 0.05) -> TrackFeatureCache:
+    frame_count = int(duration_s / hop_s) + 1
+    ones = np.ones(frame_count, dtype=np.float32)
+    zeros = np.zeros(frame_count, dtype=np.float32)
+    return TrackFeatureCache(
+        sr=sample_rate,
+        hop_length=max(1, int(round(sample_rate * hop_s))),
+        hop_s=hop_s,
+        duration_s=duration_s,
+        rms_series=ones,
+        spectral_flatness=zeros.copy(),
+        onset_envelope=zeros.copy(),
+        onset_strength=zeros.copy(),
+        onset_frames=np.array([], dtype=np.int64),
+        rms_max=1.0,
+        onset_max=0.0,
+        bpm_features=None,
+        tempo_curve=None,
+        beat_times=np.array([], dtype=np.float32),
+        global_mdd=0.0,
+        mdd_series=zeros.copy(),
+    )
+
+
+def test_layout_feature_cache_uses_vocal_rms_for_secondary_splits() -> None:
+    sample_rate = 1000
+    mix_cache = _track_feature_cache(sample_rate=sample_rate, duration_s=30.0)
+    vocal = np.full(sample_rate * 30, 0.4, dtype=np.float32)
+    center = int(20.0 * sample_rate)
+    half_width = int(2.0 * sample_rate)
+    for idx in range(center - half_width, center + half_width):
+        distance = abs(idx - center) / float(half_width)
+        vocal[idx] = 0.4 * distance
+
+    layout_features = SeamlessSplitter._build_vocal_layout_feature_cache(mix_cache, vocal)
+    result = refine_layout(
+        [Segment(0.0, 30.0, "human"), Segment(30.0, 35.0, "music")],
+        [],
+        config=LayoutConfig(enable=True, soft_max_s=15.0, min_gap_s=1.0),
+        sample_rate=sample_rate,
+        features=layout_features,
+    )
+
+    boundaries = [seg.end for seg in result.segments[:-1]]
+    assert any(abs(boundary - 20.0) <= 0.25 for boundary in boundaries)
